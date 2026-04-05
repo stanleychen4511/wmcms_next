@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(find C:/Projects/wmcms_next -type f -name *.prisma)",
+      "Bash(find C:/Projects/wmcms_next/src/app/api -type f -name *.ts -o -name *.js)",
+      "Bash(find C:/Projects/wmcms_next -type f \\\\\\(-name *.ts -o -name *.tsx \\\\\\))",
+      "Bash(xargs grep:*)",
+      "Bash(find C:/Projects/wmcms_next -type f \\\\\\(-name *.sql -o -name schema* \\\\\\))",
+      "Bash(grep -r 'CREATE TABLE.*home_visit' C:/Projects/wmcms_next --include=*.sql --include=*.ts)"
+    ]
+  }
+}
