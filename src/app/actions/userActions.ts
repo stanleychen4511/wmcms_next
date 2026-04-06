@@ -51,7 +51,7 @@ export async function getUsers(): Promise<AdminUserView[]> {
             FROM users u
             LEFT JOIN user_roles ur ON u.id = ur.user_id
             LEFT JOIN roles r ON ur.role_id = r.id
-            GROUP BY u.id
+            GROUP BY u.id, u.account, u.name_enc, u.name_iv, u.id_number_enc, u.id_number_iv, u.is_active, u.created_at
             ORDER BY u.created_at DESC;
         `;
         const res = await client.query(query);
@@ -210,7 +210,7 @@ export async function loginAction(account: string, pass: string): Promise<{ succ
             LEFT JOIN user_roles ur ON u.id = ur.user_id
             LEFT JOIN roles r ON ur.role_id = r.id
             WHERE u.account = $1
-            GROUP BY u.id
+            GROUP BY u.id, u.account, u.search_salt, u.password, u.name_enc, u.name_iv, u.id_number_enc, u.id_number_iv, u.is_active, u.created_at
         `;
         const res = await client.query(query, [account]);
         if (res.rows.length === 0) return { success: false, error: '帳號或密碼錯誤' };
