@@ -29,30 +29,9 @@ const STAGE_COLORS: Record<WorkflowStage, string> = {
 };
 
 export function CaseListPage({ username, cases, allOfficers, isLoading, onSelectCase, onLogout, onGoHome }: CaseListPageProps) {
-    // 預設日期範圍：當月第一天至最後一天
-    const defaultDates = useMemo(() => {
-        const now = new Date();
-        const year = now.getFullYear();
-        const month = now.getMonth();
-        const firstDay = new Date(year, month, 1);
-        const lastDay = new Date(year, month + 1, 0);
-
-        const formatDate = (date: Date) => {
-            const y = date.getFullYear();
-            const m = String(date.getMonth() + 1).padStart(2, '0');
-            const d = String(date.getDate()).padStart(2, '0');
-            return `${y}-${m}-${d}`;
-        };
-
-        return {
-            from: formatDate(firstDay),
-            to: formatDate(lastDay)
-        };
-    }, []);
-
     const [nameQuery, setNameQuery] = useState('');
-    const [dateFrom, setDateFrom] = useState(defaultDates.from);
-    const [dateTo, setDateTo] = useState(defaultDates.to);
+    const [dateFrom, setDateFrom] = useState('');
+    const [dateTo, setDateTo] = useState('');
     const [stageFilter, setStageFilter] = useState<WorkflowStage | ''>('');
     const [officerFilter, setOfficerFilter] = useState(''); // Default to All
 

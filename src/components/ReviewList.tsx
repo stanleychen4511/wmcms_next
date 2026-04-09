@@ -1,7 +1,180 @@
 "use client";
 import { useState, useEffect, useRef, useCallback } from 'react';
-import { CheckCircle, XCircle, Upload, FileText, AlertCircle, Loader2, Eye, RotateCcw, ExternalLink } from 'lucide-react';
+import { CheckCircle, XCircle, Upload, FileText, AlertCircle, Loader2, Eye, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
+import dynamic from 'next/dynamic';
+import { WatermarkOverlay, WATERMARK_BG, usePreviewGuards } from './WatermarkOverlay';
+
+const PdfViewer = dynamic(
+    () => import('./PdfViewer').then(m => m.PdfViewer),
+    { ssr: false, loading: () => (
+        <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'center', height: '100%', gap: 12, color: '#94a3b8' }}>
+            <span className="text-sm">載入 PDF 中…</span>
+        </div>
+    )}
+);
 import { DocumentEntry, uploadApplicationDocument, updateDocumentStatus, fetchApplicationDocuments } from '../app/actions/documentActions';
+
+function getPreviewUrl(fileUrl: string): string {
+    return `/api/preview?path=${encodeURIComponent(fileUrl)}`;
+}
+
+function isWordFile(url: string) {
+    return /\.(docx?)$/i.test(url);
+}
+
+function isPdfFile(url: string) {
+    return /\.pdf$/i.test(url);
+}
+
+const ZOOM_STEPS = [50, 75, 100, 125, 150, 175, 200];
+
+function clampZoom(z: number) {
+    return Math.min(ZOOM_STEPS[ZOOM_STEPS.length - 1], Math.max(ZOOM_STEPS[0], z));
+}
+
+function stepZoom(current: number, delta: number): number {
+    // delta > 0 = zoom in, delta < 0 = zoom out
+    if (delta > 0) return ZOOM_STEPS.find(s => s > current) ?? current;
+    return [...ZOOM_STEPS].reverse().find(s => s < current) ?? current;
+}
+
+
+
+/** Renders a .docx file into a container div using docx-preview (client-side only) */
+function DocxViewer({ fileUrl, zoom = 100, onZoomChange }: {
+    fileUrl: string; zoom?: number; onZoomChange?: (z: number) => void;
+}) {
+    const containerRef = useRef<HTMLDivElement>(null);
+    const outerRef = useRef<HTMLDivElement>(null);
+    const [error, setError] = useState<string | null>(null);
+    const [loading, setLoading] = useState(true);
+    const dragging = useRef(false);
+    const last = useRef({ x: 0, y: 0 });
+
+    // Drag-to-scroll
+    useEffect(() => {
+        const onMouseMove = (e: MouseEvent) => {
+            if (!dragging.current || !outerRef.current) return;
+            outerRef.current.scrollLeft -= e.clientX - last.current.x;
+            outerRef.current.scrollTop  -= e.clientY - last.current.y;
+            last.current = { x: e.clientX, y: e.clientY };
+        };
+        const onMouseUp = () => {
+            dragging.current = false;
+            document.body.style.cursor = '';
+        };
+        window.addEventListener('mousemove', onMouseMove);
+        window.addEventListener('mouseup', onMouseUp);
+        return () => {
+            window.removeEventListener('mousemove', onMouseMove);
+            window.removeEventListener('mouseup', onMouseUp);
+        };
+    }, []);
+
+    useEffect(() => {
+        let cancelled = false;
+        async function render() {
+            try {
+                setLoading(true);
+                setError(null);
+                // Dynamically import to avoid SSR issues
+                const { renderAsync } = await import('docx-preview');
+                const res = await fetch(getPreviewUrl(fileUrl));
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                const blob = await res.blob();
+                if (cancelled || !containerRef.current) return;
+                await renderAsync(blob, containerRef.current, containerRef.current, {
+                    className: 'docx-preview',
+                    inWrapper: true,
+                    ignoreWidth: true,
+                    ignoreHeight: false,
+                    ignoreFonts: false,
+                    breakPages: true,
+                    useBase64URL: true,
+                    renderHeaders: true,
+                    renderFooters: true,
+                    renderFootnotes: true,
+                    renderEndnotes: true,
+                });
+            } catch (e: any) {
+                if (!cancelled) {
+                    const msg: string = e.message ?? '';
+                    setError(
+                        msg.includes('data length = 0') || msg.includes('Corrupted zip')
+                            ? '文件中無內容'
+                            : msg || '無法渲染文件'
+                    );
+                }
+            } finally {
+                if (!cancelled) setLoading(false);
+            }
+        }
+        render();
+        return () => { cancelled = true; };
+    }, [fileUrl]);
+
+    usePreviewGuards();
+
+    const scale = zoom / 100;
+
+    return (
+        <div
+            ref={outerRef}
+            onMouseDown={e => {
+                if (e.button !== 0) return;
+                dragging.current = true;
+                last.current = { x: e.clientX, y: e.clientY };
+                document.body.style.cursor = 'grabbing';
+                e.preventDefault();
+            }}
+            onWheel={e => {
+                e.preventDefault();
+                onZoomChange?.(stepZoom(zoom, -e.deltaY));
+            }}
+            style={{
+                position: 'relative', width: '100%', height: '100%', minHeight: '200px',
+                overflowY: 'auto', overflowX: 'auto', background: '#e5e7eb',
+                cursor: 'grab',
+            }}
+        >
+            {/* Scaled inner wrapper */}
+            <div
+                style={{
+                    position: 'relative',
+                    transformOrigin: 'top center',
+                    transform: `scale(${scale})`,
+                    width: scale < 1 ? `${100 / scale}%` : '100%',
+                    minHeight: '100%',
+                    padding: '16px',
+                    boxSizing: 'border-box',
+                }}
+                onContextMenu={e => e.preventDefault()}
+            >
+                <div
+                    ref={containerRef}
+                    style={{ userSelect: 'none', width: '100%' }}
+                />
+                {/* Watermark inside the scaled div — grows with content, covers all pages */}
+                {!loading && !error && <WatermarkOverlay />}
+            </div>
+            {/* Loading overlay */}
+            {loading && (
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', alignItems: 'center', justifyContent: 'center', background: '#f1f5f9', gap: '12px', color: '#94a3b8' }}>
+                    <Loader2 className="w-5 h-5 animate-spin" />
+                    <span className="text-sm">載入文件中…</span>
+                </div>
+            )}
+            {/* Error overlay */}
+            {error && !loading && (
+                <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center', background: '#f1f5f9', padding: '40px', textAlign: 'center', gap: '8px' }}>
+                    <span style={{ fontSize: '24px' }}>📄</span>
+                    <span style={{ color: '#6b7280', fontSize: '14px', fontWeight: 600 }}>無法顯示文件</span>
+                    <span style={{ color: '#9ca3af', fontSize: '13px', maxWidth: '320px', lineHeight: 1.6 }}>{error}</span>
+                </div>
+            )}
+        </div>
+    );
+}
 
 interface ReviewListProps {
     applicationId: string;
@@ -28,9 +201,6 @@ function StatusIcon({ status }: { status: DocumentEntry['status'] }) {
     }
 }
 
-function isImageUrl(url: string) {
-    return /\.(jpg|jpeg|png)$/i.test(url);
-}
 
 export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefresh }: ReviewListProps) {
     const [docs, setDocs] = useState<DocumentEntry[]>([]);
@@ -40,8 +210,24 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
     const [rejectModal, setRejectModal] = useState<{ docId: string } | null>(null);
     const [rejectReason, setRejectReason] = useState('');
     const [preview, setPreview] = useState<{ url: string; label: string } | null>(null);
+    const [zoom, setZoom] = useState(100);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [activeUploadId, setActiveUploadId] = useState<string | null>(null);
+
+    const zoomIn  = () => setZoom(z => stepZoom(z, 1));
+    const zoomOut = () => setZoom(z => stepZoom(z, -1));
+    const handleZoomChange = (z: number) => setZoom(clampZoom(z));
+
+    // Reset zoom when a new file is opened
+    useEffect(() => { if (preview) setZoom(100); }, [preview?.url]);
+
+    // Close preview on ESC
+    useEffect(() => {
+        if (!preview) return;
+        const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreview(null); };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [preview]);
 
     const loadDocs = useCallback(async () => {
         setLoading(true);
@@ -245,56 +431,76 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
                 </ul>
             </div>
 
-            {/* File preview modal */}
+            {/* File preview modal — no download allowed */}
             {preview && (
                 <div
                     className="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4"
                     onClick={() => setPreview(null)}
+                    onContextMenu={e => e.preventDefault()}
                 >
                     <div
-                        className="bg-white rounded-2xl shadow-2xl w-full max-w-4xl flex flex-col overflow-hidden"
-                        style={{ maxHeight: '90vh' }}
+                        className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl flex flex-col overflow-hidden"
+                        style={{ height: '90vh', minHeight: '80vh' }}
                         onClick={e => e.stopPropagation()}
+                        onContextMenu={e => e.preventDefault()}
+                        onKeyDown={e => {
+                            // Block Ctrl+S / Cmd+S
+                            if ((e.ctrlKey || e.metaKey) && e.key === 's') e.preventDefault();
+                        }}
                     >
                         {/* Modal header */}
-                        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 shrink-0">
-                            <span className="font-semibold text-slate-700 text-sm truncate">{preview.label}</span>
-                            <div className="flex items-center gap-1 ml-4 shrink-0">
-                                <a
-                                    href={preview.url}
-                                    target="_blank"
-                                    rel="noopener noreferrer"
-                                    className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
-                                    title="在新分頁開啟"
-                                >
-                                    <ExternalLink className="w-4 h-4" />
-                                </a>
+                        <div className="flex items-center justify-between px-5 py-3 border-b border-slate-100 shrink-0 gap-4">
+                            <div className="flex items-center gap-2 min-w-0">
+                                <FileText className="w-4 h-4 text-slate-400 shrink-0" />
+                                <span className="font-semibold text-slate-700 text-sm truncate">{preview.label}</span>
+                            </div>
+                            {/* Zoom controls */}
+                            <div className="flex items-center gap-1 shrink-0">
                                 <button
-                                    onClick={() => setPreview(null)}
-                                    className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"
-                                    title="關閉"
+                                    onClick={zoomOut}
+                                    disabled={zoom <= ZOOM_STEPS[0]}
+                                    className="p-1.5 rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-30 transition"
+                                    title="縮小"
                                 >
-                                    <XCircle className="w-5 h-5" />
+                                    <ZoomOut className="w-4 h-4" />
+                                </button>
+                                <button
+                                    onClick={() => setZoom(100)}
+                                    className="px-2.5 py-1 text-xs font-mono font-medium text-slate-600 hover:bg-slate-100 rounded-md transition min-w-[52px] text-center"
+                                    title="重設為 100%"
+                                >
+                                    {zoom}%
+                                </button>
+                                <button
+                                    onClick={zoomIn}
+                                    disabled={zoom >= ZOOM_STEPS[ZOOM_STEPS.length - 1]}
+                                    className="p-1.5 rounded-md text-slate-500 hover:bg-slate-100 disabled:opacity-30 transition"
+                                    title="放大"
+                                >
+                                    <ZoomIn className="w-4 h-4" />
                                 </button>
                             </div>
+                            <button
+                                onClick={() => setPreview(null)}
+                                className="p-1.5 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition shrink-0"
+                                title="關閉"
+                            >
+                                <XCircle className="w-5 h-5" />
+                            </button>
                         </div>
 
-                        {/* Modal content */}
-                        <div className="flex-1 overflow-auto bg-slate-100 flex items-center justify-center min-h-[60vh]">
-                            {isImageUrl(preview.url) ? (
-                                <img
-                                    src={preview.url}
-                                    alt={preview.label}
-                                    className="max-w-full max-h-full object-contain p-4"
-                                />
-                            ) : (
-                                <iframe
-                                    src={preview.url}
-                                    title={preview.label}
-                                    className="w-full border-0"
-                                    style={{ height: '75vh' }}
-                                />
+                        {/* Modal content — flex-1 fills remaining height, overflow-hidden lets children manage their own scroll */}
+                        <div className="flex-1 bg-slate-100 relative" style={{ overflow: 'hidden', minHeight: 0 }}>
+                            {isPdfFile(preview.url) && (
+                                <PdfViewer url={getPreviewUrl(preview.url)} zoom={zoom} label={preview.label} onZoomChange={handleZoomChange} />
                             )}
+                            {isWordFile(preview.url) && (
+                                <DocxViewer fileUrl={preview.url} zoom={zoom} onZoomChange={handleZoomChange} />
+                            )}
+                        </div>
+
+                        <div className="px-5 py-2 border-t border-slate-100 shrink-0 bg-slate-50">
+                            <p className="text-xs text-slate-400 text-center">此文件僅供線上檢視，不支援下載或另存</p>
                         </div>
                     </div>
                 </div>

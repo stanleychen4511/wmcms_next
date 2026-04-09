@@ -11,6 +11,7 @@ import {
     UserCircle,
     LogOut,
     Eye,
+    Save,
 } from 'lucide-react';
 import { RoleSwitcher } from './components/RoleSwitcher';
 import { LoginPage } from './components/LoginPage';
@@ -20,7 +21,7 @@ import { ApplicantHistoryPage } from './components/ApplicantHistoryPage';
 import { NewApplicationPage } from './components/NewApplicationPage';
 import { ReviewList } from './components/ReviewList';
 import { HomeVisitForm } from './components/HomeVisitForm';
-import { NotificationPanel } from './components/NotificationPanel';
+import { NotificationModalTrigger } from './components/NotificationModal';
 import { ApplicationForm } from './components/ApplicationForm';
 import { StageContainer } from './components/StageContainer';
 import { Dashboard } from './components/Dashboard';
@@ -85,6 +86,17 @@ const STAGE_ICON_MAP: Record<WorkflowStage, React.ReactNode> = {
 function App() {
     const [role, setRole] = useState<Role>('case_officer');
     const [loggedInUser, setLoggedInUser] = useState<{ username: string; roles: Role[]; account: string; id: string } | null>(null);
+
+    useEffect(() => {
+        try {
+            const saved = sessionStorage.getItem('loggedInUser');
+            if (saved) {
+                const user = JSON.parse(saved);
+                setLoggedInUser(user);
+                setRole(user.roles[0]);
+            }
+        } catch { /* ignore */ }
+    }, []);
     const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'audit' | 'new_application' | 'admin'>('home');
 
     // Force re-render when store data changes
@@ -128,6 +140,7 @@ function App() {
     });
     // Tracks the latest values from the ApplicationForm for use in eligibility check
     const [liveApplicantValues, setLiveApplicantValues] = useState<any>(null);
+    const [isSavingQualification, setIsSavingQualification] = useState(false);
 
     // DB state for inquiry pages
     const [dbCases, setDbCases] = useState<CaseSummary[]>([]);
@@ -181,6 +194,7 @@ function App() {
     }, [view, selectedPersonId, loadApplicantHistory]);
 
     const handleLogout = () => {
+        sessionStorage.removeItem('loggedInUser');
         setLoggedInUser(null);
         setView('home');
     };
@@ -190,6 +204,7 @@ function App() {
     if (!loggedInUser) {
         return (
             <LoginPage onLogin={(user) => {
+                sessionStorage.setItem('loggedInUser', JSON.stringify(user));
                 setLoggedInUser(user);
                 setRole(user.roles[0]); // Default to first role
                 setView('home');
@@ -336,6 +351,22 @@ function App() {
 
     const workflow = appEntry?.workflow ?? null;
     const { documents = [], applicant = {} as any, auditLog = [] } = workflow ?? {};
+
+    // Build qualification form initial values: DB data takes priority over mock store
+    const qualificationInitialValues = appDetail && (
+        appDetail.age != null ||
+        appDetail.moveableProperty != null ||
+        appDetail.immoveableProperty != null ||
+        appDetail.annualIncome != null
+    ) ? {
+        type: appDetail.maritalStatus === '2' ? 'married' as const : 'single' as const,
+        age: appDetail.age ?? 0,
+        hasMinorChildren: appDetail.hasChildren ?? false,
+        underageChildrenCount: appDetail.underageChildrenCount ?? undefined,
+        annualIncome: appDetail.annualIncome ?? 0,
+        movableAssets: appDetail.moveableProperty ?? 0,
+        realEstateValue: appDetail.immoveableProperty ?? 0,
+    } : applicant;
     const currentStageIndex = STAGES.indexOf(stage);
 
     // Viewed stage (for read-only browsing) — defaults to true stage
@@ -369,6 +400,29 @@ function App() {
         addLog(`執行資格判定: ${result.isEligible ? '符合' : '不符合'}`);
     };
 
+    const handleSaveQualification = async () => {
+        if (!selectedAppId || !liveApplicantValues) return;
+        setIsSavingQualification(true);
+        try {
+            const v = liveApplicantValues;
+            const result = await saveQualificationData(selectedAppId, {
+                age:                    v.age != null ? Number(v.age) : null,
+                moveable_property:      v.movableAssets != null ? Number(v.movableAssets) : null,
+                immoveable_property:    v.realEstateValue != null ? Number(v.realEstateValue) : null,
+                annual_income:          v.annualIncome != null ? Number(v.annualIncome) : null,
+                marital_status:         v.type === 'married' ? '2' : v.type === 'single' ? '1' : null,
+                has_children:           v.hasMinorChildren ?? null,
+                underage_children_count: v.hasMinorChildren && v.underageChildrenCount != null
+                                            ? Number(v.underageChildrenCount) : null,
+            });
+            if (result.success) {
+                addLog('儲存資格預審資料');
+            }
+        } finally {
+            setIsSavingQualification(false);
+        }
+    };
+
     /**
      * Advance the TRUE workflow stage by one step with DB write.
      */
@@ -380,12 +434,14 @@ function App() {
                 if (stage === 'application' && liveApplicantValues) {
                     const v = liveApplicantValues;
                     await saveQualificationData(selectedAppId, {
-                        age:                  v.age != null ? Number(v.age) : null,
-                        moveable_property:    v.movableAssets != null ? Number(v.movableAssets) : null,
-                        immoveable_property:  v.realEstateValue != null ? Number(v.realEstateValue) : null,
-                        annual_income:        v.annualIncome != null ? Number(v.annualIncome) : null,
-                        marital_status:       v.type === 'married' ? '2' : v.type === 'single' ? '1' : null,
-                        has_children:         v.hasMinorChildren ?? null,
+                        age:                    v.age != null ? Number(v.age) : null,
+                        moveable_property:      v.movableAssets != null ? Number(v.movableAssets) : null,
+                        immoveable_property:    v.realEstateValue != null ? Number(v.realEstateValue) : null,
+                        annual_income:          v.annualIncome != null ? Number(v.annualIncome) : null,
+                        marital_status:         v.type === 'married' ? '2' : v.type === 'single' ? '1' : null,
+                        has_children:           v.hasMinorChildren ?? null,
+                        underage_children_count: v.hasMinorChildren && v.underageChildrenCount != null
+                                                    ? Number(v.underageChildrenCount) : null,
                     });
                 }
                 await advanceWorkflowStage(
@@ -435,12 +491,13 @@ function App() {
                 return (
                     <div className="space-y-6">
                         <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative">
+
                             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
                                 <ClipboardList className="w-5 h-5 text-blue-600" />
                                 資格預審
                             </h3>
                             <ApplicationForm
-                                initialValues={applicant}
+                                initialValues={qualificationInitialValues}
                                 readOnly={contentReadOnly || (!hasPermission('board_member') && !hasPermission('admin') && (role === 'board_member' || role === 'accountant'))}
                                 onValidation={(_isValid, values) => {
                                     // Always track the latest form values for eligibility check
@@ -453,13 +510,25 @@ function App() {
                                 }}
                             />
                             {!contentReadOnly && (
-                                <div className="mt-6 border-t pt-4">
+                                <div className="mt-6 border-t pt-4 flex items-center gap-3">
                                     <button
                                         onClick={checkEligibilityAction}
                                         className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition flex items-center gap-2"
                                     >
                                         <ShieldCheck className="w-4 h-4" />
                                         執行資格判定
+                                    </button>
+                                    <button
+                                        onClick={handleSaveQualification}
+                                        disabled={isSavingQualification}
+                                        className="bg-gray-600 text-white px-4 py-2 rounded-md hover:bg-gray-700 transition flex items-center gap-2 disabled:opacity-50"
+                                    >
+                                        {isSavingQualification ? (
+                                            <div className="w-4 h-4 border-2 border-white border-t-transparent rounded-full animate-spin" />
+                                        ) : (
+                                            <Save className="w-4 h-4" />
+                                        )}
+                                        儲存
                                     </button>
                                 </div>
                             )}
@@ -547,14 +616,16 @@ function App() {
 
             case 'reimbursement':
                 return (
-                    <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-                        <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-                            <CreditCard className="w-5 h-5 text-emerald-600" />
-                            核銷撥款
-                        </h3>
-                        <div className="flex items-center justify-between p-4 bg-emerald-50 rounded-lg text-emerald-900">
-                            <span className="font-medium">撥款狀態</span>
-                            <span className="bg-emerald-200 text-emerald-800 px-3 py-1 rounded-full text-sm font-bold">待撥款</span>
+                    <div className="space-y-6">
+                        <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
+                            <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                                <CreditCard className="w-5 h-5 text-emerald-600" />
+                                核銷撥款
+                            </h3>
+                            <div className="flex items-center justify-between p-4 bg-emerald-50 rounded-lg text-emerald-900">
+                                <span className="font-medium">撥款狀態</span>
+                                <span className="bg-emerald-200 text-emerald-800 px-3 py-1 rounded-full text-sm font-bold">待撥款</span>
+                            </div>
                         </div>
                     </div>
                 );
@@ -654,6 +725,18 @@ function App() {
                             })}
                         </div>
                     </div>
+
+                    {/* Standalone Notification Button */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex justify-center">
+                        <NotificationModalTrigger
+                            applicantName={personName}
+                            stageName={STAGE_LABEL_MAP[stage]}
+                            onSend={(channels, message) => {
+                                alert(`已發送通知至: ${channels.join(', ')}${message ? `\n內容: ${message}` : ''}`);
+                                addLog(`發送通知至: ${channels.join(', ')}`);
+                            }}
+                        />
+                    </div>
                 </div>
 
                 {/* Content Area */}
@@ -683,30 +766,11 @@ function App() {
 
                     {/* Flow Controls */}
                     <div className="bg-white p-4 rounded-lg border border-gray-200">
-                        <div className="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
-                            <div>
-                                <span className="text-sm font-medium text-gray-600">流程控制</span>
-                                <p className="text-xs text-gray-400 mt-0.5">
-                                    目前進度：<span className="font-medium text-slate-600">{STAGE_LABEL_MAP[stage]}</span>
-                                </p>
-                                {isViewingPastStep && (
-                                    <p className="text-xs text-amber-500 mt-0.5">請先返回目前步驟再操作流程</p>
-                                )}
-                            </div>
+                        <div className="flex flex-col sm:flex-row justify-end items-start sm:items-center gap-4">
+                            {isViewingPastStep && (
+                                <p className="text-xs text-amber-500">請先返回目前步驟再操作流程</p>
+                            )}
                             <div className="flex gap-2 items-center">
-                                {hasPermission('admin') && (
-                                    <button
-                                        onClick={() => {
-                                            if (confirm('確定要重置所有資料嗎？')) {
-                                                localStorage.removeItem('wmcms_state_v1');
-                                                window.location.reload();
-                                            }
-                                        }}
-                                        className="text-red-500 hover:text-red-700 px-4 py-2 text-sm font-medium transition"
-                                    >
-                                        重置系統
-                                    </button>
-                                )}
                                 <button
                                     onClick={handleRetreatStage}
                                     disabled={currentStageIndex === 0 || isViewingPastStep}
@@ -733,15 +797,6 @@ function App() {
                         </div>
                     </div>
 
-                    {/* Notification Module */}
-                    <NotificationPanel
-                        applicantName={personName}
-                        stageName={STAGE_LABEL_MAP[stage]}
-                        onSend={(channels, message) => {
-                            alert(`已發送通知至: ${channels.join(', ')}${message ? `\n內容: ${message}` : ''}`);
-                            addLog(`發送通知至: ${channels.join(', ')}`);
-                        }}
-                    />
                 </div>
             </main>
         </div>

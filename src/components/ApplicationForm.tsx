@@ -14,6 +14,7 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false 
     const {
         register,
         watch,
+        setValue,
         formState: { errors, isValid }
     } = useForm<ApplicantFormValues>({
         // @ts-ignore - known issue with zodResolver type inference for optional defaults
@@ -22,7 +23,13 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false 
         mode: 'onChange'
     });
 
-    const values = watch();
+    const hasMinorChildren = watch('hasMinorChildren');
+
+    useEffect(() => {
+        if (!hasMinorChildren) {
+            setValue('underageChildrenCount', 0);
+        }
+    }, [hasMinorChildren, setValue]);
 
     useEffect(() => {
         // Notify parent about current values and validity whenever they change
@@ -36,9 +43,10 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false 
 
     return (
         <form className="space-y-4">
-            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
-                {/* Applicant Type */}
-                <div>
+            {/* Row 1: 申請類別 | 育有未成年子女 | 未成年子女人數 */}
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                {/* Applicant Type — col 1 */}
+                <div className="md:col-span-1">
                     <label className="block text-sm font-medium text-gray-700">申請類別</label>
                     <select
                         {...register('type')}
@@ -51,22 +59,50 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false 
                     {errors.type && <p className="text-red-500 text-xs mt-1">{errors.type.message}</p>}
                 </div>
 
-                {/* Minor Children Checkbox (Always visible) */}
-                <div className="flex items-center pt-4 md:pt-8 min-h-[64px]">
-                    <input
-                        type="checkbox"
-                        id="hasMinor"
-                        {...register('hasMinorChildren')}
-                        disabled={readOnly}
-                        className="rounded text-blue-600 focus:ring-blue-500 mr-2 h-4 w-4"
-                    />
-                    <label htmlFor="hasMinor" className="text-sm font-medium text-gray-700 select-none">
-                        育有未成年子女
-                    </label>
+                {/* Minor Children Checkbox — col 2 */}
+                <div className="flex flex-col justify-end pb-1">
+                    <div className="flex items-center h-[38px]">
+                        <input
+                            type="checkbox"
+                            id="hasMinor"
+                            {...register('hasMinorChildren')}
+                            disabled={readOnly}
+                            className="rounded text-blue-600 focus:ring-blue-500 mr-2 h-4 w-4"
+                        />
+                        <label htmlFor="hasMinor" className="text-sm font-medium text-gray-700 select-none whitespace-nowrap">
+                            育有未成年子女
+                        </label>
+                    </div>
+                    {errors.hasMinorChildren && (
+                        <p className="text-red-500 text-xs">{errors.hasMinorChildren.message}</p>
+                    )}
                 </div>
-                {errors.hasMinorChildren && (
-                    <p className="col-span-2 text-red-500 text-xs">{errors.hasMinorChildren.message}</p>
-                )}
+
+                {/* Underage Children Count — col 3-4 (right half) */}
+                <div className="md:col-span-2">
+                    <label className="block text-sm font-medium text-gray-700">未成年子女人數</label>
+                    <input
+                        type="number"
+                        {...register('underageChildrenCount')}
+                        disabled={readOnly || !hasMinorChildren}
+                        min={0}
+                        placeholder={hasMinorChildren ? '' : '—'}
+                        className={clsx(
+                            "mt-1 block w-full rounded-md shadow-sm p-2 border",
+                            !hasMinorChildren
+                                ? "bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed"
+                                : errors.underageChildrenCount
+                                    ? "border-red-300 focus:border-red-500 focus:ring-red-500"
+                                    : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                        )}
+                    />
+                    {errors.underageChildrenCount && (
+                        <p className="text-red-500 text-xs mt-1">{errors.underageChildrenCount.message}</p>
+                    )}
+                </div>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
 
                 {/* Age */}
                 <div>

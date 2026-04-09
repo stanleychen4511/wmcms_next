@@ -4,6 +4,7 @@ export const applicantSchema = z.object({
     type: z.enum(['married', 'single']),
     age: z.coerce.number().min(0, "年齡不能為負數"),
     hasMinorChildren: z.boolean().default(false),
+    underageChildrenCount: z.coerce.number().min(0, "人數不能為負數").optional(),
     annualIncome: z.coerce.number().min(0, "年收入不能為負數"),
     movableAssets: z.coerce.number().min(0, "動產不能為負數"),
     realEstateValue: z.coerce.number().min(0, "不動產不能為負數"),

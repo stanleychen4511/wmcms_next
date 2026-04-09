@@ -19,6 +19,14 @@ export interface ApplicationDetail {
     officerName?: string;
     applyAt?: string;
     createdAt?: string;
+    // Qualification pre-screening fields
+    age?: number | null;
+    moveableProperty?: number | null;
+    immoveableProperty?: number | null;
+    annualIncome?: number | null;
+    maritalStatus?: string | null;
+    hasChildren?: boolean | null;
+    underageChildrenCount?: number | null;
 }
 
 // Guard: mock store IDs look like 'app-001-a', real DB IDs are numeric UUIDs or bigints.
@@ -34,8 +42,10 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
     try {
         // Join with application_workflow to get the ACTUAL current stage
         const res = await client.query(`
-            SELECT 
+            SELECT
                 a.id, a.case_number, a.status, a.apply_at, a.created_at,
+                a.age, a.moveable_property, a.immoveable_property,
+                a.annual_income, a.marital_status, a.has_children, a.underage_children_count,
                 w.stage as wf_stage,
                 u_app.name_enc as app_name_enc, u_app.name_iv  as app_name_iv,
                 u_off.name_enc as off_name_enc, u_off.name_iv  as off_name_iv
@@ -76,6 +86,13 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             officerName,
             applyAt: row.apply_at ? new Date(row.apply_at).toISOString().split('T')[0] : undefined,
             createdAt: row.created_at ? row.created_at.toISOString() : undefined,
+            age: row.age != null ? Number(row.age) : null,
+            moveableProperty: row.moveable_property != null ? Number(row.moveable_property) : null,
+            immoveableProperty: row.immoveable_property != null ? Number(row.immoveable_property) : null,
+            annualIncome: row.annual_income != null ? Number(row.annual_income) : null,
+            maritalStatus: row.marital_status ?? null,
+            hasChildren: row.has_children ?? null,
+            underageChildrenCount: row.underage_children_count != null ? Number(row.underage_children_count) : null,
         };
     } finally {
         client.release();
@@ -149,6 +166,7 @@ export interface QualificationData {
     annual_income?: number | null;
     marital_status?: string | null;  // '1' = 單身, '2' = 已婚
     has_children?: boolean | null;
+    underage_children_count?: number | null;
 }
 
 /**
@@ -164,14 +182,15 @@ export async function saveQualificationData(
     try {
         await client.query(
             `UPDATE applications
-             SET age                = $1,
-                 moveable_property  = $2,
-                 immoveable_property = $3,
-                 annual_income      = $4,
-                 marital_status     = $5,
-                 has_children       = $6,
-                 updated_at         = NOW()
-             WHERE id = $7`,
+             SET age                    = $1,
+                 moveable_property      = $2,
+                 immoveable_property    = $3,
+                 annual_income          = $4,
+                 marital_status         = $5,
+                 has_children           = $6,
+                 underage_children_count = $7,
+                 updated_at             = NOW()
+             WHERE id = $8`,
             [
                 data.age ?? null,
                 data.moveable_property ?? null,
@@ -179,6 +198,7 @@ export async function saveQualificationData(
                 data.annual_income ?? null,
                 data.marital_status ?? null,
                 data.has_children ?? null,
+                data.underage_children_count ?? null,
                 applicationId,
             ]
         );
