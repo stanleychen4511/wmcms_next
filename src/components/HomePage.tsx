@@ -17,6 +17,7 @@ import {
     UserCircle,
     LogOut,
     Settings,
+    Inbox,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { Role } from '../types';
@@ -123,6 +124,13 @@ const QUICK_LINKS = [
         desc: '帳號管理與系統設定',
         color: 'bg-slate-800 text-slate-300 border-slate-700',
         action: 'admin',
+    },
+    {
+        icon: <Inbox className="w-4 h-4" />,
+        label: '外部收件',
+        desc: '開啟線上補助申請收件頁面',
+        color: 'bg-teal-50 text-teal-600 border-teal-100',
+        action: 'external_intake',
     },
 ];
 
@@ -332,7 +340,7 @@ export function HomePage({ username, userRoles, onNavigateToCases, onGoAudit, on
                         <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider">快速功能</h3>
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-1 gap-2 sm:gap-3">
                             {QUICK_LINKS.map((link, idx) => {
-                                const hasAccess = 
+                                const hasAccess =
                                     link.action === 'new_application' ? (userRoles.includes('case_officer') || userRoles.includes('admin')) :
                                     link.action === 'admin' ? userRoles.includes('admin') :
                                     link.action === 'audit' ? userRoles.includes('admin') :
@@ -343,7 +351,8 @@ export function HomePage({ username, userRoles, onNavigateToCases, onGoAudit, on
                                         (link.action === 'cases' && hasAccess) ? onNavigateToCases :
                                             (link.action === 'audit' && hasAccess) ? onGoAudit :
                                                 (link.action === 'admin' && hasAccess) ? onGoAdmin :
-                                                    undefined;
+                                                    link.action === 'external_intake' ? () => window.open('/apply', '_blank') :
+                                                        undefined;
                                 return (
                                     <button
                                         key={idx}

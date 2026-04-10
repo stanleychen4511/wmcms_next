@@ -12,6 +12,7 @@ export interface DocumentEntry {
     rejectReason?: string;
     uploadedAt?: string;
     isRequired: boolean;
+    phase?: string; // 'apply' | 'reimbursement'
 }
 
 /**
@@ -47,15 +48,17 @@ export async function uploadApplicationDocument(
     const file = formData.get('file') as File;
     if (!file) return { success: false, error: '未提供檔案' };
 
-    const ALLOWED_EXTS = ['.pdf', '.doc', '.docx'];
+    const ALLOWED_EXTS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png'];
     const ALLOWED_MIME = [
         'application/pdf',
         'application/msword',
         'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'image/jpeg',
+        'image/png',
     ];
     const ext = path.extname(file.name).toLowerCase();
     if (!ALLOWED_EXTS.includes(ext) || !ALLOWED_MIME.includes(file.type)) {
-        return { success: false, error: '僅接受 PDF 或 Word 檔案（.pdf、.doc、.docx）' };
+        return { success: false, error: '僅接受 PDF、Word 或圖片檔案（.pdf、.doc、.docx、.jpg、.png）' };
     }
 
     try {
@@ -153,6 +156,11 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
         { id: '9',  label: '集保結算所資料', phase: 'apply', isRequired: false },
         { id: '10', label: '購屋貸款利息單據', phase: 'apply', isRequired: false },
         { id: '5',  label: '現職醫事人員在職證明', phase: 'apply', isRequired: false },
+        // 核銷撥款階段文件 (id 17-20)
+        { id: '17', label: '醫療收據', phase: 'reimbursement', isRequired: true },
+        { id: '18', label: '領款收據', phase: 'reimbursement', isRequired: true },
+        { id: '19', label: '保險給付通知單', phase: 'reimbursement', isRequired: false },
+        { id: '20', label: '生命故事同意刊登截圖證明', phase: 'reimbursement', isRequired: false },
     ];
 
     const client = await pool.connect();
@@ -175,15 +183,16 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                     fileUrl: row.file_path,
                     rejectReason: row.reject_reason,
                     uploadedAt: row.uploaded_at ? row.uploaded_at.toISOString() : undefined,
-                    isRequired: doc.isRequired
+                    isRequired: doc.isRequired,
+                    phase: doc.phase,
                 };
             }
-            // Not in DB yet — status '0' = 待上傳/未符合
             return {
                 id: doc.id,
                 label: doc.label,
                 status: '0' as const,
-                isRequired: doc.isRequired
+                isRequired: doc.isRequired,
+                phase: doc.phase,
             };
         });
 

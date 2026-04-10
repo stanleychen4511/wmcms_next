@@ -10,22 +10,34 @@ import { AppState } from '../utils/storage';
 interface DashboardProps {
     state: AppState;
     applicantName: string;
+    /** DB-driven: total uploaded docs */
+    dbTotalDocs?: number;
+    /** DB-driven: docs with status '1' (符合) */
+    dbVerifiedDocs?: number;
+    /** DB-driven: annual income from applications table */
+    dbAnnualIncome?: number | null;
 }
 
-export function Dashboard({ state, applicantName }: DashboardProps) {
+export function Dashboard({ state, applicantName, dbTotalDocs, dbVerifiedDocs, dbAnnualIncome }: DashboardProps) {
     const stats = useMemo(() => {
-        const verifiedDocs = state.documents.filter(d => d.status === 'verified').length;
-        const totalDocs = state.documents.length;
-        const completionRate = Math.round((verifiedDocs / totalDocs) * 100);
+        // Use DB doc counts if available, else fall back to mock store
+        const verifiedDocs = dbVerifiedDocs !== undefined
+            ? dbVerifiedDocs
+            : state.documents.filter(d => d.status === 'verified').length;
+        const totalDocs = dbTotalDocs !== undefined
+            ? dbTotalDocs
+            : state.documents.length;
+        const completionRate = totalDocs > 0 ? Math.round((verifiedDocs / totalDocs) * 100) : 0;
 
         return {
             verifiedDocs,
             totalDocs,
             completionRate,
-            applicantIncome: state.applicant.annualIncome,
+            applicantIncome: dbAnnualIncome !== undefined && dbAnnualIncome !== null
+                ? dbAnnualIncome
+                : state.applicant.annualIncome,
             stageName: (() => {
                 switch (state.stage) {
-                    case 'application': return '申請收件';
                     case 'admin_review': return '行政初審';
                     case 'visit': return '家庭訪視';
                     case 'board_review': return '董事審核';
@@ -34,7 +46,7 @@ export function Dashboard({ state, applicantName }: DashboardProps) {
                 }
             })()
         };
-    }, [state]);
+    }, [state, dbTotalDocs, dbVerifiedDocs, dbAnnualIncome]);
 
     return (
         <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-4 mb-6">

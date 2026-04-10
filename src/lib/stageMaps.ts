@@ -1,21 +1,19 @@
 // Stage mapping constants per 需求規格書
 // ============================================================
 // applications.status VARCHAR(1):
-//   1 = 審核中   (案件在申請收件或行政初審中)
-//   2 = 審核未通過
-//   3 = 審核通過  (行政初審通過，進入家訪)
-//   4 = 待補助    (家訪通過，進入董事審選/核銷)
-//   5 = 補助完成
+//   1 = 審核中        (案件進行中，尚未結案)
+//   2 = 審核未通過(結案) (董事審核不通過，案件終止)
+//   3 = 待核銷        (董事審核通過，等待會計撥款核銷)
+//   4 = 核銷完成(結案) (核銷完成，案件結束)
 //
 // application_workflow.stage VARCHAR(20) — DB 儲存的英文 key:
-//   'apply'         = 申請收件
 //   'admin_review'  = 行政初審
 //   'home_visit'    = 家庭訪視
 //   'board_review'  = 董事審選
 //   'reimbursement' = 核銷撥款
 //
 // Front-end WorkflowStage keys (App.tsx STAGES array):
-//   'application' | 'admin_review' | 'visit' | 'board_review' | 'reimbursement'
+//   'admin_review' | 'visit' | 'board_review' | 'reimbursement'
 //
 // application_workflow.is_approved BOOLEAN:
 //   NULL  = 尚未審核
@@ -30,7 +28,7 @@
 
 // DB workflow.stage → front-end WorkflowStage key
 export const DB_STAGE_TO_FRONTEND: Record<string, string> = {
-    'apply':         'application',
+    'apply':         'admin_review', // legacy: 'apply' maps to merged 行政初審
     'admin_review':  'admin_review',
     'home_visit':    'visit',
     'board_review':  'board_review',
@@ -39,21 +37,18 @@ export const DB_STAGE_TO_FRONTEND: Record<string, string> = {
 
 // front-end WorkflowStage key → DB workflow.stage string
 export const FRONTEND_TO_DB_STAGE: Record<string, string> = {
-    'application':  'apply',
     'admin_review': 'admin_review',
     'visit':        'home_visit',
     'board_review': 'board_review',
     'reimbursement':'reimbursement',
 };
 
-// front-end WorkflowStage key → applications.status code when ADVANCING forward
-// Retreating always keeps/uses '1' for 申請收件/行政初審, or '2' for any rejection
+// front-end WorkflowStage key → applications.status when ADVANCING (board_review approved path)
 export const ADVANCE_STAGE_TO_STATUS: Record<string, string> = {
-    'application':  '1', // 送件後 → 審核中
     'admin_review': '1', // 行政初審 → 審核中
-    'visit':        '3', // 家訪 → 審核通過
-    'board_review': '4', // 董事審選 → 待補助
-    'reimbursement':'5', // 核銷 → 補助完成
+    'visit':        '1', // 家庭訪視 → 審核中
+    'board_review': '3', // 董事審核通過 → 待核銷
+    'reimbursement':'4', // 核銷完成 → 結案
 };
 
 // Alias for backward compat
@@ -63,14 +58,12 @@ export const STAGE_TO_STATUS = ADVANCE_STAGE_TO_STATUS;
 export const STATUS_LABEL: Record<string, string> = {
     '1': '審核中',
     '2': '審核未通過',
-    '3': '審核通過',
-    '4': '待補助',
-    '5': '補助完成',
+    '3': '待核銷',
+    '4': '核銷完成',
 };
 
 // WorkflowStage → human-readable Chinese label
 export const STAGE_LABEL: Record<string, string> = {
-    'application':  '申請收件',
     'admin_review': '行政初審',
     'visit':        '家庭訪視',
     'board_review': '董事審選',
@@ -84,11 +77,9 @@ export const DOC_STATUS_LABEL: Record<string, string> = {
     '2': '逾期',
 };
 
-// Legacy alias kept so existing imports don't break
 export const STATUS_TO_STAGE: Record<string, string> = {
     '1': 'admin_review',
-    '2': 'admin_review',
-    '3': 'visit',
-    '4': 'board_review',
-    '5': 'reimbursement',
+    '2': 'admin_review', // 結案但仍顯示最後停留階段
+    '3': 'reimbursement',
+    '4': 'reimbursement',
 };

@@ -5,11 +5,11 @@ export const MOCK_CASES: CaseSummary[] = [
     { id: 'person-002', applicantName: '王小芬', applicationCount: 2, totalAmount: 18000, appliedAt: '2026-01-10', stage: 'visit', officer: '林志明' },
     { id: 'person-003', applicantName: '李建國', applicationCount: 1, totalAmount: 0, appliedAt: '2025-11-20', stage: 'visit', officer: '黃美玲' },
     { id: 'person-004', applicantName: '張淑惠', applicationCount: 1, totalAmount: 0, appliedAt: '2025-12-01', stage: 'admin_review', officer: '黃美玲' },
-    { id: 'person-005', applicantName: '劉俊傑', applicationCount: 1, totalAmount: 0, appliedAt: '2025-12-15', stage: 'application', officer: '陳雅婷' },
+    { id: 'person-005', applicantName: '劉俊傑', applicationCount: 1, totalAmount: 0, appliedAt: '2025-12-15', stage: 'admin_review', officer: '陳雅婷' },
     { id: 'person-006', applicantName: '吳秀英', applicationCount: 2, totalAmount: 22000, appliedAt: '2026-02-03', stage: 'admin_review', officer: '陳雅婷' },
-    { id: 'person-007', applicantName: '蔡志豪', applicationCount: 1, totalAmount: 0, appliedAt: '2026-01-18', stage: 'application', officer: '林志明' },
-    { id: 'person-008', applicantName: '林美華', applicationCount: 1, totalAmount: 0, appliedAt: '2026-02-02', stage: 'application', officer: '黃美玲' },
-    { id: 'person-009', applicantName: '趙志遠', applicationCount: 1, totalAmount: 0, appliedAt: '2026-02-10', stage: 'application', officer: '系統管理員' },
+    { id: 'person-007', applicantName: '蔡志豪', applicationCount: 1, totalAmount: 0, appliedAt: '2026-01-18', stage: 'admin_review', officer: '林志明' },
+    { id: 'person-008', applicantName: '林美華', applicationCount: 1, totalAmount: 0, appliedAt: '2026-02-02', stage: 'admin_review', officer: '黃美玲' },
+    { id: 'person-009', applicantName: '趙志遠', applicationCount: 1, totalAmount: 0, appliedAt: '2026-02-10', stage: 'admin_review', officer: '系統管理員' },
     { id: 'person-010', applicantName: '許雅筑', applicationCount: 1, totalAmount: 0, appliedAt: '2026-02-14', stage: 'admin_review', officer: '系統管理員' },
     { id: 'person-011', applicantName: '鄭家豪', applicationCount: 2, totalAmount: 15000, appliedAt: '2026-03-01', stage: 'reimbursement', officer: '系統管理員' },
 ];
@@ -32,20 +32,20 @@ export const MOCK_APPLICATION_RECORDS: ApplicationRecord[] = [
     { id: 'app-004-a', applicantId: 'person-004', applicantName: '張淑惠', appliedAt: '2025-12-01', stage: 'admin_review', officer: '黃美玲', status: 'active' },
 
     // 劉俊傑 — 1 application
-    { id: 'app-005-a', applicantId: 'person-005', applicantName: '劉俊傑', appliedAt: '2025-12-15', stage: 'application', officer: '陳雅婷', status: 'active' },
+    { id: 'app-005-a', applicantId: 'person-005', applicantName: '劉俊傑', appliedAt: '2025-12-15', stage: 'admin_review', officer: '陳雅婷', status: 'active' },
 
     // 吳秀英 — 2 applications
     { id: 'app-006-a', applicantId: 'person-006', applicantName: '吳秀英', appliedAt: '2024-11-20', stage: 'reimbursement', officer: '陳雅婷', status: 'closed', closedReason: '核准補助', amount: 22000 },
     { id: 'app-006-b', applicantId: 'person-006', applicantName: '吳秀英', appliedAt: '2026-02-03', stage: 'admin_review', officer: '陳雅婷', status: 'active' },
 
     // 蔡志豪 — 1 application
-    { id: 'app-007-a', applicantId: 'person-007', applicantName: '蔡志豪', appliedAt: '2026-01-18', stage: 'application', officer: '林志明', status: 'active' },
+    { id: 'app-007-a', applicantId: 'person-007', applicantName: '蔡志豪', appliedAt: '2026-01-18', stage: 'admin_review', officer: '林志明', status: 'active' },
 
     // 林美華 — 1 application
-    { id: 'app-008-a', applicantId: 'person-008', applicantName: '林美華', appliedAt: '2026-02-02', stage: 'application', officer: '黃美玲', status: 'active' },
+    { id: 'app-008-a', applicantId: 'person-008', applicantName: '林美華', appliedAt: '2026-02-02', stage: 'admin_review', officer: '黃美玲', status: 'active' },
 
     // 趙志遠 — 1 application
-    { id: 'app-009-a', applicantId: 'person-009', applicantName: '趙志遠', appliedAt: '2026-02-10', stage: 'application', officer: '系統管理員', status: 'active' },
+    { id: 'app-009-a', applicantId: 'person-009', applicantName: '趙志遠', appliedAt: '2026-02-10', stage: 'admin_review', officer: '系統管理員', status: 'active' },
 
     // 許雅筑 — 1 application
     { id: 'app-010-a', applicantId: 'person-010', applicantName: '許雅筑', appliedAt: '2026-02-14', stage: 'admin_review', officer: '系統管理員', status: 'active' },

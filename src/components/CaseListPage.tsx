@@ -1,4 +1,4 @@
-import { useState, useMemo } from 'react';
+import { useState, useMemo, useEffect } from 'react';
 import { Search, ChevronRight, FileText, ArrowUpDown, UserCircle, LogOut } from 'lucide-react';
 import { CaseSummary, WorkflowStage } from '../types';
 
@@ -13,7 +13,6 @@ interface CaseListPageProps {
 }
 
 const STAGE_LABELS: Record<WorkflowStage, string> = {
-    application: '申請收件',
     admin_review: '行政初審',
     visit: '家庭訪視',
     board_review: '董事審核',
@@ -21,19 +20,50 @@ const STAGE_LABELS: Record<WorkflowStage, string> = {
 };
 
 const STAGE_COLORS: Record<WorkflowStage, string> = {
-    application: 'bg-blue-100 text-blue-700',
     admin_review: 'bg-yellow-100 text-yellow-700',
     visit: 'bg-indigo-100 text-indigo-700',
     board_review: 'bg-purple-100 text-purple-700',
     reimbursement: 'bg-green-100 text-green-700',
 };
 
+function getMonthRange(): { first: string; last: string } {
+    const now = new Date();
+    const y = now.getFullYear();
+    const m = now.getMonth(); // 0-based
+    const first = new Date(y, m, 1);
+    const last  = new Date(y, m + 1, 0); // day 0 of next month = last day of current month
+    const fmt = (d: Date) => d.toISOString().split('T')[0];
+    return { first: fmt(first), last: fmt(last) };
+}
+
+const FILTER_STORAGE_KEY = 'caseListFilters';
+
+function loadSavedFilters() {
+    try {
+        const raw = sessionStorage.getItem(FILTER_STORAGE_KEY);
+        if (raw) return JSON.parse(raw);
+    } catch { /* ignore */ }
+    return null;
+}
+
 export function CaseListPage({ username, cases, allOfficers, isLoading, onSelectCase, onLogout, onGoHome }: CaseListPageProps) {
-    const [nameQuery, setNameQuery] = useState('');
-    const [dateFrom, setDateFrom] = useState('');
-    const [dateTo, setDateTo] = useState('');
-    const [stageFilter, setStageFilter] = useState<WorkflowStage | ''>('');
-    const [officerFilter, setOfficerFilter] = useState(''); // Default to All
+    const { first, last } = getMonthRange();
+    const saved = loadSavedFilters();
+
+    const [nameQuery,     setNameQuery]     = useState<string>(saved?.nameQuery     ?? '');
+    const [dateFrom,      setDateFrom]      = useState<string>(saved?.dateFrom      ?? first);
+    const [dateTo,        setDateTo]        = useState<string>(saved?.dateTo        ?? last);
+    const [stageFilter,   setStageFilter]   = useState<WorkflowStage | ''>(saved?.stageFilter   ?? '');
+    const [officerFilter, setOfficerFilter] = useState<string>(saved?.officerFilter ?? '');
+
+    // Persist filter state to sessionStorage whenever it changes
+    useEffect(() => {
+        try {
+            sessionStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({
+                nameQuery, dateFrom, dateTo, stageFilter, officerFilter,
+            }));
+        } catch { /* ignore */ }
+    }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter]);
 
 
     const filteredCases = useMemo(() => {

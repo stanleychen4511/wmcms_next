@@ -10,7 +10,7 @@ export interface UserAccount {
 }
 
 
-export type WorkflowStage = 'application' | 'admin_review' | 'visit' | 'board_review' | 'reimbursement';
+export type WorkflowStage = 'admin_review' | 'visit' | 'board_review' | 'reimbursement';
 
 export interface CaseSummary {
     id: string;

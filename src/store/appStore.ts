@@ -69,20 +69,20 @@ let _applications: ApplicationEntry[] = [
     { id: 'app-004-a', applicantId: 'person-004', applicantName: '張淑惠', appliedAt: '2025-12-01', stage: 'admin_review', officer: '黃美玲', status: 'active', workflow: defaultWorkflow() },
 
     // 劉俊傑 — 1 application
-    { id: 'app-005-a', applicantId: 'person-005', applicantName: '劉俊傑', appliedAt: '2025-12-15', stage: 'application', officer: '陳雅婷', status: 'active', workflow: defaultWorkflow() },
+    { id: 'app-005-a', applicantId: 'person-005', applicantName: '劉俊傑', appliedAt: '2025-12-15', stage: 'admin_review', officer: '陳雅婷', status: 'active', workflow: defaultWorkflow() },
 
     // 吳秀英 — 2 applications
     { id: 'app-006-a', applicantId: 'person-006', applicantName: '吳秀英', appliedAt: '2024-11-20', stage: 'reimbursement', officer: '陳雅婷', status: 'closed', closedReason: '核准補助', amount: 22000 },
     { id: 'app-006-b', applicantId: 'person-006', applicantName: '吳秀英', appliedAt: '2026-02-03', stage: 'admin_review', officer: '陳雅婷', status: 'active', workflow: defaultWorkflow() },
 
     // 蔡志豪 — 1 application
-    { id: 'app-007-a', applicantId: 'person-007', applicantName: '蔡志豪', appliedAt: '2026-01-18', stage: 'application', officer: '林志明', status: 'active', workflow: defaultWorkflow() },
+    { id: 'app-007-a', applicantId: 'person-007', applicantName: '蔡志豪', appliedAt: '2026-01-18', stage: 'admin_review', officer: '林志明', status: 'active', workflow: defaultWorkflow() },
 
     // 林美華 — 1 application
-    { id: 'app-008-a', applicantId: 'person-008', applicantName: '林美華', appliedAt: '2026-02-02', stage: 'application', officer: '黃美玲', status: 'active', workflow: defaultWorkflow() },
+    { id: 'app-008-a', applicantId: 'person-008', applicantName: '林美華', appliedAt: '2026-02-02', stage: 'admin_review', officer: '黃美玲', status: 'active', workflow: defaultWorkflow() },
 
     // 趙志遠 — 1 application
-    { id: 'app-009-a', applicantId: 'person-009', applicantName: '趙志遠', appliedAt: '2026-02-10', stage: 'application', officer: '系統管理員', status: 'active', workflow: defaultWorkflow() },
+    { id: 'app-009-a', applicantId: 'person-009', applicantName: '趙志遠', appliedAt: '2026-02-10', stage: 'admin_review', officer: '系統管理員', status: 'active', workflow: defaultWorkflow() },
 
     // 許雅筑 — 1 application
     { id: 'app-010-a', applicantId: 'person-010', applicantName: '許雅筑', appliedAt: '2026-02-14', stage: 'admin_review', officer: '系統管理員', status: 'active', workflow: defaultWorkflow() },
@@ -157,7 +157,7 @@ export function getCaseSummaries(): CaseSummary[] {
             applicationCount: apps.length,
             totalAmount,
             appliedAt: active?.appliedAt ?? apps[apps.length - 1]?.appliedAt ?? '',
-            stage: (active?.stage ?? apps[apps.length - 1]?.stage ?? 'application') as WorkflowStage,
+            stage: (active?.stage ?? apps[apps.length - 1]?.stage ?? 'admin_review') as WorkflowStage,
             officer: active?.officer ?? PERSON_META[personId].officer,
         };
     });
@@ -257,7 +257,7 @@ export function addNewApplication(
         applicantId: personId,
         applicantName: name,
         appliedAt: today,
-        stage: 'application',
+        stage: 'admin_review',
         officer,
         status: 'active',
         workflow: defaultWorkflow(),

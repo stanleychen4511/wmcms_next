@@ -13,7 +13,6 @@ interface ApplicantHistoryPageProps {
 }
 
 const STAGE_LABELS: Record<WorkflowStage, string> = {
-    application: '申請收件',
     admin_review: '行政初審',
     visit: '家庭訪視',
     board_review: '董事審核',
@@ -21,7 +20,6 @@ const STAGE_LABELS: Record<WorkflowStage, string> = {
 };
 
 const STAGE_COLORS: Record<WorkflowStage, string> = {
-    application: 'bg-blue-100 text-blue-700',
     admin_review: 'bg-yellow-100 text-yellow-700',
     visit: 'bg-indigo-100 text-indigo-700',
     board_review: 'bg-purple-100 text-purple-700',

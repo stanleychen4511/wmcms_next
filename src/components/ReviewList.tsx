@@ -181,6 +181,8 @@ interface ReviewListProps {
     caseNumber: string;
     readOnly?: boolean;
     onRefresh?: () => void;
+    /** Filter docs by phase. Omit to show all. */
+    phase?: string;
 }
 
 function StatusBadge({ status }: { status: DocumentEntry['status'] }) {
@@ -202,7 +204,11 @@ function StatusIcon({ status }: { status: DocumentEntry['status'] }) {
 }
 
 
-export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefresh }: ReviewListProps) {
+function isImageFile(url: string) {
+    return /\.(jpe?g|png|gif|webp)$/i.test(url);
+}
+
+export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefresh, phase }: ReviewListProps) {
     const [docs, setDocs] = useState<DocumentEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [uploading, setUploading] = useState<Record<string, boolean>>({});
@@ -293,8 +299,11 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
         );
     }
 
+    // Filter by phase if specified
+    const visibleDocs = phase ? docs.filter(d => d.phase === phase) : docs;
+
     // Status '1' = 符合 (approved)
-    const approvedCount = docs.filter(d => d.status === '1').length;
+    const approvedCount = visibleDocs.filter(d => d.status === '1').length;
 
     return (
         <>
@@ -302,7 +311,7 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
                 ref={fileInputRef}
                 type="file"
                 className="hidden"
-                accept=".pdf,.doc,.docx,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/jpeg,image/png"
                 onChange={handleFileSelected}
             />
 
@@ -314,22 +323,22 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
                             應備文件檢核表
                         </h3>
                         <p className="text-xs text-slate-400 mt-0.5">
-                            {docs.filter(d => d.isRequired && d.status === '1').length} / {docs.filter(d => d.isRequired).length} 份必備文件已通過
+                            {visibleDocs.filter(d => d.isRequired && d.status === '1').length} / {visibleDocs.filter(d => d.isRequired).length} 份必備文件已通過
                         </p>
                     </div>
                     <div className="h-2 w-32 bg-gray-200 rounded-full overflow-hidden">
                         <div
                             className="h-full bg-green-500 rounded-full transition-all duration-500"
-                            style={{ 
-                                width: `${docs.filter(d => d.isRequired).length ? 
-                                    (docs.filter(d => d.isRequired && d.status === '1').length / docs.filter(d => d.isRequired).length) * 100 : 0}%` 
+                            style={{
+                                width: `${visibleDocs.filter(d => d.isRequired).length ?
+                                    (visibleDocs.filter(d => d.isRequired && d.status === '1').length / visibleDocs.filter(d => d.isRequired).length) * 100 : 0}%`
                             }}
                         />
                     </div>
                 </div>
 
                 <ul className="divide-y divide-gray-100">
-                    {docs.map((doc) => {
+                    {visibleDocs.map((doc) => {
                         const isUploading = uploading[doc.id];
                         const isUpdating = updating[doc.id];
                         const busy = isUploading || isUpdating;
@@ -496,6 +505,20 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
                             )}
                             {isWordFile(preview.url) && (
                                 <DocxViewer fileUrl={preview.url} zoom={zoom} onZoomChange={handleZoomChange} />
+                            )}
+                            {isImageFile(preview.url) && (
+                                <div className="w-full h-full overflow-auto flex items-start justify-center p-4 select-none" onContextMenu={e => e.preventDefault()}>
+                                    <div className="relative inline-block" style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top center' }}>
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                        <img
+                                            src={getPreviewUrl(preview.url)}
+                                            alt={preview.label}
+                                            draggable={false}
+                                            style={{ maxWidth: '100%', display: 'block', pointerEvents: 'none' }}
+                                        />
+                                        <WatermarkOverlay />
+                                    </div>
+                                </div>
                             )}
                         </div>
 

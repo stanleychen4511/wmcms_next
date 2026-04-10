@@ -358,7 +358,7 @@ export function AdminPanel({ userRoles, onBack }: AdminPanelProps) {
                                                                         )}
                                                                         title={isAdmin ? (isAssigned ? "移除此角色" : "授權此角色") : undefined}
                                                                     >
-                                                                        {r.code}
+                                                                        {r.name}
                                                                     </button>
                                                                 );
                                                             })}

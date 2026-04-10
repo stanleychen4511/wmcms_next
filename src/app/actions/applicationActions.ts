@@ -201,12 +201,12 @@ export async function createNewApplication(
         const newCaseId = appRes.rows[0].id;
 
         // 5. Create the initial workflow record (one row per application per spec)
-        // stage = 'apply' = 申請收件 (first stage per spec enum)
+        // stage = 'admin_review' = 行政初審 (申請收件已合併入行政初審)
         // is_approved = NULL = 尚未審核
         await client.query(`
             INSERT INTO application_workflow
                 (application_id, stage, reviewer_id, is_approved, comments)
-            VALUES ($1, 'apply', $2, NULL, '案件已建立，進入申請收件階段')
+            VALUES ($1, 'admin_review', $2, NULL, '案件已建立，進入行政初審階段')
         `, [newCaseId, officerId]);
 
         await client.query('COMMIT');
@@ -235,7 +235,7 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                 SELECT 
                     applicant_id,
                     COUNT(*) as app_count,
-                    SUM(COALESCE(approved_amount, 0)) FILTER (WHERE status = '5') as total_approved
+                    SUM(COALESCE(approved_amount, 0)) FILTER (WHERE approved_amount IS NOT NULL AND approved_amount > 0) as total_approved
                 FROM applications
                 GROUP BY applicant_id
             ),
@@ -286,11 +286,11 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
             const dbWfStage = row.wf_stage;
             
             // Map stage: prefer workflow stage, then status-based mapping
-            let stage: WorkflowStage = 'application';
+            let stage: WorkflowStage = 'admin_review';
             if (dbWfStage && DB_STAGE_TO_FRONTEND[dbWfStage]) {
                 stage = DB_STAGE_TO_FRONTEND[dbWfStage] as WorkflowStage;
             } else {
-                stage = (STATUS_TO_STAGE[dbStatus] || 'application') as WorkflowStage;
+                stage = (STATUS_TO_STAGE[dbStatus] || 'admin_review') as WorkflowStage;
             }
 
             return {
@@ -345,11 +345,11 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
                 ? decryptAES(row.off_name_enc, row.off_name_iv) || row.officer_account || '系統'
                 : row.officer_account || '系統';
 
-            let stage: WorkflowStage = 'application';
+            let stage: WorkflowStage = 'admin_review';
             if (dbWfStage && DB_STAGE_TO_FRONTEND[dbWfStage]) {
                 stage = DB_STAGE_TO_FRONTEND[dbWfStage] as WorkflowStage;
             } else {
-                stage = (STATUS_TO_STAGE[dbStatus] || 'application') as WorkflowStage;
+                stage = (STATUS_TO_STAGE[dbStatus] || 'admin_review') as WorkflowStage;
             }
 
             // Map status code to 'active' | 'closed'

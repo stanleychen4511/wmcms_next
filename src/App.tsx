@@ -44,8 +44,13 @@ import {
     advanceWorkflowStage,
     retreatWorkflowStage,
     saveQualificationData,
+    saveBoardReviewData,
+    closeCaseRejected,
+    closeCase,
     ApplicationDetail,
 } from './app/actions/workflowActions';
+
+import { fetchApplicationDocuments, DocumentEntry } from './app/actions/documentActions';
 
 import {
     fetchCaseSummaries,
@@ -63,10 +68,9 @@ import { clsx } from 'clsx';
 
 // ── Stage metadata ────────────────────────────────────────────────────────────
 
-const STAGES: WorkflowStage[] = ['application', 'admin_review', 'visit', 'board_review', 'reimbursement'];
+const STAGES: WorkflowStage[] = ['admin_review', 'visit', 'board_review', 'reimbursement'];
 
 const STAGE_LABEL_MAP: Record<WorkflowStage, string> = {
-    application: '申請收件',
     admin_review: '行政初審',
     visit: '家庭訪視',
     board_review: '董事審選',
@@ -74,7 +78,6 @@ const STAGE_LABEL_MAP: Record<WorkflowStage, string> = {
 };
 
 const STAGE_ICON_MAP: Record<WorkflowStage, React.ReactNode> = {
-    application: <ClipboardList className="w-4 h-4" />,
     admin_review: <UserCheck className="w-4 h-4" />,
     visit: <Home className="w-4 h-4" />,
     board_review: <Gavel className="w-4 h-4" />,
@@ -87,6 +90,11 @@ function App() {
     const [role, setRole] = useState<Role>('case_officer');
     const [loggedInUser, setLoggedInUser] = useState<{ username: string; roles: Role[]; account: string; id: string } | null>(null);
 
+    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'audit' | 'new_application' | 'admin'>('home');
+    const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
+    const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
+
+    // Restore login + navigation state from sessionStorage (runs once on mount)
     useEffect(() => {
         try {
             const saved = sessionStorage.getItem('loggedInUser');
@@ -95,30 +103,55 @@ function App() {
                 setLoggedInUser(user);
                 setRole(user.roles[0]);
             }
+            const nav = sessionStorage.getItem('navState');
+            if (nav) {
+                const n = JSON.parse(nav);
+                if (n.view)             setView(n.view);
+                if (n.selectedPersonId) setSelectedPersonId(n.selectedPersonId);
+                if (n.selectedAppId)    setSelectedAppId(n.selectedAppId);
+            }
         } catch { /* ignore */ }
     }, []);
-    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'audit' | 'new_application' | 'admin'>('home');
+
+    // Persist navigation state whenever it changes
+    useEffect(() => {
+        try {
+            sessionStorage.setItem('navState', JSON.stringify({ view, selectedPersonId, selectedAppId }));
+        } catch { /* ignore */ }
+    }, [view, selectedPersonId, selectedAppId]);
 
     // Force re-render when store data changes
     const [_tick, setTick] = useState(0);
     const refresh = () => setTick(t => t + 1);
 
-    // Person-level selection (for history page)
-    const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
-
-    // Application-level selection (for detail/workflow page)
-    const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
-
     // DB-driven application detail (loaded when entering detail view)
     const [appDetail, setAppDetail] = useState<ApplicationDetail | null>(null);
     const [detailLoading, setDetailLoading] = useState(false);
+    const [dbDocs, setDbDocs] = useState<DocumentEntry[]>([]);
 
     const loadAppDetail = useCallback(async (id: string) => {
         setDetailLoading(true);
         try {
-            const detail = await fetchApplicationDetail(id);
+            const [detail, docs] = await Promise.all([
+                fetchApplicationDetail(id),
+                fetchApplicationDocuments(id),
+            ]);
             setAppDetail(detail);
-            if (detail) setViewedStage(detail.stage as WorkflowStage);
+            setDbDocs(docs);
+            if (detail) {
+                setViewedStage(detail.stage as WorkflowStage);
+                if (detail.applyAmount != null) setApplyAmount(detail.applyAmount);
+                // Restore board review state from DB so closed cases still display correctly
+                if (detail.wfIsApproved !== null && detail.wfIsApproved !== undefined) {
+                    setBoardApproved(detail.wfIsApproved);
+                }
+                if (detail.approvedAmount != null) {
+                    setBoardApprovedAmount(detail.approvedAmount);
+                }
+                if (detail.wfComments) {
+                    setBoardOpinion(detail.wfComments);
+                }
+            }
         } finally {
             setDetailLoading(false);
         }
@@ -133,7 +166,9 @@ function App() {
     // Viewed stage for read-only browsing (separate from true stage)
     const [viewedStage, setViewedStage] = useState<WorkflowStage | null>(null);
 
-    // Board opinion - kept local
+    // Board review state
+    const [boardApproved, setBoardApproved] = useState<boolean | null>(null); // null = 未選擇
+    const [boardApprovedAmount, setBoardApprovedAmount] = useState<number>(0);
     const [boardOpinion, setBoardOpinion] = useState('');
     const [eligibilityCheck, setEligibilityCheck] = useState<{ checked: boolean; eligible: boolean; reasons: string[] }>({
         checked: false, eligible: false, reasons: [],
@@ -141,10 +176,12 @@ function App() {
     // Tracks the latest values from the ApplicationForm for use in eligibility check
     const [liveApplicantValues, setLiveApplicantValues] = useState<any>(null);
     const [isSavingQualification, setIsSavingQualification] = useState(false);
+    const [saveQualToast, setSaveQualToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+    const [applyAmount, setApplyAmount] = useState<number>(0);
 
     // DB state for inquiry pages
     const [dbCases, setDbCases] = useState<CaseSummary[]>([]);
-    const [listLoading, setListLoading] = useState(false);
+    const [listLoading, setListLoading] = useState(true); // start true so first render shows spinner
     const [dbHistory, setDbHistory] = useState<ApplicationRecord[]>([]);
     const [historyLoading, setHistoryLoading] = useState(false);
     const [officerList, setOfficerList] = useState<string[]>([]);
@@ -195,7 +232,10 @@ function App() {
 
     const handleLogout = () => {
         sessionStorage.removeItem('loggedInUser');
+        sessionStorage.removeItem('navState');
         setLoggedInUser(null);
+        setSelectedAppId(null);
+        setSelectedPersonId(null);
         setView('home');
     };
 
@@ -237,7 +277,7 @@ function App() {
                 onSubmitSuccess={(newCaseId) => {
                     // Navigate directly to the newly created detail mode
                     setSelectedAppId(newCaseId);
-                    setViewedStage('application');
+                    setViewedStage('admin_review');
                     setView('detail');
                 }}
             />
@@ -347,7 +387,7 @@ function App() {
     // The true current stage — from DB if available, else from mock store
     const stage: WorkflowStage = appDetail
         ? (appDetail.stage as WorkflowStage)
-        : (appEntry?.stage as WorkflowStage ?? 'application');
+        : (appEntry?.stage as WorkflowStage ?? 'admin_review');
 
     const workflow = appEntry?.workflow ?? null;
     const { documents = [], applicant = {} as any, auditLog = [] } = workflow ?? {};
@@ -401,25 +441,34 @@ function App() {
     };
 
     const handleSaveQualification = async () => {
-        if (!selectedAppId || !liveApplicantValues) return;
+        if (!selectedAppId) return;
         setIsSavingQualification(true);
+        setSaveQualToast(null);
         try {
-            const v = liveApplicantValues;
+            // Use liveApplicantValues if available, otherwise fall back to DB-loaded values
+            const v = liveApplicantValues ?? qualificationInitialValues;
             const result = await saveQualificationData(selectedAppId, {
-                age:                    v.age != null ? Number(v.age) : null,
-                moveable_property:      v.movableAssets != null ? Number(v.movableAssets) : null,
-                immoveable_property:    v.realEstateValue != null ? Number(v.realEstateValue) : null,
-                annual_income:          v.annualIncome != null ? Number(v.annualIncome) : null,
-                marital_status:         v.type === 'married' ? '2' : v.type === 'single' ? '1' : null,
-                has_children:           v.hasMinorChildren ?? null,
-                underage_children_count: v.hasMinorChildren && v.underageChildrenCount != null
+                age:                    v?.age != null ? Number(v.age) : null,
+                moveable_property:      v?.movableAssets != null ? Number(v.movableAssets) : null,
+                immoveable_property:    v?.realEstateValue != null ? Number(v.realEstateValue) : null,
+                annual_income:          v?.annualIncome != null ? Number(v.annualIncome) : null,
+                marital_status:         v?.type === 'married' ? '2' : v?.type === 'single' ? '1' : null,
+                has_children:           v?.hasMinorChildren ?? null,
+                underage_children_count: v?.hasMinorChildren && v?.underageChildrenCount != null
                                             ? Number(v.underageChildrenCount) : null,
+                apply_amount:           applyAmount != null ? Number(applyAmount) : null,
             });
             if (result.success) {
                 addLog('儲存資格預審資料');
+                setSaveQualToast({ type: 'success', msg: '資格預審資料已儲存' });
+            } else {
+                setSaveQualToast({ type: 'error', msg: result.error ?? '儲存失敗，請稍後再試' });
             }
+        } catch {
+            setSaveQualToast({ type: 'error', msg: '儲存失敗，請稍後再試' });
         } finally {
             setIsSavingQualification(false);
+            setTimeout(() => setSaveQualToast(null), 3000);
         }
     };
 
@@ -427,31 +476,57 @@ function App() {
      * Advance the TRUE workflow stage by one step with DB write.
      */
     const handleAdvanceStage = async () => {
+        if (!selectedAppId) return;
+
+        // ── 核銷結案 ──────────────────────────────────────────────────
+        if (stage === 'reimbursement') {
+            await closeCase(selectedAppId, loggedInUser?.id ?? null);
+            addLog('核銷完成，案件結案');
+            await loadAppDetail(selectedAppId);
+            refresh();
+            return;
+        }
+
         if (currentStageIndex < STAGES.length - 1) {
             const next = STAGES[currentStageIndex + 1];
-            if (selectedAppId) {
-                // 從申請收件推進時，將資格預審資料寫入 applications
-                if (stage === 'application' && liveApplicantValues) {
-                    const v = liveApplicantValues;
-                    await saveQualificationData(selectedAppId, {
-                        age:                    v.age != null ? Number(v.age) : null,
-                        moveable_property:      v.movableAssets != null ? Number(v.movableAssets) : null,
-                        immoveable_property:    v.realEstateValue != null ? Number(v.realEstateValue) : null,
-                        annual_income:          v.annualIncome != null ? Number(v.annualIncome) : null,
-                        marital_status:         v.type === 'married' ? '2' : v.type === 'single' ? '1' : null,
-                        has_children:           v.hasMinorChildren ?? null,
-                        underage_children_count: v.hasMinorChildren && v.underageChildrenCount != null
-                                                    ? Number(v.underageChildrenCount) : null,
-                    });
-                }
-                await advanceWorkflowStage(
-                    selectedAppId,
-                    stage,
-                    next,
-                    loggedInUser?.id ?? null,
-                );
-                await loadAppDetail(selectedAppId);
+
+            // 從行政初審推進時，將資格預審資料寫入 applications
+            if (stage === 'admin_review' && liveApplicantValues) {
+                const v = liveApplicantValues;
+                await saveQualificationData(selectedAppId, {
+                    age:                    v.age != null ? Number(v.age) : null,
+                    moveable_property:      v.movableAssets != null ? Number(v.movableAssets) : null,
+                    immoveable_property:    v.realEstateValue != null ? Number(v.realEstateValue) : null,
+                    annual_income:          v.annualIncome != null ? Number(v.annualIncome) : null,
+                    marital_status:         v.type === 'married' ? '2' : v.type === 'single' ? '1' : null,
+                    has_children:           v.hasMinorChildren ?? null,
+                    underage_children_count: v.hasMinorChildren && v.underageChildrenCount != null
+                                                ? Number(v.underageChildrenCount) : null,
+                    apply_amount:           applyAmount != null ? Number(applyAmount) : null,
+                });
             }
+
+            // 董事審核：不通過 → 結案 (status='2')；通過 → 前進核銷 (status='3')
+            if (stage === 'board_review') {
+                if (!boardApproved) {
+                    await closeCaseRejected(selectedAppId, boardOpinion, loggedInUser?.id ?? null);
+                    addLog('董事審核未通過，案件結案');
+                    await loadAppDetail(selectedAppId);
+                    setViewedStage('board_review');
+                    refresh();
+                    return;
+                }
+                await saveBoardReviewData(selectedAppId, boardApprovedAmount, boardOpinion);
+                addLog(`董事審核通過，通過金額 ${boardApprovedAmount.toLocaleString()} 元`);
+            }
+
+            await advanceWorkflowStage(
+                selectedAppId,
+                stage,
+                next,
+                loggedInUser?.id ?? null,
+            );
+            await loadAppDetail(selectedAppId);
             setViewedStage(next);
             addLog(`推進流程至 ${STAGE_LABEL_MAP[next]}`);
             refresh();
@@ -487,22 +562,41 @@ function App() {
 
     const renderStageContent = () => {
         switch (displayedStage) {
-            case 'application':
+            case 'admin_review':
                 return (
-                    <div className="space-y-6">
-                        <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative">
-
+                    <div className="space-y-6 relative">
+                        {/* ── 上半部：資格預審 ── */}
+                        <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
                             <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
                                 <ClipboardList className="w-5 h-5 text-blue-600" />
                                 資格預審
                             </h3>
+                            {/* 申請金額欄位 */}
+                            <div className="mb-4">
+                                <label className="block text-sm font-medium text-gray-700 mb-1">申請金額</label>
+                                <div className="relative max-w-xs">
+                                    <input
+                                        type="number"
+                                        min={0}
+                                        value={applyAmount}
+                                        onChange={e => setApplyAmount(Number(e.target.value))}
+                                        disabled={contentReadOnly || appDetail?.status === '2' || appDetail?.status === '4'}
+                                        className={clsx(
+                                            'block w-full rounded-md shadow-sm p-2 border pr-12',
+                                            (contentReadOnly || appDetail?.status === '2' || appDetail?.status === '4')
+                                                ? 'bg-gray-50 text-gray-500 border-gray-200 cursor-not-allowed'
+                                                : 'border-gray-300 focus:border-blue-500 focus:ring-blue-500'
+                                        )}
+                                    />
+                                    <span className="absolute right-3 top-2 text-gray-400 text-sm">元</span>
+                                </div>
+                            </div>
+
                             <ApplicationForm
                                 initialValues={qualificationInitialValues}
                                 readOnly={contentReadOnly || (!hasPermission('board_member') && !hasPermission('admin') && (role === 'board_member' || role === 'accountant'))}
                                 onValidation={(_isValid, values) => {
-                                    // Always track the latest form values for eligibility check
                                     setLiveApplicantValues(values);
-                                    // Also sync to mock store if content is editable
                                     if (!contentReadOnly && JSON.stringify(values) !== JSON.stringify(applicant)) {
                                         updateApplicationWorkflow(selectedAppId!, { applicant: values });
                                         refresh();
@@ -510,7 +604,7 @@ function App() {
                                 }}
                             />
                             {!contentReadOnly && (
-                                <div className="mt-6 border-t pt-4 flex items-center gap-3">
+                                <div className="mt-6 border-t pt-4 flex items-center gap-3 flex-wrap">
                                     <button
                                         onClick={checkEligibilityAction}
                                         className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 transition flex items-center gap-2"
@@ -530,6 +624,16 @@ function App() {
                                         )}
                                         儲存
                                     </button>
+                                    {saveQualToast && (
+                                        <span className={clsx(
+                                            'text-sm font-medium px-3 py-1.5 rounded-md',
+                                            saveQualToast.type === 'success'
+                                                ? 'bg-green-50 text-green-700 border border-green-200'
+                                                : 'bg-red-50 text-red-700 border border-red-200'
+                                        )}>
+                                            {saveQualToast.type === 'success' ? '✓ ' : '✗ '}{saveQualToast.msg}
+                                        </span>
+                                    )}
                                 </div>
                             )}
                             {eligibilityCheck.checked && (
@@ -546,17 +650,18 @@ function App() {
                                 </div>
                             )}
                         </div>
-                    </div>
-                );
-
-            case 'admin_review':
-                return (
-                    <div className="space-y-6 relative">
+                        {/* ── 下半部：文件審核（申請類） ── */}
                         <ReviewList
                             applicationId={selectedAppId!}
                             caseNumber={appDetail?.caseNumber ?? ''}
+                            phase="apply"
                             readOnly={contentReadOnly || (!hasPermission('case_officer') && !hasPermission('admin'))}
-                            onRefresh={refresh}
+                            onRefresh={() => {
+                                refresh();
+                                if (selectedAppId) {
+                                    fetchApplicationDocuments(selectedAppId).then(setDbDocs);
+                                }
+                            }}
                         />
                     </div>
                 );
@@ -572,47 +677,110 @@ function App() {
                     </div>
                 );
 
-            case 'board_review':
+            case 'board_review': {
+                const boardReadOnly = contentReadOnly || (!hasPermission('board_member') && !hasPermission('admin'));
+                const dbApplyAmount = appDetail?.applyAmount ?? null;
                 return (
-                    <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative">
-                        <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
+                    <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative space-y-6">
+                        <h3 className="text-lg font-bold flex items-center gap-2">
                             <Gavel className="w-5 h-5 text-purple-600" />
                             董事審核
                         </h3>
-                        <div className="mb-4">
-                            <label className="block text-sm font-medium text-gray-700 mb-2">
-                                審核意見 (至少 50 字)
+
+                        {/* 1. 審核結果 toggle */}
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-2">審核結果</label>
+                            <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
+                                <button
+                                    type="button"
+                                    disabled={boardReadOnly}
+                                    onClick={() => { setBoardApproved(true); }}
+                                    className={clsx(
+                                        'px-5 py-2 text-sm font-medium transition',
+                                        boardApproved === true
+                                            ? 'bg-green-600 text-white'
+                                            : 'bg-white text-gray-600 hover:bg-gray-50',
+                                        boardReadOnly && 'cursor-not-allowed opacity-60'
+                                    )}
+                                >
+                                    審核通過
+                                </button>
+                                <button
+                                    type="button"
+                                    disabled={boardReadOnly}
+                                    onClick={() => { setBoardApproved(false); setBoardApprovedAmount(0); }}
+                                    className={clsx(
+                                        'px-5 py-2 text-sm font-medium border-l border-gray-200 transition',
+                                        boardApproved === false
+                                            ? 'bg-red-600 text-white'
+                                            : 'bg-white text-gray-600 hover:bg-gray-50',
+                                        boardReadOnly && 'cursor-not-allowed opacity-60'
+                                    )}
+                                >
+                                    審核未通過
+                                </button>
+                            </div>
+                        </div>
+
+                        {/* 2. 申請金額 (read-only from DB) */}
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">申請金額</label>
+                            <div className={clsx(
+                                'w-full max-w-xs border rounded-md px-3 py-2 text-sm',
+                                boardReadOnly
+                                    ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
+                                    : 'bg-gray-50 text-gray-700 border-gray-200'
+                            )}>
+                                {dbApplyAmount != null
+                                    ? `NT$ ${dbApplyAmount.toLocaleString()}`
+                                    : <span className="text-gray-400">—</span>}
+                            </div>
+                        </div>
+
+                        {/* 3. 通過金額 (editable only when approved) */}
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">通過金額</label>
+                            <div className="relative max-w-xs">
+                                <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">NT$</span>
+                                <input
+                                    type="number"
+                                    min={0}
+                                    value={boardApproved ? boardApprovedAmount : 0}
+                                    onChange={(e) => setBoardApprovedAmount(Number(e.target.value))}
+                                    disabled={boardReadOnly || !boardApproved}
+                                    className={clsx(
+                                        'w-full border rounded-md pl-10 pr-3 py-2 text-sm',
+                                        (!boardApproved || boardReadOnly)
+                                            ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
+                                            : 'border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent'
+                                    )}
+                                />
+                            </div>
+                        </div>
+
+                        {/* 4. 審核意見 */}
+                        <div>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                審核意見 <span className="text-gray-400 font-normal">(至少 50 字)</span>
                             </label>
                             <textarea
-                                className="w-full h-32 p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-500 focus:border-transparent"
+                                className="w-full h-32 p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
                                 placeholder="請輸入審核意見..."
                                 value={boardOpinion}
                                 onChange={(e) => setBoardOpinion(e.target.value)}
-                                disabled={contentReadOnly || (!hasPermission('board_member') && !hasPermission('admin'))}
+                                disabled={boardReadOnly}
                             />
                             <div className="text-right text-xs text-gray-500 mt-1">
-                                目前的字數: {boardOpinion.length} / 50
+                                {boardOpinion.length} / 50 字
                             </div>
                         </div>
-                        {!contentReadOnly && (hasPermission('board_member') || hasPermission('admin')) && (
-                            <div className="flex gap-3">
-                                <button
-                                    disabled={boardOpinion.length < 50}
-                                    className="flex-1 bg-green-600 text-white py-2 rounded-md hover:bg-green-700 disabled:opacity-50 disabled:cursor-not-allowed"
-                                    onClick={() => addLog('董事核決: 通過')}
-                                >
-                                    核決通過
-                                </button>
-                                <button
-                                    className="flex-1 bg-red-600 text-white py-2 rounded-md hover:bg-red-700"
-                                    onClick={() => addLog('董事核決: 退回')}
-                                >
-                                    退回重審
-                                </button>
-                            </div>
+
+                        {boardApproved === null && !boardReadOnly && (
+                            <p className="text-xs text-amber-600">請先選擇審核結果</p>
                         )}
                     </div>
                 );
+            }
 
             case 'reimbursement':
                 return (
@@ -622,11 +790,24 @@ function App() {
                                 <CreditCard className="w-5 h-5 text-emerald-600" />
                                 核銷撥款
                             </h3>
-                            <div className="flex items-center justify-between p-4 bg-emerald-50 rounded-lg text-emerald-900">
+                            <div className="flex items-center justify-between p-4 bg-emerald-50 rounded-lg text-emerald-900 mb-2">
                                 <span className="font-medium">撥款狀態</span>
                                 <span className="bg-emerald-200 text-emerald-800 px-3 py-1 rounded-full text-sm font-bold">待撥款</span>
                             </div>
                         </div>
+                        {/* 核銷類文件上傳 */}
+                        <ReviewList
+                            applicationId={selectedAppId!}
+                            caseNumber={appDetail?.caseNumber ?? ''}
+                            phase="reimbursement"
+                            readOnly={contentReadOnly || (!hasPermission('accountant') && !hasPermission('case_officer') && !hasPermission('admin'))}
+                            onRefresh={() => {
+                                refresh();
+                                if (selectedAppId) {
+                                    fetchApplicationDocuments(selectedAppId).then(setDbDocs);
+                                }
+                            }}
+                        />
                     </div>
                 );
 
@@ -741,7 +922,32 @@ function App() {
 
                 {/* Content Area */}
                 <div className="flex-1 space-y-6 overflow-hidden">
-                    <Dashboard state={legacyState} applicantName={personName} />
+                    <Dashboard
+                        state={legacyState}
+                        applicantName={personName}
+                        dbTotalDocs={dbDocs.length > 0 ? dbDocs.length : undefined}
+                        dbVerifiedDocs={dbDocs.length > 0 ? dbDocs.filter(d => d.status === '1').length : undefined}
+                        dbAnnualIncome={appDetail?.annualIncome}
+                    />
+
+                    {/* 結案 banner */}
+                    {(appDetail?.status === '2' || appDetail?.status === '4') && (
+                        <div className={clsx(
+                            'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium border',
+                            appDetail.status === '2'
+                                ? 'bg-red-50 border-red-200 text-red-700'
+                                : 'bg-emerald-50 border-emerald-200 text-emerald-700'
+                        )}>
+                            <span className="text-base">
+                                {appDetail.status === '2' ? '🔴' : '✅'}
+                            </span>
+                            <span>
+                                {appDetail.status === '2'
+                                    ? '此案件已結案（審核未通過），不可再繼續流程。'
+                                    : '此案件已結案（核銷完成），補助流程已結束。'}
+                            </span>
+                        </div>
+                    )}
 
                     {/* Read-only banner */}
                     {isViewingPastStep && (
@@ -771,28 +977,67 @@ function App() {
                                 <p className="text-xs text-amber-500">請先返回目前步驟再操作流程</p>
                             )}
                             <div className="flex gap-2 items-center">
-                                <button
-                                    onClick={handleRetreatStage}
-                                    disabled={currentStageIndex === 0 || isViewingPastStep}
-                                    title={isViewingPastStep ? '請先返回目前步驟再操作流程' : currentStageIndex === 0 ? '已是第一個步驟' : `確認後退回至「${retreatLabel}」`}
-                                    className="flex flex-col items-center bg-white border border-gray-300 text-slate-700 px-4 py-2 rounded-md hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition shadow-sm"
-                                >
-                                    <span>退回上一階段</span>
-                                    {retreatLabel && !isViewingPastStep && currentStageIndex > 0 && (
-                                        <span className="text-xs font-normal text-gray-400">→ {retreatLabel}</span>
-                                    )}
-                                </button>
-                                <button
-                                    onClick={handleAdvanceStage}
-                                    disabled={currentStageIndex === STAGES.length - 1 || isViewingPastStep}
-                                    title={isViewingPastStep ? '請先返回目前步驟再操作流程' : currentStageIndex === STAGES.length - 1 ? '已是最後一個步驟' : `前進至「${advanceLabel}」`}
-                                    className="flex flex-col items-center bg-slate-900 text-white px-4 py-2 rounded-md hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition shadow-sm"
-                                >
-                                    <span>進入下一階段</span>
-                                    {advanceLabel && !isViewingPastStep && currentStageIndex < STAGES.length - 1 && (
-                                        <span className="text-xs font-normal text-slate-400">→ {advanceLabel}</span>
-                                    )}
-                                </button>
+                                {(() => {
+                                    const isClosed = appDetail?.status === '2' || appDetail?.status === '4';
+                                    const retreatDisabled = currentStageIndex === 0 || isViewingPastStep || !!isClosed;
+                                    const retreatTitle = isClosed ? '此案件已結案，不可退回'
+                                        : isViewingPastStep ? '請先返回目前步驟再操作流程'
+                                        : currentStageIndex === 0 ? '已是第一個步驟'
+                                        : `確認後退回至「${retreatLabel}」`;
+                                    return (
+                                        <button
+                                            onClick={handleRetreatStage}
+                                            disabled={retreatDisabled}
+                                            title={retreatTitle}
+                                            className="flex flex-col items-center bg-white border border-gray-300 text-slate-700 px-4 py-2 rounded-md hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition shadow-sm"
+                                        >
+                                            <span>退回上一階段</span>
+                                            {retreatLabel && !isViewingPastStep && !isClosed && currentStageIndex > 0 && (
+                                                <span className="text-xs font-normal text-gray-400">→ {retreatLabel}</span>
+                                            )}
+                                        </button>
+                                    );
+                                })()}
+                                {(() => {
+                                    const isBoardReview  = stage === 'board_review';
+                                    const isReimbursement = stage === 'reimbursement';
+                                    const isClosed = appDetail?.status === '2' || appDetail?.status === '4';
+                                    const boardIncomplete = isBoardReview && (boardApproved === null || boardOpinion.length < 50);
+                                    const advanceDisabled = isClosed || isViewingPastStep || boardIncomplete;
+
+                                    // 按鈕文字
+                                    const btnLabel =
+                                        isReimbursement ? '結案' :
+                                        isBoardReview && boardApproved === false ? '結案' :
+                                        '進入下一階段';
+
+                                    const btnClass =
+                                        (isReimbursement || (isBoardReview && boardApproved === false))
+                                            ? 'flex flex-col items-center bg-red-700 text-white px-4 py-2 rounded-md hover:bg-red-800 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition shadow-sm'
+                                            : 'flex flex-col items-center bg-slate-900 text-white px-4 py-2 rounded-md hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition shadow-sm';
+
+                                    const advanceTitle =
+                                        isViewingPastStep ? '請先返回目前步驟再操作流程' :
+                                        isClosed ? '此案件已結案' :
+                                        boardIncomplete ? '請選擇審核結果並填寫至少 50 字審核意見' :
+                                        isReimbursement ? '確認核銷完成並結案' :
+                                        isBoardReview && boardApproved === false ? '確認董事審核未通過並結案' :
+                                        `前進至「${advanceLabel}」`;
+
+                                    return (
+                                        <button
+                                            onClick={handleAdvanceStage}
+                                            disabled={advanceDisabled}
+                                            title={advanceTitle}
+                                            className={btnClass}
+                                        >
+                                            <span>{btnLabel}</span>
+                                            {!isClosed && !isViewingPastStep && !isReimbursement && !(isBoardReview && boardApproved === false) && advanceLabel && (
+                                                <span className="text-xs font-normal text-slate-400">→ {advanceLabel}</span>
+                                            )}
+                                        </button>
+                                    );
+                                })()}
                             </div>
                         </div>
                     </div>
