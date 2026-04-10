@@ -925,9 +925,9 @@ function App() {
                     <Dashboard
                         state={legacyState}
                         applicantName={personName}
-                        dbTotalDocs={dbDocs.length > 0 ? dbDocs.length : undefined}
-                        dbVerifiedDocs={dbDocs.length > 0 ? dbDocs.filter(d => d.status === '1').length : undefined}
                         dbAnnualIncome={appDetail?.annualIncome}
+                        applyAmount={appDetail?.applyAmount ?? null}
+                        approvedAmount={appDetail?.approvedAmount ?? null}
                     />
 
                     {/* 結案 banner */}

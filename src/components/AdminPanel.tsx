@@ -1,17 +1,19 @@
 import { useState, useEffect } from 'react';
-import { 
-    Users, 
-    History, 
-    UserPlus, 
-    Shield, 
-    Trash2, 
+import {
+    Users,
+    History,
+    UserPlus,
+    Shield,
+    Trash2,
     Key,
     Search,
-    Check
+    Check,
+    MapPin,
 } from 'lucide-react';
 import { Role } from '../types';
 import { getCaseSummaries, getActiveApplication } from '../store/appStore';
 import { AuditLogViewer } from './AuditLogViewer';
+import { StorageLocationManager } from './StorageLocationManager';
 import { clsx } from 'clsx';
 import { getUsers, createUser, updateUserRoles, resetUserPassword, deleteUserAccount, fetchRoles, AdminUserView, RoleOption } from '../app/actions/userActions';
 
@@ -21,7 +23,7 @@ interface AdminPanelProps {
 }
 
 export function AdminPanel({ userRoles, onBack }: AdminPanelProps) {
-    const [activeTab, setActiveTab] = useState<'accounts' | 'logs'>('accounts');
+    const [activeTab, setActiveTab] = useState<'accounts' | 'locations' | 'logs'>('accounts');
     const [searchTerm, setSearchTerm] = useState('');
     const [showAddForm, setShowAddForm] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
@@ -148,6 +150,7 @@ export function AdminPanel({ userRoles, onBack }: AdminPanelProps) {
     };
 
     const isAdmin = userRoles.includes('admin');
+    const canManageLocations = userRoles.some(r => ['admin', 'supervisor', 'board_member'].includes(r));
 
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
@@ -183,12 +186,26 @@ export function AdminPanel({ userRoles, onBack }: AdminPanelProps) {
                             <Users className="w-5 h-5 shrink-0" />
                             <span>帳號權限管理</span>
                         </button>
+                        {canManageLocations && (
+                            <button
+                                onClick={() => setActiveTab('locations')}
+                                className={clsx(
+                                    "whitespace-nowrap lg:whitespace-normal flex-1 lg:flex-none flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-left font-medium",
+                                    activeTab === 'locations'
+                                        ? "bg-blue-600 text-white shadow-lg shadow-blue-200"
+                                        : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                                )}
+                            >
+                                <MapPin className="w-5 h-5 shrink-0" />
+                                <span>檔案實體位置</span>
+                            </button>
+                        )}
                         <button
                             onClick={() => setActiveTab('logs')}
                             className={clsx(
                                 "whitespace-nowrap lg:whitespace-normal flex-1 lg:flex-none flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-left font-medium",
-                                activeTab === 'logs' 
-                                    ? "bg-blue-600 text-white shadow-lg shadow-blue-200" 
+                                activeTab === 'logs'
+                                    ? "bg-blue-600 text-white shadow-lg shadow-blue-200"
                                     : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
                             )}
                         >
@@ -412,6 +429,8 @@ export function AdminPanel({ userRoles, onBack }: AdminPanelProps) {
                                     </table>
                                 </div>
                             </div>
+                        ) : activeTab === 'locations' ? (
+                            <StorageLocationManager />
                         ) : (
                             <div className="flex-1 flex flex-col min-h-0">
                                 <div className="p-6 border-b border-slate-200">
