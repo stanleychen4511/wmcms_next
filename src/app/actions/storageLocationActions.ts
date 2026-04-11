@@ -1,6 +1,7 @@
 'use server';
 import { PoolClient } from 'pg';
 import { pool } from '../../lib/db';
+import { writeAuditLog } from './auditActions';
 
 export interface StorageLocation {
     id: number;
@@ -68,7 +69,8 @@ export async function addStorageLocation(
     locationName: string,
     parentId: number | null,
     description: string | null,
-    sortOrder: number
+    sortOrder: number,
+    operatorAccount?: string
 ): Promise<StorageLocationResult> {
     const client = await pool.connect();
     try {
@@ -78,11 +80,18 @@ export async function addStorageLocation(
             return { success: false, error: '位置最多只能有三層，無法在此節點下新增子項目。' };
         }
 
-        await client.query(
+        const res = await client.query(
             `INSERT INTO file_storage_location (parent_id, location_name, description, sort_order)
-             VALUES ($1, $2, $3, $4)`,
+             VALUES ($1, $2, $3, $4) RETURNING id`,
             [parentId, locationName.trim(), description?.trim() || null, sortOrder]
         );
+        void writeAuditLog({
+            userId: null,
+            action: 'file_location.create',
+            targetType: 'file_location',
+            targetId: String(res.rows[0]?.id),
+            detail: { locationName, parentId },
+        });
         return { success: true };
     } catch (err: any) {
         console.error('addStorageLocation error:', err);
@@ -100,7 +109,8 @@ export async function updateStorageLocation(
     id: number,
     locationName: string,
     description: string | null,
-    sortOrder: number
+    sortOrder: number,
+    operatorAccount?: string
 ): Promise<StorageLocationResult> {
     const client = await pool.connect();
     try {
@@ -110,6 +120,13 @@ export async function updateStorageLocation(
              WHERE id = $4`,
             [locationName.trim(), description?.trim() || null, sortOrder, id]
         );
+        void writeAuditLog({
+            userId: null,
+            action: 'file_location.update',
+            targetType: 'file_location',
+            targetId: String(id),
+            detail: { locationName },
+        });
         return { success: true };
     } catch (err: any) {
         console.error('updateStorageLocation error:', err);
@@ -123,7 +140,7 @@ export async function updateStorageLocation(
 }
 
 /** Disable a location. Checks for active children first. */
-export async function disableStorageLocation(id: number): Promise<StorageLocationResult> {
+export async function disableStorageLocation(id: number, operatorAccount?: string): Promise<StorageLocationResult> {
     const client = await pool.connect();
     try {
         // Find active direct children
@@ -144,6 +161,12 @@ export async function disableStorageLocation(id: number): Promise<StorageLocatio
             `UPDATE file_storage_location SET status = 0 WHERE id = $1`,
             [id]
         );
+        void writeAuditLog({
+            userId: null,
+            action: 'file_location.disable',
+            targetType: 'file_location',
+            targetId: String(id),
+        });
         return { success: true };
     } catch (err: any) {
         console.error('disableStorageLocation error:', err);
@@ -154,13 +177,19 @@ export async function disableStorageLocation(id: number): Promise<StorageLocatio
 }
 
 /** Enable a location */
-export async function enableStorageLocation(id: number): Promise<StorageLocationResult> {
+export async function enableStorageLocation(id: number, operatorAccount?: string): Promise<StorageLocationResult> {
     const client = await pool.connect();
     try {
         await client.query(
             `UPDATE file_storage_location SET status = 1 WHERE id = $1`,
             [id]
         );
+        void writeAuditLog({
+            userId: null,
+            action: 'file_location.enable',
+            targetType: 'file_location',
+            targetId: String(id),
+        });
         return { success: true };
     } catch (err: any) {
         console.error('enableStorageLocation error:', err);

@@ -4,6 +4,7 @@ import { pool } from '../../lib/db';
 import { generateBlindIndex } from '../../lib/crypto';
 import { CaseSummary, ApplicationRecord, WorkflowStage, ApplicationStatus } from '../../types';
 import { STATUS_TO_STAGE, DB_STAGE_TO_FRONTEND, STATUS_LABEL } from '../../lib/stageMaps';
+import { writeAuditLog } from './auditActions';
 
 export interface ApplicationStatusResult {
     found: boolean;
@@ -210,6 +211,13 @@ export async function createNewApplication(
         `, [newCaseId, officerId]);
 
         await client.query('COMMIT');
+        void writeAuditLog({
+            userId: officerId,
+            action: 'application.create',
+            targetType: 'application',
+            targetId: String(newCaseId),
+            detail: { caseNumber, officerAccount },
+        });
         return { success: true, caseId: newCaseId };
 
     } catch (err: any) {
@@ -243,6 +251,7 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                 SELECT DISTINCT ON (applicant_id)
                     a.id as app_id,
                     a.applicant_id,
+                    a.officer_id,
                     a.apply_at,
                     a.status,
                     u_off.name_enc as off_name_enc, u_off.name_iv as off_name_iv,
@@ -253,12 +262,14 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                 LEFT JOIN application_workflow w ON w.application_id = a.id
                 ORDER BY a.applicant_id, a.apply_at DESC
             )
-            SELECT 
+            SELECT
                 u.id as applicant_id,
                 u.name_enc,
                 u.name_iv,
                 s.app_count,
                 s.total_approved,
+                l.app_id,
+                l.officer_id,
                 l.apply_at,
                 l.status,
                 l.wf_stage,
@@ -295,17 +306,51 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
 
             return {
                 id: row.applicant_id,
+                applicationId: String(row.app_id),
                 applicantName: name,
                 applicationCount: parseInt(row.app_count),
-                totalAmount: parseInt(row.total_approved),
+                totalAmount: parseInt(row.total_approved) || 0,
                 appliedAt: row.apply_at ? row.apply_at.toISOString().split('T')[0] : '',
                 stage,
-                officer: offName
+                officer: offName,
+                officerId: row.officer_id ? String(row.officer_id) : null,
             };
         });
     } catch (err) {
         console.error('fetchCaseSummaries error', err);
         return [];
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Batch-assign an officer to multiple applications.
+ */
+export async function assignOfficerBatch(
+    applicationIds: string[],
+    officerUserId: string,
+    operatorAccount?: string
+): Promise<{ success: boolean; error?: string }> {
+    if (!applicationIds.length) return { success: false, error: '未選擇案件' };
+    const client = await pool.connect();
+    try {
+        await client.query(
+            `UPDATE applications SET officer_id = $1, updated_at = NOW()
+             WHERE id = ANY($2::bigint[])`,
+            [officerUserId, applicationIds]
+        );
+        void writeAuditLog({
+            userId: null,
+            action: 'application.officer_assign',
+            targetType: 'application',
+            targetId: applicationIds.join(','),
+            detail: { applicationIds, officerUserId },
+        });
+        return { success: true };
+    } catch (err: any) {
+        console.error('assignOfficerBatch error', err);
+        return { success: false, error: err.message };
     } finally {
         client.release();
     }

@@ -3,6 +3,7 @@
 import { pool } from '../../lib/db';
 import { encryptAES, decryptAES, hashPassword, generateSalt, generateBlindIndex } from '../../lib/crypto';
 import { Role } from '../../types';
+import { writeAuditLog } from './auditActions';
 
 // The return interface for our client
 export interface AdminUserView {
@@ -125,6 +126,13 @@ export async function createUser(data: { account: string; plainName: string; pla
         }
 
         await client.query('COMMIT');
+        void writeAuditLog({
+            userId: null,
+            action: 'user.create',
+            targetType: 'user',
+            targetId: String(userId),
+            detail: { account: data.account, roles: data.roles },
+        });
         return { success: true };
     } catch (err: any) {
         await client.query('ROLLBACK');
@@ -183,6 +191,13 @@ export async function updateUserRoles(userId: string, targetRoles: Role[]): Prom
         }
         
         await client.query('COMMIT');
+        void writeAuditLog({
+            userId: null,
+            action: 'user.update',
+            targetType: 'user',
+            targetId: userId,
+            detail: { roles: targetRoles },
+        });
         return { success: true };
     } catch (err: any) {
         await client.query('ROLLBACK');
@@ -241,6 +256,12 @@ export async function loginAction(account: string, pass: string): Promise<{ succ
             created_at: row.created_at.toISOString().split('T')[0],
         };
 
+        void writeAuditLog({
+            userId: user.id,
+            action: 'user.login',
+            targetType: 'user',
+            targetId: user.id,
+        });
         return { success: true, user };
     } catch (err: any) {
         console.error('Login error', err);
@@ -258,7 +279,7 @@ export async function fetchCaseOfficers(): Promise<string[]> {
     const client = await pool.connect();
     try {
         const query = `
-            SELECT u.name_enc, u.name_iv 
+            SELECT u.name_enc, u.name_iv
             FROM users u
             JOIN user_roles ur ON u.id = ur.user_id
             JOIN roles r ON ur.role_id = r.id
@@ -268,6 +289,32 @@ export async function fetchCaseOfficers(): Promise<string[]> {
         return res.rows.map(row => decryptAES(row.name_enc, row.name_iv) || 'Unknown');
     } catch (err) {
         console.error('fetchCaseOfficers error', err);
+        return [];
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Fetch case officers with their user IDs for assignment dropdowns.
+ */
+export async function fetchCaseOfficersWithId(): Promise<{ id: string; name: string }[]> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(`
+            SELECT u.id, u.name_enc, u.name_iv
+            FROM users u
+            JOIN user_roles ur ON u.id = ur.user_id
+            JOIN roles r ON ur.role_id = r.id
+            WHERE r.code = 'case_officer' OR r.id = 2
+            ORDER BY u.id
+        `);
+        return res.rows.map(row => ({
+            id: String(row.id),
+            name: decryptAES(row.name_enc, row.name_iv) || 'Unknown',
+        }));
+    } catch (err) {
+        console.error('fetchCaseOfficersWithId error', err);
         return [];
     } finally {
         client.release();

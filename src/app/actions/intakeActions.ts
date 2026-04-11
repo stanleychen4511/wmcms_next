@@ -4,6 +4,7 @@ import { pool } from '../../lib/db';
 import { generateBlindIndex, encryptAES, generateSalt, hashPassword } from '../../lib/crypto';
 import path from 'path';
 import { promises as fs } from 'fs';
+import { writeAuditLog } from './auditActions';
 
 export interface EligibilityResult {
     eligible: boolean;
@@ -260,6 +261,14 @@ export async function submitExternalApplication(
             // Non-fatal: application is already created
         }
     }
+
+    void writeAuditLog({
+        userId: null,
+        action: 'application.create',
+        targetType: 'application',
+        targetId: String(applicationId),
+        detail: { caseNumber, source: 'online' },
+    });
 
     return { success: true, caseNumber: caseNumber! };
 }

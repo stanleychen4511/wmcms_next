@@ -1,6 +1,7 @@
 'use server';
 
 import { pool } from '../../lib/db';
+import { writeAuditLog } from './auditActions';
 
 export interface HomeVisitData {
     visit_date?: string;
@@ -58,7 +59,8 @@ export async function fetchHomeVisit(applicationId: string): Promise<HomeVisitDa
 export async function saveHomeVisit(
     applicationId: string,
     visitorUserId: string | null,
-    data: HomeVisitData
+    data: HomeVisitData,
+    visitorAccount?: string
 ): Promise<{ success: boolean; error?: string }> {
     const client = await pool.connect();
     try {
@@ -79,7 +81,8 @@ export async function saveHomeVisit(
 
         const values = fields.map(f => (data as any)[f] ?? null);
 
-        if (existing.rows.length > 0) {
+        const isUpdate = existing.rows.length > 0;
+        if (isUpdate) {
             const setClauses = fields.map((f, i) => `${f} = $${i + 2}`).join(', ');
             await client.query(
                 `UPDATE home_visit SET visitor_id = $1, ${setClauses}, updated_at = NOW() WHERE application_id = $${fields.length + 2}`,
@@ -93,6 +96,13 @@ export async function saveHomeVisit(
                 [applicationId, visitorUserId, ...values]
             );
         }
+
+        void writeAuditLog({
+            userId: visitorUserId,
+            action: isUpdate ? 'home_visit.update' : 'home_visit.create',
+            targetType: 'home_visit',
+            targetId: applicationId,
+        });
 
         return { success: true };
     } catch (err: any) {

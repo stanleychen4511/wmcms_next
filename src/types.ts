@@ -1,4 +1,4 @@
-export type Role = 'applicant' | 'case_officer' | 'social_worker' | 'supervisor' | 'accountant' | 'board_member' | 'admin';
+export type Role = 'applicant' | 'case_officer' | 'social_worker' | 'supervisor' | 'accountant' | 'board_member' | 'admin' | 'volunteer';
 export interface UserAccount {
     id: string;
     account: string; // The login account
@@ -14,12 +14,14 @@ export type WorkflowStage = 'admin_review' | 'visit' | 'board_review' | 'reimbur
 
 export interface CaseSummary {
     id: string;
+    applicationId: string;       // latest application's DB id
     applicantName: string;
     applicationCount: number;
     totalAmount: number;
     appliedAt: string; // ISO date string e.g. "2025-11-03"
     stage: WorkflowStage;
     officer: string;
+    officerId: string | null;    // null = 未派案
 }
 
 export type ApplicationStatus = 'active' | 'closed';

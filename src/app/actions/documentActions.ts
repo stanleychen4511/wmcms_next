@@ -3,6 +3,7 @@
 import { pool } from '../../lib/db';
 import { promises as fs } from 'fs';
 import path from 'path';
+import { writeAuditLog } from './auditActions';
 
 export interface DocumentEntry {
     id: string; // The file type identifier (doc sequence number per spec)
@@ -43,7 +44,8 @@ export async function uploadApplicationDocument(
     documentId: string,    // e.g. '1', '2', ... (matches application_documents.id SMALLINT)
     documentLabel: string, // e.g. '自費醫療補助申請書'
     caseNumber: string,    // e.g. 'A115003'
-    formData: FormData
+    formData: FormData,
+    uploaderAccount?: string
 ): Promise<{ success: boolean; filePath?: string; error?: string }> {
     const file = formData.get('file') as File;
     if (!file) return { success: false, error: '未提供檔案' };
@@ -98,6 +100,13 @@ export async function uploadApplicationDocument(
             }
         }
 
+        void writeAuditLog({
+            userId: null,
+            action: 'document.upload',
+            targetType: 'document',
+            targetId: documentId,
+            detail: { applicationId, documentLabel, filePath: publicUrl },
+        });
         return { success: true, filePath: publicUrl };
     } catch (err: any) {
         console.error('File upload error', err);
@@ -109,7 +118,8 @@ export async function updateDocumentStatus(
     applicationId: string,
     documentId: string,
     status: '0' | '1' | '2', // 0=待上傳/未符合, 1=符合, 2=逾期
-    rejectReason?: string
+    rejectReason?: string,
+    reviewerAccount?: string
 ): Promise<{ success: boolean; error?: string }> {
     const client = await pool.connect();
     try {
@@ -130,6 +140,13 @@ export async function updateDocumentStatus(
                 [applicationId, documentId, status, rejectReason || null]
             );
         }
+        void writeAuditLog({
+            userId: null,
+            action: 'document.status_update',
+            targetType: 'document',
+            targetId: documentId,
+            detail: { applicationId, status, rejectReason },
+        });
         return { success: true };
     } catch (err: any) {
         console.error('Update doc status error', err);

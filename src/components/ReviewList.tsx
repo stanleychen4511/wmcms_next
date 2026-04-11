@@ -13,6 +13,7 @@ const PdfViewer = dynamic(
     )}
 );
 import { DocumentEntry, uploadApplicationDocument, updateDocumentStatus, fetchApplicationDocuments } from '../app/actions/documentActions';
+import { writeAuditLog } from '../app/actions/auditActions';
 
 function getPreviewUrl(fileUrl: string): string {
     return `/api/preview?path=${encodeURIComponent(fileUrl)}`;
@@ -183,6 +184,8 @@ interface ReviewListProps {
     onRefresh?: () => void;
     /** Filter docs by phase. Omit to show all. */
     phase?: string;
+    /** Current logged-in user ID for audit logging */
+    userId?: string | null;
 }
 
 function StatusBadge({ status }: { status: DocumentEntry['status'] }) {
@@ -208,7 +211,7 @@ function isImageFile(url: string) {
     return /\.(jpe?g|png|gif|webp)$/i.test(url);
 }
 
-export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefresh, phase }: ReviewListProps) {
+export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefresh, phase, userId }: ReviewListProps) {
     const [docs, setDocs] = useState<DocumentEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [uploading, setUploading] = useState<Record<string, boolean>>({});
@@ -369,7 +372,16 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
                                 {/* File preview button */}
                                 {doc.fileUrl && (
                                     <button
-                                        onClick={() => setPreview({ url: doc.fileUrl!, label: doc.label })}
+                                        onClick={() => {
+                                            setPreview({ url: doc.fileUrl!, label: doc.label });
+                                            void writeAuditLog({
+                                                userId: userId ?? null,
+                                                action: 'document.preview',
+                                                targetType: 'document',
+                                                targetId: doc.id,
+                                                detail: { applicationId, documentLabel: doc.label },
+                                            });
+                                        }}
                                         className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
                                         title="預覽檔案"
                                     >

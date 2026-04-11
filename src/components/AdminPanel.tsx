@@ -11,7 +11,6 @@ import {
     MapPin,
 } from 'lucide-react';
 import { Role } from '../types';
-import { getCaseSummaries, getActiveApplication } from '../store/appStore';
 import { AuditLogViewer } from './AuditLogViewer';
 import { StorageLocationManager } from './StorageLocationManager';
 import { clsx } from 'clsx';
@@ -63,12 +62,6 @@ export function AdminPanel({ userRoles, onBack }: AdminPanelProps) {
         acc.username.toLowerCase().includes(searchTerm.toLowerCase()) || 
         acc.account.toLowerCase().includes(searchTerm.toLowerCase())
     );
-
-    // Collect all audit logs
-    const allLogs = getCaseSummaries().flatMap(cs => {
-        const active = getActiveApplication(cs.id);
-        return active?.workflow?.auditLog ?? [];
-    });
 
     const handleAddAccount = async (e: React.FormEvent) => {
         e.preventDefault();
@@ -439,8 +432,8 @@ export function AdminPanel({ userRoles, onBack }: AdminPanelProps) {
                                         系統操作紀錄
                                     </h2>
                                 </div>
-                                <div className="flex-1 p-6 overflow-hidden">
-                                    <AuditLogViewer logs={allLogs} className="h-full" />
+                                <div className="flex-1 p-6 overflow-y-auto">
+                                    <AuditLogViewer />
                                 </div>
                             </div>
                         )}

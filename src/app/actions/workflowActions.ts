@@ -8,6 +8,7 @@ import {
     STAGE_LABEL,
     STATUS_LABEL,
 } from '../../lib/stageMaps';
+import { writeAuditLog } from './auditActions';
 
 export interface ApplicationDetail {
     id: string;
@@ -162,6 +163,13 @@ export async function advanceWorkflowStage(
         }
 
         await client.query('COMMIT');
+        void writeAuditLog({
+            userId: reviewerUserId,
+            action: 'application.stage_advance',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { from: fromStage, to: toStage, comments },
+        });
         return { success: true };
     } catch (err: any) {
         await client.query('ROLLBACK');
@@ -281,6 +289,13 @@ export async function retreatWorkflowStage(
         }
 
         await client.query('COMMIT');
+        void writeAuditLog({
+            userId: reviewerUserId,
+            action: 'application.stage_rollback',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { to: toStage, comments },
+        });
         return { success: true };
     } catch (err: any) {
         await client.query('ROLLBACK');
@@ -328,6 +343,13 @@ export async function closeCaseRejected(
             `, [applicationId, reviewerUserId, comments]);
         }
         await client.query('COMMIT');
+        void writeAuditLog({
+            userId: reviewerUserId,
+            action: 'application.close',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { result: 'rejected', comments },
+        });
         return { success: true };
     } catch (err: any) {
         await client.query('ROLLBACK');
@@ -393,6 +415,13 @@ export async function closeCase(
             WHERE application_id = $2
         `, [reviewerUserId, applicationId]);
         await client.query('COMMIT');
+        void writeAuditLog({
+            userId: reviewerUserId,
+            action: 'application.close',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { result: 'completed' },
+        });
         return { success: true };
     } catch (err: any) {
         await client.query('ROLLBACK');

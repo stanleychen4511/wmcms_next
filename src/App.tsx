@@ -54,10 +54,11 @@ import { fetchApplicationDocuments, DocumentEntry } from './app/actions/document
 
 import {
     fetchCaseSummaries,
-    fetchApplicantHistory
+    fetchApplicantHistory,
+    assignOfficerBatch,
 } from './app/actions/applicationActions';
 
-import { fetchCaseOfficers } from './app/actions/userActions';
+import { fetchCaseOfficers, fetchCaseOfficersWithId } from './app/actions/userActions';
 
 import { STATUS_TO_STAGE, STAGE_TO_STATUS } from './lib/stageMaps';
 
@@ -185,6 +186,7 @@ function App() {
     const [dbHistory, setDbHistory] = useState<ApplicationRecord[]>([]);
     const [historyLoading, setHistoryLoading] = useState(false);
     const [officerList, setOfficerList] = useState<string[]>([]);
+    const [officersWithId, setOfficersWithId] = useState<{ id: string; name: string }[]>([]);
 
     // Helper to check if user HAS a specific role (regardless of current active mode)
     const hasPermission = useCallback((target: Role) => {
@@ -199,9 +201,13 @@ function App() {
             const data = await fetchCaseSummaries();
             setDbCases(data);
             
-            // Also fetch officer list for filtering
-            const oList = await fetchCaseOfficers();
+            // Also fetch officer list for filtering and assignment
+            const [oList, oWithId] = await Promise.all([
+                fetchCaseOfficers(),
+                fetchCaseOfficersWithId(),
+            ]);
             setOfficerList(oList);
+            setOfficersWithId(oWithId);
         } finally {
             setListLoading(false);
         }
@@ -314,7 +320,7 @@ function App() {
                         </svg>
                         系統操作紀錄
                     </h2>
-                    <AuditLogViewer logs={allLogs} className="h-[calc(100vh-220px)]" />
+                    <AuditLogViewer />
                 </main>
             </div>
         );
@@ -333,9 +339,17 @@ function App() {
         return (
             <CaseListPage
                 username={loggedInUser.username}
+                userRoles={loggedInUser.roles as Role[]}
                 cases={dbCases}
                 allOfficers={officerList}
+                officersWithId={officersWithId}
                 isLoading={listLoading}
+                onMount={refreshCaseSummaries}
+                onAssign={async (applicationIds, officerUserId) => {
+                    const res = await assignOfficerBatch(applicationIds, officerUserId);
+                    if (!res.success) throw new Error(res.error ?? '派案失敗');
+                    await refreshCaseSummaries();
+                }}
                 onSelectCase={(personId) => {
                     setSelectedPersonId(personId);
                     setView('history');
@@ -655,6 +669,7 @@ function App() {
                             applicationId={selectedAppId!}
                             caseNumber={appDetail?.caseNumber ?? ''}
                             phase="apply"
+                            userId={loggedInUser?.id}
                             readOnly={contentReadOnly || (!hasPermission('case_officer') && !hasPermission('admin'))}
                             onRefresh={() => {
                                 refresh();
@@ -800,6 +815,7 @@ function App() {
                             applicationId={selectedAppId!}
                             caseNumber={appDetail?.caseNumber ?? ''}
                             phase="reimbursement"
+                            userId={loggedInUser?.id}
                             readOnly={contentReadOnly || (!hasPermission('accountant') && !hasPermission('case_officer') && !hasPermission('admin'))}
                             onRefresh={() => {
                                 refresh();
