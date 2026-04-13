@@ -40,7 +40,7 @@ export function ApplicantHistoryPage({
         (a, b) => new Date(b.appliedAt).getTime() - new Date(a.appliedAt).getTime()
     );
     const totalApproved = records
-        .filter((r) => r.status === 'closed' && r.amount)
+        .filter((r) => r.amount != null && r.amount > 0)
         .reduce((sum, r) => sum + (r.amount ?? 0), 0);
     const activeRecord = records.find((r) => r.status === 'active') ?? null;
 

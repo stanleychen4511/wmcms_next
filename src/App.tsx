@@ -12,6 +12,7 @@ import {
     LogOut,
     Eye,
     Save,
+    Send,
 } from 'lucide-react';
 import { RoleSwitcher } from './components/RoleSwitcher';
 import { LoginPage } from './components/LoginPage';
@@ -21,13 +22,16 @@ import { ApplicantHistoryPage } from './components/ApplicantHistoryPage';
 import { NewApplicationPage } from './components/NewApplicationPage';
 import { ReviewList } from './components/ReviewList';
 import { HomeVisitForm } from './components/HomeVisitForm';
-import { NotificationModalTrigger } from './components/NotificationModal';
+import { SendNotificationModal, ChecklistDoc } from './components/SendNotificationModal';
+import { fetchNotificationLogs, NotificationLog } from './app/actions/notificationActions';
 import { ApplicationForm } from './components/ApplicationForm';
 import { StageContainer } from './components/StageContainer';
 import { Dashboard } from './components/Dashboard';
 import { DataExport } from './components/DataExport';
 import { AuditLogViewer } from './components/AuditLogViewer';
 import { AdminPanel } from './components/AdminPanel';
+import { TemplateDownloadPage } from './components/TemplateDownloadPage';
+import { NotificationManager } from './components/NotificationManager';
 
 import {
     getCaseSummaries,
@@ -91,7 +95,7 @@ function App() {
     const [role, setRole] = useState<Role>('case_officer');
     const [loggedInUser, setLoggedInUser] = useState<{ username: string; roles: Role[]; account: string; id: string } | null>(null);
 
-    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'audit' | 'new_application' | 'admin'>('home');
+    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'audit' | 'new_application' | 'admin' | 'template_download' | 'notification_manager'>('home');
     const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
     const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
 
@@ -124,6 +128,31 @@ function App() {
     // Force re-render when store data changes
     const [_tick, setTick] = useState(0);
     const refresh = () => setTick(t => t + 1);
+
+    // Viewed stage for read-only browsing (separate from true stage)
+    const [viewedStage, setViewedStage] = useState<WorkflowStage | null>(null);
+
+    // Board review state
+    const [boardApproved, setBoardApproved] = useState<boolean | null>(null); // null = 未選擇
+    const [boardApprovedAmount, setBoardApprovedAmount] = useState<number>(0);
+    const [boardOpinion, setBoardOpinion] = useState('');
+    const [eligibilityCheck, setEligibilityCheck] = useState<{ checked: boolean; eligible: boolean; reasons: string[] }>({
+        checked: false, eligible: false, reasons: [],
+    });
+    // Tracks the latest values from the ApplicationForm for use in eligibility check
+    const [liveApplicantValues, setLiveApplicantValues] = useState<any>(null);
+    const [isSavingQualification, setIsSavingQualification] = useState(false);
+    const [saveQualToast, setSaveQualToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
+    const [applyAmount, setApplyAmount] = useState<number>(0);
+
+    // Notification state
+    const [showNotifModal, setShowNotifModal] = useState(false);
+    const [notifLogs, setNotifLogs] = useState<NotificationLog[]>([]);
+
+    const loadNotifLogs = useCallback(async (appId: string) => {
+        const res = await fetchNotificationLogs(appId);
+        if (res.success && res.data) setNotifLogs(res.data);
+    }, []);
 
     // DB-driven application detail (loaded when entering detail view)
     const [appDetail, setAppDetail] = useState<ApplicationDetail | null>(null);
@@ -161,24 +190,9 @@ function App() {
     useEffect(() => {
         if (view === 'detail' && selectedAppId) {
             loadAppDetail(selectedAppId);
+            loadNotifLogs(selectedAppId);
         }
-    }, [view, selectedAppId, loadAppDetail]);
-
-    // Viewed stage for read-only browsing (separate from true stage)
-    const [viewedStage, setViewedStage] = useState<WorkflowStage | null>(null);
-
-    // Board review state
-    const [boardApproved, setBoardApproved] = useState<boolean | null>(null); // null = 未選擇
-    const [boardApprovedAmount, setBoardApprovedAmount] = useState<number>(0);
-    const [boardOpinion, setBoardOpinion] = useState('');
-    const [eligibilityCheck, setEligibilityCheck] = useState<{ checked: boolean; eligible: boolean; reasons: string[] }>({
-        checked: false, eligible: false, reasons: [],
-    });
-    // Tracks the latest values from the ApplicationForm for use in eligibility check
-    const [liveApplicantValues, setLiveApplicantValues] = useState<any>(null);
-    const [isSavingQualification, setIsSavingQualification] = useState(false);
-    const [saveQualToast, setSaveQualToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
-    const [applyAmount, setApplyAmount] = useState<number>(0);
+    }, [view, selectedAppId, loadAppDetail, loadNotifLogs]);
 
     // DB state for inquiry pages
     const [dbCases, setDbCases] = useState<CaseSummary[]>([]);
@@ -267,6 +281,8 @@ function App() {
                 onGoAudit={() => setView('audit')}
                 onGoAdmin={() => setView('admin')}
                 onNewApplication={() => setView('new_application')}
+                onGoTemplates={() => setView('template_download')}
+                onGoNotifications={() => setView('notification_manager')}
                 onLogout={handleLogout}
             />
         );
@@ -328,9 +344,28 @@ function App() {
 
     if (view === 'admin') {
         return (
-            <AdminPanel 
-                userRoles={loggedInUser.roles as Role[]} 
-                onBack={() => setView('home')} 
+            <AdminPanel
+                userRoles={loggedInUser.roles as Role[]}
+                userId={loggedInUser.id}
+                onBack={() => setView('home')}
+            />
+        );
+    }
+
+    if (view === 'template_download') {
+        return (
+            <TemplateDownloadPage
+                userId={loggedInUser.id}
+                onBack={() => setView('home')}
+            />
+        );
+    }
+
+    if (view === 'notification_manager') {
+        return (
+            <NotificationManager
+                userId={loggedInUser.id}
+                onBack={() => setView('home')}
             />
         );
     }
@@ -923,16 +958,53 @@ function App() {
                         </div>
                     </div>
 
-                    {/* Standalone Notification Button */}
-                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 flex justify-center">
-                        <NotificationModalTrigger
-                            applicantName={personName}
-                            stageName={STAGE_LABEL_MAP[stage]}
-                            onSend={(channels, message) => {
-                                alert(`已發送通知至: ${channels.join(', ')}${message ? `\n內容: ${message}` : ''}`);
-                                addLog(`發送通知至: ${channels.join(', ')}`);
-                            }}
-                        />
+                    {/* Notification block */}
+                    <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 space-y-3">
+                        <button
+                            onClick={() => setShowNotifModal(true)}
+                            className="w-full flex items-center justify-center gap-2 bg-blue-600 text-white text-sm font-medium px-4 py-2 rounded-lg hover:bg-blue-700 transition"
+                        >
+                            <Send className="w-4 h-4" />
+                            發送通知
+                        </button>
+
+                        {/* Notification log */}
+                        {notifLogs.length > 0 && (
+                            <div className="space-y-2 pt-2 border-t border-slate-100">
+                                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">通知紀錄</p>
+                                <div className="space-y-2 max-h-52 overflow-y-auto">
+                                    {notifLogs.map(log => (
+                                        <div key={log.id} className={clsx(
+                                            'rounded-lg px-3 py-2 text-xs border',
+                                            log.status === 'sent'
+                                                ? 'bg-green-50 border-green-100'
+                                                : 'bg-red-50 border-red-100'
+                                        )}>
+                                            <div className="flex items-center justify-between gap-1 mb-0.5">
+                                                <span className={clsx(
+                                                    'font-semibold',
+                                                    log.status === 'sent' ? 'text-green-700' : 'text-red-700'
+                                                )}>
+                                                    {log.status === 'sent' ? '✓ 已發送' : '✗ 失敗'}
+                                                </span>
+                                                <span className="text-slate-400 shrink-0">
+                                                    {log.sent_at?.slice(0, 16).replace('T', ' ')}
+                                                </span>
+                                            </div>
+                                            {log.subject && (
+                                                <p className="text-slate-600 truncate">{log.subject}</p>
+                                            )}
+                                            <p className="text-slate-400">
+                                                收件人：{log.recipients.map(r => r.name).join('、')}
+                                            </p>
+                                            {log.sender_name && (
+                                                <p className="text-slate-400">發送者：{log.sender_name}</p>
+                                            )}
+                                        </div>
+                                    ))}
+                                </div>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -1060,6 +1132,28 @@ function App() {
 
                 </div>
             </main>
+
+            {/* Send Notification Modal */}
+            {showNotifModal && selectedAppId && (
+                <SendNotificationModal
+                    applicationId={selectedAppId}
+                    placeholderVars={{
+                        案號: appDetail?.caseNumber ?? '',
+                        申請人: personName,
+                        階段: STAGE_LABEL_MAP[stage],
+                        申請日期: appDetail?.applyAt ?? '',
+                        申請金額: appDetail?.applyAmount != null ? `NT$ ${appDetail.applyAmount.toLocaleString()}` : '—',
+                        承辦人: appDetail?.officerName ?? '',
+                    }}
+                    checklistDocs={dbDocs.map((d): ChecklistDoc => ({ id: d.id, label: d.label }))}
+                    senderUserId={loggedInUser?.id ?? ''}
+                    onClose={() => setShowNotifModal(false)}
+                    onSent={() => {
+                        setShowNotifModal(false);
+                        loadNotifLogs(selectedAppId);
+                    }}
+                />
+            )}
         </div>
     );
 }

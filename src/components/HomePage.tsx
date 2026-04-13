@@ -5,11 +5,7 @@ import {
     FileText,
     ClipboardList,
     FilePlus,
-    BarChart2,
     Bell,
-    BookOpen,
-    HelpCircle,
-    HeartHandshake,
     ClipboardCheck,
     Megaphone,
     Info,
@@ -31,6 +27,8 @@ interface HomePageProps {
     onGoAudit: () => void;
     onGoAdmin: () => void;
     onNewApplication: () => void;
+    onGoTemplates: () => void;
+    onGoNotifications: () => void;
     onLogout: () => void;
 }
 
@@ -74,42 +72,14 @@ const QUICK_LINKS = [
         label: '表單下載',
         desc: '下載申請所需相關表單',
         color: 'bg-indigo-50 text-indigo-600 border-indigo-100',
-        action: null,
-    },
-    {
-        icon: <BarChart2 className="w-5 h-5" />,
-        label: '統計報表',
-        desc: '查看補助業務統計數據',
-        color: 'bg-purple-50 text-purple-600 border-purple-100',
-        action: null,
+        action: 'templates',
     },
     {
         icon: <Bell className="w-5 h-5" />,
         label: '通知管理',
         desc: '設定與發送申請通知',
         color: 'bg-amber-50 text-amber-600 border-amber-100',
-        action: null,
-    },
-    {
-        icon: <BookOpen className="w-5 h-5" />,
-        label: '作業手冊',
-        desc: '查閱系統操作說明文件',
-        color: 'bg-emerald-50 text-emerald-600 border-emerald-100',
-        action: null,
-    },
-    {
-        icon: <HelpCircle className="w-5 h-5" />,
-        label: '常見問題',
-        desc: '快速找到常見問題解答',
-        color: 'bg-rose-50 text-rose-600 border-rose-100',
-        action: null,
-    },
-    {
-        icon: <HeartHandshake className="w-4 h-4" />,
-        label: '追蹤關懷記錄',
-        desc: '查看與新增關懷追蹤紀錄',
-        color: 'bg-pink-50 text-pink-600 border-pink-100',
-        action: null,
+        action: 'notifications',
     },
     {
         icon: <ClipboardCheck className="w-4 h-4" />,
@@ -283,7 +253,7 @@ function BannerCarousel() {
 
 // ─── Main Component ────────────────────────────────────────────────────────────
 
-export function HomePage({ username, userRoles, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onLogout }: HomePageProps) {
+export function HomePage({ username, userRoles, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onLogout }: HomePageProps) {
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
             {/* Header */}
@@ -351,8 +321,10 @@ export function HomePage({ username, userRoles, onNavigateToCases, onGoAudit, on
                                         (link.action === 'cases' && hasAccess) ? onNavigateToCases :
                                             (link.action === 'audit' && hasAccess) ? onGoAudit :
                                                 (link.action === 'admin' && hasAccess) ? onGoAdmin :
-                                                    link.action === 'external_intake' ? () => window.open('/apply', '_blank') :
-                                                        undefined;
+                                                    link.action === 'templates' ? onGoTemplates :
+                                                        link.action === 'notifications' ? onGoNotifications :
+                                                        link.action === 'external_intake' ? () => window.open('/apply', '_blank') :
+                                                            undefined;
                                 return (
                                     <button
                                         key={idx}

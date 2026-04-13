@@ -398,8 +398,8 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
             }
 
             // Map status code to 'active' | 'closed'
-            // 2 (Rejection) and 5 (Completed) are closed.
-            const status: ApplicationStatus = (dbStatus === '2' || dbStatus === '5') ? 'closed' : 'active';
+            // 2 (審核未通過結案), 4 (核銷完成結案), 5 (legacy completed) are closed.
+            const status: ApplicationStatus = (dbStatus === '2' || dbStatus === '4' || dbStatus === '5') ? 'closed' : 'active';
             
             return {
                 id: row.id,

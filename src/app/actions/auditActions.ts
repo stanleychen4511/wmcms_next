@@ -22,14 +22,22 @@ export type AuditAction =
     | 'file_location.create'
     | 'file_location.update'
     | 'file_location.disable'
-    | 'file_location.enable';
+    | 'file_location.enable'
+    | 'template.upload'
+    | 'template.update'
+    | 'template.disable'
+    | 'template.enable'
+    | 'template.download'
+    | 'notification.send';
 
 export type AuditTargetType =
     | 'application'
     | 'home_visit'
     | 'document'
     | 'user'
-    | 'file_location';
+    | 'file_location'
+    | 'template'
+    | 'notification';
 
 export interface WriteAuditLogParams {
     userId: string | null;

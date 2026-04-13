@@ -89,6 +89,22 @@ CREATE INDEX idx_audit_logs_action     ON audit_logs (action);
 | `file_location.disable` | 停用實體位置 |
 | `file_location.enable` | 啟用實體位置 |
 
+### 範本檔案
+
+| 代碼 | 中文說明 |
+|------|----------|
+| `template.upload` | 上傳範本檔案 |
+| `template.update` | 修改範本資訊（名稱／分類／說明） |
+| `template.disable` | 停用範本檔案 |
+| `template.enable` | 啟用範本檔案 |
+| `template.download` | 下載範本檔案 |
+
+### 通知
+
+| 代碼 | 中文說明 |
+|------|----------|
+| `notification.send` | 發送通知（Email） |
+
 ---
 
 ## 4. Target Type 目標類型
@@ -100,6 +116,8 @@ CREATE INDEX idx_audit_logs_action     ON audit_logs (action);
 | `document` | 文件 | `application_documents.id`（SMALLINT 字串） |
 | `user` | 使用者 | `users.id`（UUID 字串） |
 | `file_location` | 實體位置 | `file_storage_location.id`（INTEGER 字串） |
+| `template` | 範本檔案 | `template_files.id`（INTEGER 字串） |
+| `notification` | 通知紀錄 | `notification_logs.id`（UUID 字串） |
 
 ---
 
@@ -171,6 +189,9 @@ interface AuditLogEntry {
 | `documentActions.ts` | `document.upload`、`document.status_update` |
 | `userActions.ts` | `user.login`、`user.create`、`user.update`（角色變更） |
 | `storageLocationActions.ts` | `file_location.create`、`file_location.update`、`file_location.disable`、`file_location.enable` |
+| `templateActions.ts` | `template.upload`、`template.update`、`template.disable`、`template.enable` |
+| `app/api/template-download/[id]/route.ts` | `template.download`（Route Handler，userId 來自 query param `?userId=`） |
+| `notificationActions.ts` | `notification.send`（成功或失敗均記錄，`targetId` 為 `notification_logs.id`） |
 | `intakeActions.ts` | `application.create`（線上收件，`userAccount` 記為 `'applicant'`） |
 
 **文件預覽**（`document.preview`）寫入點在前端元件：

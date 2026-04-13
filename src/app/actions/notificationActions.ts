@@ -1,0 +1,459 @@
+'use server';
+import { pool } from '../../lib/db';
+import { encryptAES, decryptAES } from '../../lib/crypto';
+import { writeAuditLog } from './auditActions';
+
+// ─── Types ────────────────────────────────────────────────────────────────────
+
+export interface NotificationChannel {
+    id: number;
+    channel: 'email' | 'line' | 'sms';
+    is_enabled: boolean;
+    config: Record<string, unknown> | null;
+}
+
+export interface SmtpConfig {
+    host: string;
+    port: number;
+    secure: boolean;
+    user: string;
+    password: string;         // plaintext (in memory only)
+    from_name: string;
+    from_email: string;
+}
+
+export interface NotificationTemplate {
+    id: number;
+    name: string;
+    channel: string;
+    subject: string | null;
+    body: string;
+    description: string | null;
+    status: 0 | 1;
+    sort_order: number;
+    created_at: string;
+}
+
+export interface NotificationRecipient {
+    user_id: string;
+    name: string;
+    email: string;
+    roles?: string[];          // present when fetched from staff list
+    is_applicant?: boolean;    // true when fetched as the case applicant
+}
+
+export interface NotificationLog {
+    id: string;
+    application_id: string;
+    channel: string;
+    sender_id: string | null;
+    sender_name: string | null;
+    recipients: NotificationRecipient[];
+    subject: string | null;
+    body: string;
+    template_id: number | null;
+    status: 'sent' | 'failed';
+    error_message: string | null;
+    sent_at: string;
+}
+
+interface ActionResult {
+    success: boolean;
+    error?: string;
+}
+
+// ─── Channel Actions ──────────────────────────────────────────────────────────
+
+export async function fetchChannels(): Promise<{ success: boolean; data?: NotificationChannel[]; error?: string }> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query<NotificationChannel>(
+            `SELECT id, channel, is_enabled, config FROM notification_channels ORDER BY id`
+        );
+        return { success: true, data: res.rows };
+    } catch (err: any) {
+        console.error('fetchChannels error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function updateChannelEnabled(channel: string, isEnabled: boolean): Promise<ActionResult> {
+    const client = await pool.connect();
+    try {
+        await client.query(
+            `UPDATE notification_channels SET is_enabled = $1 WHERE channel = $2`,
+            [isEnabled, channel]
+        );
+        return { success: true };
+    } catch (err: any) {
+        console.error('updateChannelEnabled error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function saveSmtpConfig(config: SmtpConfig): Promise<ActionResult> {
+    const client = await pool.connect();
+    try {
+        // Encrypt password before storing (convert Buffers to hex strings for JSON)
+        const { enc, iv } = encryptAES(config.password);
+        const stored = {
+            host: config.host,
+            port: config.port,
+            secure: config.secure,
+            user: config.user,
+            password_enc: enc ? enc.toString('hex') : null,
+            password_iv: iv ? iv.toString('hex') : null,
+            from_name: config.from_name,
+            from_email: config.from_email,
+        };
+        await client.query(
+            `UPDATE notification_channels SET config = $1 WHERE channel = 'email'`,
+            [JSON.stringify(stored)]
+        );
+        return { success: true };
+    } catch (err: any) {
+        console.error('saveSmtpConfig error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+/** Load SMTP config with decrypted password */
+export async function loadSmtpConfig(): Promise<{ success: boolean; data?: SmtpConfig; error?: string }> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT config FROM notification_channels WHERE channel = 'email'`
+        );
+        const cfg = res.rows[0]?.config;
+        if (!cfg) return { success: true, data: undefined };
+
+        const password = cfg.password_enc && cfg.password_iv
+            ? decryptAES(Buffer.from(cfg.password_enc, 'hex'), Buffer.from(cfg.password_iv, 'hex')) ?? ''
+            : '';
+
+        return {
+            success: true,
+            data: {
+                host: cfg.host ?? '',
+                port: cfg.port ?? 587,
+                secure: cfg.secure ?? false,
+                user: cfg.user ?? '',
+                password,
+                from_name: cfg.from_name ?? '',
+                from_email: cfg.from_email ?? '',
+            },
+        };
+    } catch (err: any) {
+        console.error('loadSmtpConfig error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── Template Actions ─────────────────────────────────────────────────────────
+
+export async function fetchTemplates(): Promise<{ success: boolean; data?: NotificationTemplate[]; error?: string }> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query<NotificationTemplate>(
+            `SELECT id, name, channel, subject, body, description, status, sort_order, created_at::text
+             FROM notification_templates
+             ORDER BY sort_order, name`
+        );
+        return { success: true, data: res.rows };
+    } catch (err: any) {
+        console.error('fetchTemplates error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function fetchActiveTemplates(): Promise<{ success: boolean; data?: NotificationTemplate[]; error?: string }> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query<NotificationTemplate>(
+            `SELECT id, name, channel, subject, body, description, status, sort_order, created_at::text
+             FROM notification_templates
+             WHERE status = 1
+             ORDER BY sort_order, name`
+        );
+        return { success: true, data: res.rows };
+    } catch (err: any) {
+        console.error('fetchActiveTemplates error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function addTemplate(
+    name: string, channel: string, subject: string | null,
+    body: string, description: string | null, sortOrder: number, createdBy: string
+): Promise<ActionResult> {
+    const client = await pool.connect();
+    try {
+        await client.query(
+            `INSERT INTO notification_templates (name, channel, subject, body, description, sort_order, created_by)
+             VALUES ($1, $2, $3, $4, $5, $6, $7::uuid)`,
+            [name, channel, subject || null, body, description || null, sortOrder, createdBy]
+        );
+        return { success: true };
+    } catch (err: any) {
+        console.error('addTemplate error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function updateTemplate(
+    id: number, name: string, channel: string, subject: string | null,
+    body: string, description: string | null, sortOrder: number
+): Promise<ActionResult> {
+    const client = await pool.connect();
+    try {
+        await client.query(
+            `UPDATE notification_templates
+             SET name=$1, channel=$2, subject=$3, body=$4, description=$5, sort_order=$6
+             WHERE id=$7`,
+            [name, channel, subject || null, body, description || null, sortOrder, id]
+        );
+        return { success: true };
+    } catch (err: any) {
+        console.error('updateTemplate error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function toggleTemplateStatus(id: number, status: 0 | 1): Promise<ActionResult> {
+    const client = await pool.connect();
+    try {
+        await client.query(`UPDATE notification_templates SET status=$1 WHERE id=$2`, [status, id]);
+        return { success: true };
+    } catch (err: any) {
+        console.error('toggleTemplateStatus error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── Recipient helpers ────────────────────────────────────────────────────────
+
+/**
+ * Fetch staff users (non-applicant roles) with email, including their roles.
+ * Applicant-only accounts are excluded — use fetchApplicantRecipient() for that.
+ */
+export async function fetchEmailRecipients(): Promise<{ success: boolean; data?: NotificationRecipient[]; error?: string }> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT u.id::text AS user_id, u.name_enc, u.name_iv, u.email,
+                    COALESCE(
+                        ARRAY_AGG(r.code ORDER BY r.id) FILTER (WHERE r.code IS NOT NULL),
+                        '{}'::text[]
+                    ) AS roles
+             FROM users u
+             LEFT JOIN user_roles ur ON ur.user_id = u.id
+             LEFT JOIN roles r ON r.id = ur.role_id
+             WHERE u.is_active = true
+               AND u.email IS NOT NULL AND u.email <> ''
+               AND u.id NOT IN (
+                   SELECT DISTINCT user_id FROM user_roles ur2
+                   JOIN roles r2 ON r2.id = ur2.role_id
+                   WHERE r2.code IN ('applicant', 'admin')
+               )
+             GROUP BY u.id, u.name_enc, u.name_iv, u.email
+             ORDER BY u.account`
+        );
+        const { decryptAES: dec } = await import('../../lib/crypto');
+        const data: NotificationRecipient[] = res.rows.map(r => ({
+            user_id: r.user_id,
+            name: r.name_enc && r.name_iv ? dec(r.name_enc, r.name_iv) ?? r.user_id : r.user_id,
+            email: r.email,
+            roles: r.roles ?? [],
+        }));
+        return { success: true, data };
+    } catch (err: any) {
+        console.error('fetchEmailRecipients error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Fetch the applicant of a specific application as a recipient.
+ * Returns null if the applicant has no email on record.
+ */
+export async function fetchApplicantRecipient(
+    applicationId: string
+): Promise<{ success: boolean; data?: NotificationRecipient | null; error?: string }> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT u.id::text AS user_id, u.name_enc, u.name_iv, u.email
+             FROM applications a
+             JOIN users u ON u.id = a.applicant_id
+             WHERE a.id = $1
+             LIMIT 1`,
+            [applicationId]
+        );
+        if (res.rows.length === 0) return { success: true, data: null };
+        const r = res.rows[0];
+        if (!r.email) return { success: true, data: null };
+        const { decryptAES: dec } = await import('../../lib/crypto');
+        const recipient: NotificationRecipient = {
+            user_id: r.user_id,
+            name: r.name_enc && r.name_iv ? dec(r.name_enc, r.name_iv) ?? r.user_id : r.user_id,
+            email: r.email,
+            is_applicant: true,
+        };
+        return { success: true, data: recipient };
+    } catch (err: any) {
+        console.error('fetchApplicantRecipient error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── Send Email ───────────────────────────────────────────────────────────────
+
+export async function sendNotificationEmail(
+    applicationId: string,
+    recipients: NotificationRecipient[],
+    subject: string,
+    body: string,
+    templateId: number | null,
+    senderUserId: string,
+): Promise<ActionResult> {
+    // 1. Load SMTP config
+    const cfgRes = await loadSmtpConfig();
+    if (!cfgRes.success || !cfgRes.data) {
+        return { success: false, error: 'SMTP 設定尚未完成，請至「通知管理」設定 Email 渠道。' };
+    }
+    const cfg = cfgRes.data;
+    if (!cfg.host || !cfg.user) {
+        return { success: false, error: 'SMTP 設定不完整。' };
+    }
+
+    // 2. Send via Nodemailer
+    let sendError: string | null = null;
+    try {
+        const nodemailer = await import('nodemailer');
+        const transporter = nodemailer.default.createTransport({
+            host: cfg.host,
+            port: cfg.port,
+            secure: cfg.secure,
+            auth: { user: cfg.user, pass: cfg.password },
+        });
+
+        const toAddresses = recipients.map(r => `"${r.name}" <${r.email}>`).join(', ');
+        await transporter.sendMail({
+            from: `"${cfg.from_name}" <${cfg.from_email}>`,
+            to: toAddresses,
+            subject,
+            text: body,
+            html: body.replace(/\n/g, '<br>'),
+        });
+    } catch (err: any) {
+        console.error('sendNotificationEmail SMTP error:', err);
+        sendError = err.message ?? '發送失敗';
+    }
+
+    // 3. Write notification_logs
+    const client = await pool.connect();
+    try {
+        const logRes = await client.query(
+            `INSERT INTO notification_logs
+                (application_id, channel, sender_id, recipients, subject, body, template_id, status, error_message)
+             VALUES ($1, 'email', $2::uuid, $3, $4, $5, $6, $7, $8)
+             RETURNING id`,
+            [
+                applicationId,
+                senderUserId || null,
+                JSON.stringify(recipients),
+                subject,
+                body,
+                templateId,
+                sendError ? 'failed' : 'sent',
+                sendError,
+            ]
+        );
+
+        // 4. Audit log
+        void writeAuditLog({
+            userId: senderUserId || null,
+            action: 'notification.send',
+            targetType: 'notification',
+            targetId: String(logRes.rows[0].id),
+            detail: {
+                application_id: applicationId,
+                channel: 'email',
+                recipients: recipients.map(r => r.email),
+                subject,
+                status: sendError ? 'failed' : 'sent',
+            },
+        });
+
+        if (sendError) return { success: false, error: sendError };
+        return { success: true };
+    } catch (err: any) {
+        console.error('sendNotificationEmail log error:', err);
+        return { success: false, error: sendError ?? err.message };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── Notification Logs ────────────────────────────────────────────────────────
+
+export async function fetchNotificationLogs(applicationId: string): Promise<{ success: boolean; data?: NotificationLog[]; error?: string }> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT nl.id::text, nl.application_id::text, nl.channel,
+                    nl.sender_id::text, u.name_enc, u.name_iv,
+                    nl.recipients, nl.subject, nl.body,
+                    nl.template_id, nl.status, nl.error_message,
+                    nl.sent_at::text
+             FROM notification_logs nl
+             LEFT JOIN users u ON u.id = nl.sender_id
+             WHERE nl.application_id = $1
+             ORDER BY nl.sent_at DESC`,
+            [applicationId]
+        );
+        const { decryptAES: dec } = await import('../../lib/crypto');
+        const data: NotificationLog[] = res.rows.map(r => ({
+            id: r.id,
+            application_id: r.application_id,
+            channel: r.channel,
+            sender_id: r.sender_id ?? null,
+            sender_name: r.name_enc && r.name_iv ? dec(r.name_enc, r.name_iv) ?? null : null,
+            recipients: r.recipients ?? [],
+            subject: r.subject ?? null,
+            body: r.body,
+            template_id: r.template_id ?? null,
+            status: r.status,
+            error_message: r.error_message ?? null,
+            sent_at: r.sent_at,
+        }));
+        return { success: true, data };
+    } catch (err: any) {
+        console.error('fetchNotificationLogs error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
