@@ -10,11 +10,13 @@ import {
     Check,
     MapPin,
     FileText,
+    SlidersHorizontal,
 } from 'lucide-react';
 import { Role } from '../types';
 import { AuditLogViewer } from './AuditLogViewer';
 import { StorageLocationManager } from './StorageLocationManager';
 import { TemplateFileManager } from './TemplateFileManager';
+import { SettingsPanel } from './SettingsPanel';
 import { clsx } from 'clsx';
 import { getUsers, createUser, updateUserRoles, resetUserPassword, deleteUserAccount, fetchRoles, AdminUserView, RoleOption } from '../app/actions/userActions';
 
@@ -25,7 +27,7 @@ interface AdminPanelProps {
 }
 
 export function AdminPanel({ userRoles, userId, onBack }: AdminPanelProps) {
-    const [activeTab, setActiveTab] = useState<'accounts' | 'locations' | 'templates' | 'logs'>('accounts');
+    const [activeTab, setActiveTab] = useState<'accounts' | 'locations' | 'templates' | 'logs' | 'settings'>('accounts');
     const [searchTerm, setSearchTerm] = useState('');
     const [showAddForm, setShowAddForm] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
@@ -223,6 +225,20 @@ export function AdminPanel({ userRoles, userId, onBack }: AdminPanelProps) {
                             <History className="w-5 h-5 shrink-0" />
                             <span>系統操作紀錄</span>
                         </button>
+                        {isAdmin && (
+                            <button
+                                onClick={() => setActiveTab('settings')}
+                                className={clsx(
+                                    "whitespace-nowrap lg:whitespace-normal flex-1 lg:flex-none flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-left font-medium",
+                                    activeTab === 'settings'
+                                        ? "bg-blue-600 text-white shadow-lg shadow-blue-200"
+                                        : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                                )}
+                            >
+                                <SlidersHorizontal className="w-5 h-5 shrink-0" />
+                                <span>參數設定</span>
+                            </button>
+                        )}
                     </div>
 
                     {/* Content Area */}
@@ -444,6 +460,18 @@ export function AdminPanel({ userRoles, userId, onBack }: AdminPanelProps) {
                             <StorageLocationManager />
                         ) : activeTab === 'templates' ? (
                             <TemplateFileManager userId={userId} />
+                        ) : activeTab === 'settings' ? (
+                            <div className="flex-1 flex flex-col min-h-0">
+                                <div className="p-6 border-b border-slate-200">
+                                    <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                                        <SlidersHorizontal className="w-6 h-6 text-blue-600" />
+                                        參數設定
+                                    </h2>
+                                </div>
+                                <div className="flex-1 p-6 overflow-y-auto">
+                                    <SettingsPanel userId={userId} />
+                                </div>
+                            </div>
                         ) : (
                             <div className="flex-1 flex flex-col min-h-0">
                                 <div className="p-6 border-b border-slate-200">

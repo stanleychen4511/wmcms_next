@@ -118,6 +118,7 @@ export function ExternalIntake() {
     const [ineligibleReason, setIneligibleReason] = useState('');
     const [errorMsg, setErrorMsg] = useState('');
     const [caseNumber, setCaseNumber] = useState('');
+    const [applicationType, setApplicationType] = useState('');
     const [qualFormValid, setQualFormValid] = useState(false);
     const [qualFormValues, setQualFormValues] = useState<ApplicantFormValues>(DEFAULT_QUALIFICATION);
     const [docs, setDocs] = useState<DocFile[]>([
@@ -266,6 +267,7 @@ export function ExternalIntake() {
     if (step === 'form' || step === 'submitting') {
         const canSubmit =
             name.trim() !== '' &&
+            applicationType !== '' &&
             qualFormValid &&
             requiredDocsMissing.length === 0;
 
@@ -279,6 +281,7 @@ export function ExternalIntake() {
             fd.append('idNumber', idNumber);
             fd.append('email', email);
             // Qualification fields
+            fd.append('application_type', applicationType);
             fd.append('marital_status', qualFormValues.type === 'married' ? '2' : '1');
             fd.append('age', String(qualFormValues.age ?? 0));
             fd.append('annual_income', String(qualFormValues.annualIncome ?? 0));
@@ -342,6 +345,23 @@ export function ExternalIntake() {
                                     readOnly
                                     className="w-full border border-gray-200 bg-gray-50 rounded-md px-3 py-2 text-sm text-gray-500 cursor-not-allowed"
                                 />
+                            </div>
+                            <div className="md:col-span-2">
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    申請類別 <span className="text-red-500">*</span>
+                                </label>
+                                <select
+                                    value={applicationType}
+                                    onChange={e => setApplicationType(e.target.value)}
+                                    disabled={step === 'submitting'}
+                                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500"
+                                >
+                                    <option value="">請選擇申請類別</option>
+                                    <option value="A">A 類－自費醫療補助</option>
+                                    <option value="B">B 類－臨終安寧自費醫療補助</option>
+                                    <option value="C">C 類－預立醫療照護諮商補助</option>
+                                    <option value="D">D 類－醫事人員進修補助</option>
+                                </select>
                             </div>
                         </div>
                     </div>

@@ -17,6 +17,7 @@ import {
 import { RoleSwitcher } from './components/RoleSwitcher';
 import { LoginPage } from './components/LoginPage';
 import { HomePage } from './components/HomePage';
+import { fetchPendingDocAlerts, PendingDocAlert } from './app/actions/pendingDocAlertActions';
 import { CaseListPage } from './components/CaseListPage';
 import { ApplicantHistoryPage } from './components/ApplicantHistoryPage';
 import { NewApplicationPage } from './components/NewApplicationPage';
@@ -27,21 +28,10 @@ import { fetchNotificationLogs, NotificationLog } from './app/actions/notificati
 import { ApplicationForm } from './components/ApplicationForm';
 import { StageContainer } from './components/StageContainer';
 import { Dashboard } from './components/Dashboard';
-import { DataExport } from './components/DataExport';
 import { AuditLogViewer } from './components/AuditLogViewer';
 import { AdminPanel } from './components/AdminPanel';
 import { TemplateDownloadPage } from './components/TemplateDownloadPage';
 import { NotificationManager } from './components/NotificationManager';
-
-import {
-    getCaseSummaries,
-    getApplicationsByPerson,
-    getActiveApplication,
-    getApplicationById,
-    setApplicationStage,
-    updateApplicationWorkflow,
-    ApplicationEntry,
-} from './store/appStore';
 
 import {
     fetchApplicationDetail,
@@ -60,6 +50,7 @@ import {
     fetchCaseSummaries,
     fetchApplicantHistory,
     assignOfficerBatch,
+    fetchUnassignedCount,
 } from './app/actions/applicationActions';
 
 import { fetchCaseOfficers, fetchCaseOfficersWithId } from './app/actions/userActions';
@@ -67,7 +58,7 @@ import { fetchCaseOfficers, fetchCaseOfficersWithId } from './app/actions/userAc
 import { STATUS_TO_STAGE, STAGE_TO_STATUS } from './lib/stageMaps';
 
 import { LoadingSpinner } from './components/LoadingSpinner';
-import { CaseSummary, ApplicationRecord, WorkflowStage, Role, DocumentStatus } from './types';
+import { CaseSummary, ApplicationRecord, WorkflowStage, Role } from './types';
 import { checkEligibility } from './utils/eligibility';
 import { clsx } from 'clsx';
 
@@ -95,7 +86,7 @@ function App() {
     const [role, setRole] = useState<Role>('case_officer');
     const [loggedInUser, setLoggedInUser] = useState<{ username: string; roles: Role[]; account: string; id: string } | null>(null);
 
-    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'audit' | 'new_application' | 'admin' | 'template_download' | 'notification_manager'>('home');
+    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager'>('home');
     const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
     const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
 
@@ -124,10 +115,6 @@ function App() {
             sessionStorage.setItem('navState', JSON.stringify({ view, selectedPersonId, selectedAppId }));
         } catch { /* ignore */ }
     }, [view, selectedPersonId, selectedAppId]);
-
-    // Force re-render when store data changes
-    const [_tick, setTick] = useState(0);
-    const refresh = () => setTick(t => t + 1);
 
     // Viewed stage for read-only browsing (separate from true stage)
     const [viewedStage, setViewedStage] = useState<WorkflowStage | null>(null);
@@ -193,6 +180,34 @@ function App() {
             loadNotifLogs(selectedAppId);
         }
     }, [view, selectedAppId, loadAppDetail, loadNotifLogs]);
+
+    // Pending doc alerts (recalculated every time user returns to home)
+    const [pendingAlerts, setPendingAlerts] = useState<PendingDocAlert[]>([]);
+
+    const loadPendingAlerts = useCallback(async (userId: string) => {
+        const res = await fetchPendingDocAlerts(userId);
+        if (res.success && res.data) setPendingAlerts(res.data);
+        else setPendingAlerts([]);
+    }, []);
+
+    // Unassigned case count for assign-capable roles
+    const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
+    const [unassignedCount, setUnassignedCount] = useState<number>(0);
+
+    const loadUnassignedCount = useCallback(async () => {
+        const count = await fetchUnassignedCount();
+        setUnassignedCount(count);
+    }, []);
+
+    // Recalculate both alerts every time user returns to home view
+    useEffect(() => {
+        if (view === 'home' && loggedInUser) {
+            const roles = loggedInUser.roles as Role[];
+            if (roles.includes('case_officer')) loadPendingAlerts(loggedInUser.id);
+            if (roles.some(r => ASSIGN_ROLES.includes(r))) loadUnassignedCount();
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [view, loggedInUser, loadPendingAlerts, loadUnassignedCount]);
 
     // DB state for inquiry pages
     const [dbCases, setDbCases] = useState<CaseSummary[]>([]);
@@ -277,8 +292,10 @@ function App() {
             <HomePage
                 username={loggedInUser.username}
                 userRoles={loggedInUser.roles as Role[]}
+                pendingAlerts={pendingAlerts}
+                unassignedCount={unassignedCount}
                 onNavigateToCases={() => setView('list')}
-                onGoAudit={() => setView('audit')}
+                onGoAudit={() => setView('admin')}
                 onGoAdmin={() => setView('admin')}
                 onNewApplication={() => setView('new_application')}
                 onGoTemplates={() => setView('template_download')}
@@ -303,42 +320,6 @@ function App() {
                     setView('detail');
                 }}
             />
-        );
-    }
-
-    if (view === 'audit') {
-        // Collect all audit logs from all active applications
-        const allLogs = getCaseSummaries().flatMap(cs => {
-            const active = getActiveApplication(cs.id);
-            return active?.workflow?.auditLog ?? [];
-        });
-        return (
-            <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
-                <header className="bg-slate-900 text-white shadow-md">
-                    <div className="container mx-auto px-4 sm:px-6 py-4 flex justify-between items-center">
-                        <div className="flex items-center gap-3">
-                            <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-white shrink-0">W</div>
-                            <h1
-                                className="text-lg sm:text-xl font-bold tracking-tight cursor-pointer hover:text-blue-300 transition-colors truncate"
-                                onClick={() => setView('home')}
-                                title="返回首頁"
-                            >萬美基金會補助管理系統</h1>
-                        </div>
-                        <button onClick={() => setView('home')} className="flex items-center gap-1.5 text-sm text-slate-300 hover:text-blue-400 transition px-2 py-1.5 shrink-0">
-                            <span className="text-base leading-none">←</span><span className="hidden sm:inline">返回首頁</span>
-                        </button>
-                    </div>
-                </header>
-                <main className="flex-1 container mx-auto px-6 py-8">
-                    <h2 className="text-2xl font-bold text-slate-800 mb-6 flex items-center gap-2">
-                        <svg className="w-6 h-6 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        系統操作紀錄
-                    </h2>
-                    <AuditLogViewer />
-                </main>
-            </div>
         );
     }
 
@@ -379,6 +360,7 @@ function App() {
                 allOfficers={officerList}
                 officersWithId={officersWithId}
                 isLoading={listLoading}
+                pendingAlertIds={new Set(pendingAlerts.map(a => a.applicationId))}
                 onMount={refreshCaseSummaries}
                 onAssign={async (applicationIds, officerUserId) => {
                     const res = await assignOfficerBatch(applicationIds, officerUserId);
@@ -430,18 +412,10 @@ function App() {
         );
     }
 
-    // Determine stage: prefer DB-driven appDetail, fallback to legacy mock store
-    const appEntry: ApplicationEntry | null = selectedAppId ? getApplicationById(selectedAppId) : null;
+    // Determine stage: prefer DB-driven appDetail
+    const stage: WorkflowStage = (appDetail?.stage as WorkflowStage) ?? 'admin_review';
 
-    // The true current stage — from DB if available, else from mock store
-    const stage: WorkflowStage = appDetail
-        ? (appDetail.stage as WorkflowStage)
-        : (appEntry?.stage as WorkflowStage ?? 'admin_review');
-
-    const workflow = appEntry?.workflow ?? null;
-    const { documents = [], applicant = {} as any, auditLog = [] } = workflow ?? {};
-
-    // Build qualification form initial values: DB data takes priority over mock store
+    // Build qualification form initial values: DB data takes priority
     const qualificationInitialValues = appDetail && (
         appDetail.age != null ||
         appDetail.moveableProperty != null ||
@@ -455,7 +429,7 @@ function App() {
         annualIncome: appDetail.annualIncome ?? 0,
         movableAssets: appDetail.moveableProperty ?? 0,
         realEstateValue: appDetail.immoveableProperty ?? 0,
-    } : applicant;
+    } : undefined;
     const currentStageIndex = STAGES.indexOf(stage);
 
     // Viewed stage (for read-only browsing) — defaults to true stage
@@ -463,30 +437,14 @@ function App() {
     const isViewingPastStep = displayedStage !== stage;
 
 
-    // Use DB applicant name if available; fallback to mock store lookup
-    const personName = appDetail?.applicantName
-        ?? getCaseSummaries().find(c => c.id === appEntry?.applicantId)?.applicantName
-        ?? '';
-
-    const addLog = (action: string) => {
-        const timestamp = new Date().toLocaleString();
-        const newLog = [`[${timestamp}] [${role}] ${action}`, ...auditLog];
-        updateApplicationWorkflow(selectedAppId!, { auditLog: newLog });
-        refresh();
-    };
-
-    const handleDocumentChange = (id: string, status: DocumentStatus) => {
-        const newDocs = documents.map(d => d.id === id ? { ...d, status } : d);
-        updateApplicationWorkflow(selectedAppId!, { documents: newDocs });
-        addLog(`更新文件 ${id} 狀態為 ${status}`);
-    };
+    // Use DB applicant name if available
+    const personName = appDetail?.applicantName ?? '';
 
     const checkEligibilityAction = () => {
-        // Use liveApplicantValues (from form) if available, fallback to store data
-        const dataToCheck = liveApplicantValues ?? applicant;
+        // Use liveApplicantValues (from form) if available
+        const dataToCheck = liveApplicantValues;
         const result = checkEligibility(dataToCheck);
         setEligibilityCheck({ checked: true, eligible: result.isEligible, reasons: result.reasons });
-        addLog(`執行資格判定: ${result.isEligible ? '符合' : '不符合'}`);
     };
 
     const handleSaveQualification = async () => {
@@ -508,7 +466,6 @@ function App() {
                 apply_amount:           applyAmount != null ? Number(applyAmount) : null,
             });
             if (result.success) {
-                addLog('儲存資格預審資料');
                 setSaveQualToast({ type: 'success', msg: '資格預審資料已儲存' });
             } else {
                 setSaveQualToast({ type: 'error', msg: result.error ?? '儲存失敗，請稍後再試' });
@@ -530,9 +487,7 @@ function App() {
         // ── 核銷結案 ──────────────────────────────────────────────────
         if (stage === 'reimbursement') {
             await closeCase(selectedAppId, loggedInUser?.id ?? null);
-            addLog('核銷完成，案件結案');
             await loadAppDetail(selectedAppId);
-            refresh();
             return;
         }
 
@@ -559,14 +514,11 @@ function App() {
             if (stage === 'board_review') {
                 if (!boardApproved) {
                     await closeCaseRejected(selectedAppId, boardOpinion, loggedInUser?.id ?? null);
-                    addLog('董事審核未通過，案件結案');
                     await loadAppDetail(selectedAppId);
                     setViewedStage('board_review');
-                    refresh();
                     return;
                 }
                 await saveBoardReviewData(selectedAppId, boardApprovedAmount, boardOpinion);
-                addLog(`董事審核通過，通過金額 ${boardApprovedAmount.toLocaleString()} 元`);
             }
 
             await advanceWorkflowStage(
@@ -577,8 +529,6 @@ function App() {
             );
             await loadAppDetail(selectedAppId);
             setViewedStage(next);
-            addLog(`推進流程至 ${STAGE_LABEL_MAP[next]}`);
-            refresh();
         }
     };
 
@@ -601,8 +551,6 @@ function App() {
                 await loadAppDetail(selectedAppId);
             }
             setViewedStage(prev);
-            addLog(`退回流程至 ${STAGE_LABEL_MAP[prev]}`);
-            refresh();
         }
     };
 
@@ -644,12 +592,9 @@ function App() {
                             <ApplicationForm
                                 initialValues={qualificationInitialValues}
                                 readOnly={contentReadOnly || (!hasPermission('board_member') && !hasPermission('admin') && (role === 'board_member' || role === 'accountant'))}
+                                applicationType={appDetail?.applicationType}
                                 onValidation={(_isValid, values) => {
                                     setLiveApplicantValues(values);
-                                    if (!contentReadOnly && JSON.stringify(values) !== JSON.stringify(applicant)) {
-                                        updateApplicationWorkflow(selectedAppId!, { applicant: values });
-                                        refresh();
-                                    }
                                 }}
                             />
                             {!contentReadOnly && (
@@ -707,7 +652,6 @@ function App() {
                             userId={loggedInUser?.id}
                             readOnly={contentReadOnly || (!hasPermission('case_officer') && !hasPermission('admin'))}
                             onRefresh={() => {
-                                refresh();
                                 if (selectedAppId) {
                                     fetchApplicationDocuments(selectedAppId).then(setDbDocs);
                                 }
@@ -853,7 +797,6 @@ function App() {
                             userId={loggedInUser?.id}
                             readOnly={contentReadOnly || (!hasPermission('accountant') && !hasPermission('case_officer') && !hasPermission('admin'))}
                             onRefresh={() => {
-                                refresh();
                                 if (selectedAppId) {
                                     fetchApplicationDocuments(selectedAppId).then(setDbDocs);
                                 }
@@ -869,14 +812,6 @@ function App() {
 
     const retreatLabel = currentStageIndex > 0 ? STAGE_LABEL_MAP[STAGES[currentStageIndex - 1]] : null;
     const advanceLabel = currentStageIndex < STAGES.length - 1 ? STAGE_LABEL_MAP[STAGES[currentStageIndex + 1]] : null;
-
-    // Build a fake state object for Dashboard/DataExport compatibility
-    const legacyState = {
-        stage,
-        documents,
-        applicant,
-        auditLog,
-    };
 
     return (
         <div className="min-h-screen bg-gray-100 flex flex-col font-sans text-slate-800">
@@ -898,9 +833,6 @@ function App() {
                         </div>
                     </div>
                     <div className="flex items-center gap-2 sm:gap-4 shrink-0">
-                        <div className="hidden md:block">
-                            <DataExport state={legacyState} onLog={addLog} />
-                        </div>
                         <div className="flex items-center gap-2 bg-slate-800 text-slate-200 px-2 sm:px-3 py-1.5 rounded-lg border border-slate-700">
                             <UserCircle className="w-4 h-4 text-slate-400" />
                             <span className="text-xs sm:text-sm font-medium truncate max-w-[80px] sm:max-w-none">{loggedInUser.username}</span>
@@ -1011,11 +943,12 @@ function App() {
                 {/* Content Area */}
                 <div className="flex-1 space-y-6 overflow-hidden">
                     <Dashboard
-                        state={legacyState}
                         applicantName={personName}
                         dbAnnualIncome={appDetail?.annualIncome}
                         applyAmount={appDetail?.applyAmount ?? null}
                         approvedAmount={appDetail?.approvedAmount ?? null}
+                        applicationType={appDetail?.applicationType}
+                        totalApprovedAmount={appDetail?.totalApprovedAmount}
                     />
 
                     {/* 結案 banner */}

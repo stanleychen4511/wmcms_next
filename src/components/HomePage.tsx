@@ -14,7 +14,9 @@ import {
     LogOut,
     Settings,
     Inbox,
+    AlertTriangle,
 } from 'lucide-react';
+import { PendingDocAlert } from '../app/actions/pendingDocAlertActions';
 import { clsx } from 'clsx';
 import { Role } from '../types';
 
@@ -23,6 +25,8 @@ import { Role } from '../types';
 interface HomePageProps {
     username: string;
     userRoles: Role[];
+    pendingAlerts?: PendingDocAlert[];
+    unassignedCount?: number;
     onNavigateToCases: () => void;
     onGoAudit: () => void;
     onGoAdmin: () => void;
@@ -253,7 +257,10 @@ function BannerCarousel() {
 
 // ─── Main Component ────────────────────────────────────────────────────────────
 
-export function HomePage({ username, userRoles, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onLogout }: HomePageProps) {
+const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
+
+export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCount = 0, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onLogout }: HomePageProps) {
+    const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
             {/* Header */}
@@ -302,6 +309,43 @@ export function HomePage({ username, userRoles, onNavigateToCases, onGoAudit, on
                         </p>
                     </div>
                 </div>
+
+                {/* Alert banners */}
+                {(
+                    (userRoles.includes('case_officer') && pendingAlerts.length > 0) ||
+                    (canAssign && unassignedCount > 0)
+                ) && (
+                    <div className="space-y-2">
+                        {/* Pending doc alert — only for case_officer */}
+                        {userRoles.includes('case_officer') && pendingAlerts.length > 0 && (
+                            <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-xl px-5 py-4">
+                                <AlertTriangle className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
+                                <div>
+                                    <p className="text-sm font-semibold text-orange-800">
+                                        當前有 {pendingAlerts.length} 筆案件未補件
+                                    </p>
+                                    <p className="text-xs text-orange-600 mt-0.5">
+                                        收件超過門檻天數且仍有必備文件未上傳，請至「申請案件管理」查看詳情。
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+                        {/* Unassigned case alert — only for assign-capable roles */}
+                        {canAssign && unassignedCount > 0 && (
+                            <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-xl px-5 py-4">
+                                <AlertTriangle className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
+                                <div>
+                                    <p className="text-sm font-semibold text-orange-800">
+                                        當前有 {unassignedCount} 筆案件尚未派案
+                                    </p>
+                                    <p className="text-xs text-orange-600 mt-0.5">
+                                        請至「申請案件管理」進行派案作業。
+                                    </p>
+                                </div>
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 {/* Two-column layout */}
                 <div className="flex flex-col lg:flex-row gap-8 items-start">

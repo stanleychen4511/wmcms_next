@@ -1,5 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Search, ChevronRight, FileText, ArrowUpDown, UserCircle, LogOut, UserCheck } from 'lucide-react';
+import { Search, ChevronRight, FileText, ArrowUpDown, UserCircle, LogOut, UserCheck, AlertTriangle } from 'lucide-react';
 import { CaseSummary, Role, WorkflowStage } from '../types';
 
 interface OfficerOption { id: string; name: string; }
@@ -11,6 +11,7 @@ interface CaseListPageProps {
     allOfficers: string[];
     officersWithId: OfficerOption[];
     isLoading?: boolean;
+    pendingAlertIds?: Set<string>;
     onMount?: () => void;
     onAssign: (applicationIds: string[], officerUserId: string) => Promise<void>;
     onSelectCase: (caseId: string) => void;
@@ -58,7 +59,7 @@ function loadSavedFilters() {
 
 export function CaseListPage({
     username, userRoles, cases, allOfficers, officersWithId,
-    isLoading, onMount, onAssign, onSelectCase, onLogout, onGoHome,
+    isLoading, pendingAlertIds = new Set(), onMount, onAssign, onSelectCase, onLogout, onGoHome,
 }: CaseListPageProps) {
     const { first, last } = getMonthRange();
     const saved = loadSavedFilters();
@@ -78,6 +79,7 @@ export function CaseListPage({
     const [stageFilter,    setStageFilter]    = useState<WorkflowStage | ''>(saved?.stageFilter    ?? '');
     const [officerFilter,  setOfficerFilter]  = useState<string>(saved?.officerFilter  ?? '');
     const [assignFilter,   setAssignFilter]   = useState<'all' | 'unassigned' | 'assigned'>(saved?.assignFilter ?? 'all');
+    const [pendingOnly,    setPendingOnly]    = useState<boolean>(false);
 
     // Effective filter values — locked roles override user-selected values
     const effectiveOfficerFilter = lockOfficer ? username : officerFilter;
@@ -98,7 +100,7 @@ export function CaseListPage({
     }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter]);
 
     // Clear selection when filter changes
-    useEffect(() => { setSelectedIds(new Set()); }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter]);
+    useEffect(() => { setSelectedIds(new Set()); }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter, pendingOnly]);
 
     const filteredCases = useMemo(() => {
         return cases.filter((c) => {
@@ -109,9 +111,10 @@ export function CaseListPage({
             if (dateTo && c.appliedAt > dateTo) return false;
             if (effectiveAssignFilter === 'unassigned' && c.officerId !== null) return false;
             if (effectiveAssignFilter === 'assigned'   && c.officerId === null) return false;
+            if (pendingOnly && !pendingAlertIds.has(c.applicationId)) return false;
             return true;
         });
-    }, [cases, nameQuery, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter]);
+    }, [cases, nameQuery, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds]);
 
     const allFilteredSelected = filteredCases.length > 0 &&
         filteredCases.every(c => selectedIds.has(c.applicationId));
@@ -263,6 +266,27 @@ export function CaseListPage({
                                 <option value="assigned">已派案</option>
                             </select>
                         </div>
+
+                        {/* Pending doc filter — only shown when there are alerts */}
+                        {pendingAlertIds.size > 0 && (
+                            <div className="sm:col-span-1 flex items-end">
+                                <label className="flex items-center gap-2 cursor-pointer select-none w-full border border-orange-200 bg-orange-50 rounded-lg px-3 py-2 hover:bg-orange-100 transition">
+                                    <input
+                                        type="checkbox"
+                                        checked={pendingOnly}
+                                        onChange={e => setPendingOnly(e.target.checked)}
+                                        className="w-4 h-4 accent-orange-500"
+                                    />
+                                    <span className="text-sm font-medium text-orange-700 flex items-center gap-1">
+                                        <AlertTriangle className="w-3.5 h-3.5" />
+                                        僅顯示未補件
+                                        <span className="ml-1 bg-orange-500 text-white text-xs rounded-full px-1.5 py-0.5 leading-none">
+                                            {pendingAlertIds.size}
+                                        </span>
+                                    </span>
+                                </label>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -327,6 +351,7 @@ export function CaseListPage({
                                         isLast={idx === filteredCases.length - 1}
                                         canAssign={canAssign}
                                         selected={selectedIds.has(c.applicationId)}
+                                        isPending={pendingAlertIds.has(c.applicationId)}
                                         onToggle={() => toggleOne(c.applicationId)}
                                         onClick={() => onSelectCase(c.id)}
                                     />
@@ -404,15 +429,15 @@ function Th({ children }: { children: React.ReactNode }) {
 }
 
 function CaseRow({
-    case: c, isLast, canAssign, selected, onToggle, onClick,
+    case: c, isLast, canAssign, selected, isPending, onToggle, onClick,
 }: {
     case: CaseSummary; isLast: boolean;
-    canAssign: boolean; selected: boolean;
+    canAssign: boolean; selected: boolean; isPending: boolean;
     onToggle: () => void; onClick: () => void;
 }) {
     const remaining = 350000 - (c.totalAmount ?? 0);
     return (
-        <tr className={`transition-colors group ${!isLast ? 'border-b border-gray-100' : ''} ${selected ? 'bg-blue-50' : 'hover:bg-blue-50'}`}>
+        <tr className={`transition-colors group ${!isLast ? 'border-b border-gray-100' : ''} ${selected ? 'bg-blue-50' : isPending ? 'bg-orange-50 hover:bg-orange-100' : 'hover:bg-blue-50'}`}>
             {canAssign && (
                 <td className="py-3.5 px-4" onClick={e => e.stopPropagation()}>
                     <input
@@ -424,7 +449,14 @@ function CaseRow({
                 </td>
             )}
             <td className="py-3.5 px-4 font-medium text-slate-800 group-hover:text-blue-700 transition-colors cursor-pointer" onClick={onClick}>
-                {c.applicantName}
+                <span className="flex items-center gap-2">
+                    {c.applicantName}
+                    {isPending && (
+                        <span className="inline-flex items-center gap-0.5 text-xs bg-orange-100 text-orange-600 border border-orange-200 rounded-full px-1.5 py-0.5 font-medium shrink-0">
+                            <AlertTriangle className="w-3 h-3" />未補件
+                        </span>
+                    )}
+                </span>
             </td>
             <td className="py-3.5 px-4 text-center cursor-pointer" onClick={onClick}>
                 <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 text-slate-600 text-xs font-bold">

@@ -40,7 +40,7 @@ export async function queryApplicantEligibility(idNumber: string): Promise<Eligi
 
         // Check for active (non-terminal) applications
         const activeRes = await client.query(
-            `SELECT id FROM applications WHERE applicant_id = $1 AND status NOT IN ('2', '5') LIMIT 1`,
+            `SELECT id FROM applications WHERE applicant_id = $1 AND status NOT IN ('2', '4') LIMIT 1`,
             [matchedUserId]
         );
 
@@ -55,7 +55,7 @@ export async function queryApplicantEligibility(idNumber: string): Promise<Eligi
         const sumRes = await client.query(
             `SELECT COALESCE(SUM(approved_amount), 0) AS total
              FROM applications
-             WHERE applicant_id = $1 AND status = '5'`,
+             WHERE applicant_id = $1 AND status = '4'`,
             [matchedUserId]
         );
 
@@ -105,9 +105,10 @@ const INTAKE_DOCS: { field: string; docId: string; label: string }[] = [
 export async function submitExternalApplication(
     formData: FormData
 ): Promise<{ success: boolean; caseNumber?: string; error?: string }> {
-    const name       = (formData.get('name') as string | null)?.trim() ?? '';
-    const idNumber   = (formData.get('idNumber') as string | null)?.trim().toUpperCase() ?? '';
-    const maritalStatus = (formData.get('marital_status') as string | null) ?? null;
+    const name            = (formData.get('name') as string | null)?.trim() ?? '';
+    const idNumber        = (formData.get('idNumber') as string | null)?.trim().toUpperCase() ?? '';
+    const applicationType = ((formData.get('application_type') as string | null) ?? 'A').toUpperCase();
+    const maritalStatus   = (formData.get('marital_status') as string | null) ?? null;
     const age        = formData.get('age')        ? Number(formData.get('age'))        : null;
     const annualIncome   = formData.get('annual_income')   ? Number(formData.get('annual_income'))   : null;
     const moveableProp   = formData.get('moveable_property')   ? Number(formData.get('moveable_property'))   : null;
@@ -193,20 +194,22 @@ export async function submitExternalApplication(
         const rocYear = String(now.getFullYear() - 1911).padStart(3, '0');
         const countRes = await client.query(
             `SELECT count(*) AS total FROM applications WHERE case_number LIKE $1`,
-            [`A${rocYear}%`]
+            [`${applicationType}${rocYear}%`]
         );
         const count = parseInt(countRes.rows[0].total, 10) + 1;
-        caseNumber = `A${rocYear}${count.toString().padStart(3, '0')}`;
+        caseNumber = `${applicationType}${rocYear}${count.toString().padStart(3, '0')}`;
 
         // ── 3. Create application (no officer) ───────────────────────────────
         const appRes = await client.query(
             `INSERT INTO applications (
                 case_number, applicant_id, officer_id, status, apply_at,
+                application_type,
                 age, annual_income, moveable_property, immoveable_property,
                 marital_status, has_children, underage_children_count
-             ) VALUES ($1, $2, NULL, '1', NOW(), $3, $4, $5, $6, $7, $8, $9)
+             ) VALUES ($1, $2, NULL, '1', NOW(), $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING id`,
             [caseNumber, applicantId,
+             applicationType,
              age, annualIncome, moveableProp, immoveableProp,
              maritalStatus, hasChildren, underageCount]
         );

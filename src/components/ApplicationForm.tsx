@@ -8,9 +8,17 @@ interface ApplicationFormProps {
     initialValues: ApplicantFormValues;
     onValidation: (isValid: boolean, values: ApplicantFormValues) => void;
     readOnly?: boolean;
+    applicationType?: string | null;
 }
 
-export function ApplicationForm({ initialValues, onValidation, readOnly = false }: ApplicationFormProps) {
+const APPLICATION_TYPE_LABEL: Record<string, string> = {
+    A: 'A 類',
+    B: 'B 類',
+    C: 'C 類',
+    D: 'D 類',
+};
+
+export function ApplicationForm({ initialValues, onValidation, readOnly = false, applicationType }: ApplicationFormProps) {
     const {
         register,
         watch,
@@ -43,11 +51,11 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false 
 
     return (
         <form className="space-y-4">
-            {/* Row 1: 申請類別 | 育有未成年子女 | 未成年子女人數 */}
+            {/* Row 1: 婚姻狀態 | 育有未成年子女 | 未成年子女人數 */}
             <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
-                {/* Applicant Type — col 1 */}
+                {/* Marital Status — col 1 */}
                 <div className="md:col-span-1">
-                    <label className="block text-sm font-medium text-gray-700">申請類別</label>
+                    <label className="block text-sm font-medium text-gray-700">婚姻狀態</label>
                     <select
                         {...register('type')}
                         disabled={readOnly}

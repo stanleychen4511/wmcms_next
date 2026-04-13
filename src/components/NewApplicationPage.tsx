@@ -1,6 +1,5 @@
 import { useState, useEffect } from 'react';
 import { ArrowLeft, FilePlus, Search, CheckCircle, XCircle, UserCircle, LogOut, AlertTriangle } from 'lucide-react';
-import { addNewApplication } from '../store/appStore';
 import { checkApplicationStatus } from '../app/actions/applicationActions';
 
 interface NewApplicationPageProps {
@@ -147,6 +146,8 @@ export function NewApplicationPage({
 }: NewApplicationPageProps) {
     const [name, setName] = useState('');
     const [idNumber, setIdNumber] = useState('');
+    const [applicationType, setApplicationType] = useState('');
+    const [appTypeError, setAppTypeError] = useState('');
     const [nameError, setNameError] = useState('');
     const [idError, setIdError] = useState('');
     const [lookupResult, setLookupResult] = useState<{ hasRecord: boolean; hasActive: boolean; totalApprovedAmount: number; applicantName?: string } | null>(null);
@@ -186,6 +187,12 @@ export function NewApplicationPage({
             ok = false;
         } else {
             setIdError('');
+        }
+        if (!applicationType) {
+            setAppTypeError('請選擇申請類別');
+            ok = false;
+        } else {
+            setAppTypeError('');
         }
         return ok;
     };
@@ -244,7 +251,7 @@ export function NewApplicationPage({
         setIsSubmitting(true);
         try {
             const { createNewApplication } = await import('../app/actions/applicationActions');
-            const res = await createNewApplication(name.trim(), idNumber.trim(), userAccount);
+            const res = await createNewApplication(name.trim(), idNumber.trim(), userAccount, applicationType);
             if (res.success && res.caseId) {
                 onSubmitSuccess(res.caseId);
             } else {
@@ -362,6 +369,36 @@ export function NewApplicationPage({
                             </p>
                         )}
                         <p className="text-xs text-slate-400 mt-1">格式：1 個大寫英文字母 + 9 位數字，共 10 碼</p>
+                    </div>
+
+                    {/* 申請類別 */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            申請類別
+                            <span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <select
+                            value={applicationType}
+                            onChange={e => { setApplicationType(e.target.value); setAppTypeError(''); }}
+                            className={[
+                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                appTypeError
+                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                            ].join(' ')}
+                        >
+                            <option value="">請選擇申請類別</option>
+                            <option value="A">A 類</option>
+                            <option value="B">B 類</option>
+                            <option value="C">C 類</option>
+                            <option value="D">D 類</option>
+                        </select>
+                        {appTypeError && (
+                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                <XCircle className="w-3 h-3" />
+                                {appTypeError}
+                            </p>
+                        )}
                     </div>
 
                     {/* Query button */}

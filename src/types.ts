@@ -47,16 +47,3 @@ export interface DocumentItem {
     status: DocumentStatus;
 }
 
-export const DOCUMENT_LIST: DocumentItem[] = [
-    { id: 'd1', name: '申請書', required: true, status: 'pending' },
-    { id: 'd2', name: '全戶戶籍謄本', required: true, status: 'pending' },
-    { id: 'd3', name: '低收入戶證明/清寒證明', required: true, status: 'pending' },
-    { id: 'd4', name: '身心障礙手冊', required: false, status: 'pending' },
-    { id: 'd5', name: '診斷證明書', required: true, status: 'pending' },
-    { id: 'd6', name: '醫療收據正本', required: true, status: 'pending' },
-    { id: 'd7', name: '全戶財產證明', required: true, status: 'pending' },
-    { id: 'd8', name: '全戶所得證明', required: true, status: 'pending' },
-    { id: 'd9', name: '切結書', required: true, status: 'pending' },
-    { id: 'd10', name: '領據', required: false, status: 'pending' }, // Usually for reimbursement
-    { id: 'd11', name: '訪視報告', required: false, status: 'pending' }, // Internal
-];

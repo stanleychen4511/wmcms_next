@@ -73,7 +73,7 @@ export async function checkApplicationStatus(name: string, idNumber: string): Pr
         
         // Define terminal statuses per spec (applications.status VARCHAR(1)):
         // 1=審核中, 2=審核未通過, 3=審核通過, 4=待補助, 5=補助完成
-        const TERMINAL_STATUSES = ['5', '2'];
+        const TERMINAL_STATUSES = ['4', '2'];
         
         const isTerminal = TERMINAL_STATUSES.includes(appData.status || '');
 
@@ -81,7 +81,7 @@ export async function checkApplicationStatus(name: string, idNumber: string): Pr
         const sumRes = await client.query(`
             SELECT SUM(approved_amount) as total_approved
             FROM applications
-            WHERE applicant_id = $1 AND status = '5'
+            WHERE applicant_id = $1 AND status = '4'
         `, [matchedUserId]);
         
         const totalApprovedAmount = parseInt(sumRes.rows[0].total_approved || '0', 10);
@@ -109,9 +109,10 @@ function generateTempPassword(): string {
 }
 
 export async function createNewApplication(
-    name: string, 
-    idNumber: string, 
-    officerAccount: string
+    name: string,
+    idNumber: string,
+    officerAccount: string,
+    applicationType: string = 'A'
 ): Promise<{ success: boolean; caseId?: string; error?: string }> {
     const client = await pool.connect();
     try {
@@ -184,20 +185,21 @@ export async function createNewApplication(
         const now = new Date();
         // Taiwanese calendar year = Western year - 1911
         const rocYear = String(now.getFullYear() - 1911).padStart(3, '0');
+        const typePrefix = applicationType.toUpperCase();
         const countRes = await client.query(
             `SELECT count(*) as total FROM applications WHERE case_number LIKE $1`,
-            [`A${rocYear}%`]
+            [`${typePrefix}${rocYear}%`]
         );
         const count = parseInt(countRes.rows[0].total) + 1;
-        const caseNumber = `A${rocYear}${count.toString().padStart(3, '0')}`; // e.g. A115001 (7 chars)
+        const caseNumber = `${typePrefix}${rocYear}${count.toString().padStart(3, '0')}`; // e.g. D115003 (7 chars)
 
         // 4. Create the application — status '1' = 審核中 (per spec)
         const appRes = await client.query(`
             INSERT INTO applications (
-                case_number, applicant_id, officer_id, status, apply_at
-            ) VALUES ($1, $2, $3, '1', NOW())
+                case_number, applicant_id, officer_id, status, apply_at, application_type
+            ) VALUES ($1, $2, $3, '1', NOW(), $4)
             RETURNING id;
-        `, [caseNumber, applicantId, officerId]);
+        `, [caseNumber, applicantId, officerId, typePrefix]);
 
         const newCaseId = appRes.rows[0].id;
 
@@ -399,7 +401,7 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
 
             // Map status code to 'active' | 'closed'
             // 2 (審核未通過結案), 4 (核銷完成結案), 5 (legacy completed) are closed.
-            const status: ApplicationStatus = (dbStatus === '2' || dbStatus === '4' || dbStatus === '5') ? 'closed' : 'active';
+            const status: ApplicationStatus = (dbStatus === '2' || dbStatus === '4') ? 'closed' : 'active';
             
             return {
                 id: row.id,
@@ -416,6 +418,28 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
     } catch (err) {
         console.error('fetchApplicantHistory error', err);
         return [];
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Count active cases that have not yet been assigned to an officer.
+ * Used to show the unassigned-case reminder on the homepage for assign-capable roles.
+ */
+export async function fetchUnassignedCount(): Promise<number> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT COUNT(*)::int AS cnt
+             FROM applications
+             WHERE officer_id IS NULL
+               AND status NOT IN ('2', '4')`
+        );
+        return res.rows[0]?.cnt ?? 0;
+    } catch (err) {
+        console.error('fetchUnassignedCount error', err);
+        return 0;
     } finally {
         client.release();
     }

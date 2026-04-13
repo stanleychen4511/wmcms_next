@@ -28,7 +28,8 @@ export type AuditAction =
     | 'template.disable'
     | 'template.enable'
     | 'template.download'
-    | 'notification.send';
+    | 'notification.send'
+    | 'setting.update';
 
 export type AuditTargetType =
     | 'application'
@@ -37,7 +38,8 @@ export type AuditTargetType =
     | 'user'
     | 'file_location'
     | 'template'
-    | 'notification';
+    | 'notification'
+    | 'setting';
 
 export interface WriteAuditLogParams {
     userId: string | null;
