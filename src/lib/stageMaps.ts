@@ -47,8 +47,8 @@ export const FRONTEND_TO_DB_STAGE: Record<string, string> = {
 export const ADVANCE_STAGE_TO_STATUS: Record<string, string> = {
     'admin_review': '1', // 行政初審 → 審核中
     'visit':        '1', // 家庭訪視 → 審核中
-    'board_review': '3', // 董事審核通過 → 待核銷
-    'reimbursement':'4', // 核銷完成 → 結案
+    'board_review': '1', // 董事審選 → 仍為審核中
+    'reimbursement':'3', // 進入核銷撥款 → 待核銷（由 closeCase 才設為 '4'）
 };
 
 // Alias for backward compat

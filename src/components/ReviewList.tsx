@@ -238,17 +238,17 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
         return () => window.removeEventListener('keydown', handler);
     }, [preview]);
 
-    const loadDocs = useCallback(async () => {
-        setLoading(true);
+    const loadDocs = useCallback(async (silent = false) => {
+        if (!silent) setLoading(true);
         try {
             const result = await fetchApplicationDocuments(applicationId);
             setDocs(result);
         } finally {
-            setLoading(false);
+            if (!silent) setLoading(false);
         }
     }, [applicationId]);
 
-    useEffect(() => { loadDocs(); }, [loadDocs]);
+    useEffect(() => { loadDocs(false); }, [loadDocs]);
 
     const handleUploadClick = (docId: string) => {
         setActiveUploadId(docId);
@@ -267,7 +267,7 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
             // Pass doc label and case number so the server can generate the correct filename
             const docLabel = docs.find(d => d.id === activeUploadId)?.label ?? activeUploadId;
             await uploadApplicationDocument(applicationId, activeUploadId, docLabel, caseNumber, fd);
-            await loadDocs();
+            await loadDocs(true);
             onRefresh?.();
         } finally {
             setUploading(prev => ({ ...prev, [activeUploadId]: false }));
@@ -279,7 +279,7 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
         setUpdating(prev => ({ ...prev, [docId]: true }));
         try {
             await updateDocumentStatus(applicationId, docId, status, reason);
-            await loadDocs();
+            await loadDocs(true);
             onRefresh?.();
         } finally {
             setUpdating(prev => ({ ...prev, [docId]: false }));

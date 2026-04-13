@@ -159,15 +159,19 @@ export function ApplicantHistoryPage({
                             ) : (
                                 sortedRecords.map((rec, idx) => {
                                     const isActive = rec.status === 'active';
+                                    const isCompleted = rec.status === 'closed' && rec.closedReason === '核銷完成';
+                                    const isClickable = isActive || isCompleted;
                                     const isLast = idx === sortedRecords.length - 1;
                                     return (
                                         <tr
                                             key={rec.id}
-                                            onClick={isActive ? () => onSelectApplication(rec) : undefined}
+                                            onClick={isClickable ? () => onSelectApplication(rec) : undefined}
                                             className={[
                                                 'transition-colors',
                                                 !isLast ? 'border-b border-gray-50' : '',
-                                                isActive ? 'cursor-pointer hover:bg-blue-50 group' : 'opacity-70',
+                                                isActive ? 'cursor-pointer hover:bg-blue-50 group' : '',
+                                                isCompleted ? 'cursor-pointer hover:bg-gray-50 group opacity-80' : '',
+                                                !isClickable ? 'opacity-60' : '',
                                             ].join(' ')}
                                         >
                                             <td className="py-3.5 px-4 text-gray-700 font-medium">{rec.appliedAt}</td>
@@ -203,8 +207,8 @@ export function ApplicantHistoryPage({
                                                 )}
                                             </td>
                                             <td className="py-3.5 px-4 text-right">
-                                                {isActive && (
-                                                    <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-blue-500 transition-colors inline" />
+                                                {isClickable && (
+                                                    <ChevronRight className={`w-4 h-4 transition-colors inline ${isActive ? 'text-gray-300 group-hover:text-blue-500' : 'text-gray-200 group-hover:text-gray-400'}`} />
                                                 )}
                                             </td>
                                         </tr>

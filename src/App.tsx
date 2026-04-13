@@ -146,8 +146,9 @@ function App() {
     const [detailLoading, setDetailLoading] = useState(false);
     const [dbDocs, setDbDocs] = useState<DocumentEntry[]>([]);
 
-    const loadAppDetail = useCallback(async (id: string) => {
-        setDetailLoading(true);
+    const loadAppDetail = useCallback(async (id: string, silent = false) => {
+        if (!silent) setDetailLoading(true);
+        const scrollY = silent ? window.scrollY : 0;
         try {
             const [detail, docs] = await Promise.all([
                 fetchApplicationDetail(id),
@@ -170,7 +171,12 @@ function App() {
                 }
             }
         } finally {
-            setDetailLoading(false);
+            if (!silent) {
+                setDetailLoading(false);
+            } else {
+                // Restore scroll position after React re-render
+                requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' as ScrollBehavior }));
+            }
         }
     }, []);
 
@@ -449,8 +455,9 @@ function App() {
     const personName = appDetail?.applicantName ?? '';
 
     const checkEligibilityAction = () => {
-        // Use liveApplicantValues (from form) if available
-        const dataToCheck = liveApplicantValues;
+        // Use liveApplicantValues (from form) if available, fallback to DB-loaded values
+        const dataToCheck = liveApplicantValues ?? qualificationInitialValues;
+        if (!dataToCheck) return;
         const result = checkEligibility(dataToCheck);
         setEligibilityCheck({ checked: true, eligible: result.isEligible, reasons: result.reasons });
     };
@@ -475,6 +482,7 @@ function App() {
             });
             if (result.success) {
                 setSaveQualToast({ type: 'success', msg: '資格預審資料已儲存' });
+                await loadAppDetail(selectedAppId, true);
             } else {
                 setSaveQualToast({ type: 'error', msg: result.error ?? '儲存失敗，請稍後再試' });
             }
@@ -494,8 +502,8 @@ function App() {
 
         // ── 核銷結案 ──────────────────────────────────────────────────
         if (stage === 'reimbursement') {
-            await closeCase(selectedAppId, loggedInUser?.id ?? null);
-            await loadAppDetail(selectedAppId);
+            await closeCase(selectedAppId, loggedInUser?.id ?? null, boardApprovedAmount > 0 ? boardApprovedAmount : null);
+            await loadAppDetail(selectedAppId, false);
             return;
         }
 
@@ -522,7 +530,7 @@ function App() {
             if (stage === 'board_review') {
                 if (!boardApproved) {
                     await closeCaseRejected(selectedAppId, boardOpinion, loggedInUser?.id ?? null);
-                    await loadAppDetail(selectedAppId);
+                    await loadAppDetail(selectedAppId, false);
                     setViewedStage('board_review');
                     return;
                 }
@@ -535,7 +543,7 @@ function App() {
                 next,
                 loggedInUser?.id ?? null,
             );
-            await loadAppDetail(selectedAppId);
+            await loadAppDetail(selectedAppId, true);
             setViewedStage(next);
         }
     };
@@ -556,14 +564,15 @@ function App() {
                     prev,
                     loggedInUser?.id ?? null,
                 );
-                await loadAppDetail(selectedAppId);
+                await loadAppDetail(selectedAppId, true);
             }
             setViewedStage(prev);
         }
     };
 
-    // Read-only when the user is browsing a step other than the current true stage
-    const contentReadOnly = isViewingPastStep;
+    // Read-only when browsing a past step OR when case is closed
+    const isCaseClosed = appDetail?.status === '2' || appDetail?.status === '4';
+    const contentReadOnly = isViewingPastStep || !!isCaseClosed;
 
     const renderStageContent = () => {
         switch (displayedStage) {
@@ -833,12 +842,6 @@ function App() {
                             onClick={() => setView('home')}
                             title="返回首頁"
                         >萬美基金會補助管理系統</h1>
-                        <div className="hidden lg:flex items-center gap-1.5 text-xs text-green-400 bg-slate-800 px-2.5 py-1 rounded-full border border-slate-600 ml-2 shrink-0">
-                            <span className="w-1.5 h-1.5 bg-green-400 rounded-full"></span>
-                            <span>連線正常</span>
-                            <span className="text-slate-400">&#183;</span>
-                            <span>Encryption On</span>
-                        </div>
                     </div>
                     <div className="flex items-center gap-2 sm:gap-4 shrink-0">
                         <div className="flex items-center gap-2 bg-slate-800 text-slate-200 px-2 sm:px-3 py-1.5 rounded-lg border border-slate-700">
@@ -1007,9 +1010,8 @@ function App() {
                             )}
                             <div className="flex gap-2 items-center">
                                 {(() => {
-                                    const isClosed = appDetail?.status === '2' || appDetail?.status === '4';
-                                    const retreatDisabled = currentStageIndex === 0 || isViewingPastStep || !!isClosed;
-                                    const retreatTitle = isClosed ? '此案件已結案，不可退回'
+                                    const retreatDisabled = currentStageIndex === 0 || isViewingPastStep || !!isCaseClosed;
+                                    const retreatTitle = isCaseClosed ? '此案件已結案，不可退回'
                                         : isViewingPastStep ? '請先返回目前步驟再操作流程'
                                         : currentStageIndex === 0 ? '已是第一個步驟'
                                         : `確認後退回至「${retreatLabel}」`;
@@ -1021,7 +1023,7 @@ function App() {
                                             className="flex flex-col items-center bg-white border border-gray-300 text-slate-700 px-4 py-2 rounded-md hover:bg-gray-50 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition shadow-sm"
                                         >
                                             <span>退回上一階段</span>
-                                            {retreatLabel && !isViewingPastStep && !isClosed && currentStageIndex > 0 && (
+                                            {retreatLabel && !isViewingPastStep && !isCaseClosed && currentStageIndex > 0 && (
                                                 <span className="text-xs font-normal text-gray-400">→ {retreatLabel}</span>
                                             )}
                                         </button>
@@ -1030,9 +1032,8 @@ function App() {
                                 {(() => {
                                     const isBoardReview  = stage === 'board_review';
                                     const isReimbursement = stage === 'reimbursement';
-                                    const isClosed = appDetail?.status === '2' || appDetail?.status === '4';
                                     const boardIncomplete = isBoardReview && (boardApproved === null || boardOpinion.length < 50);
-                                    const advanceDisabled = isClosed || isViewingPastStep || boardIncomplete;
+                                    const advanceDisabled = isCaseClosed || isViewingPastStep || boardIncomplete;
 
                                     // 按鈕文字
                                     const btnLabel =
@@ -1047,7 +1048,7 @@ function App() {
 
                                     const advanceTitle =
                                         isViewingPastStep ? '請先返回目前步驟再操作流程' :
-                                        isClosed ? '此案件已結案' :
+                                        isCaseClosed ? '此案件已結案' :
                                         boardIncomplete ? '請選擇審核結果並填寫至少 50 字審核意見' :
                                         isReimbursement ? '確認核銷完成並結案' :
                                         isBoardReview && boardApproved === false ? '確認董事審核未通過並結案' :
@@ -1061,7 +1062,7 @@ function App() {
                                             className={btnClass}
                                         >
                                             <span>{btnLabel}</span>
-                                            {!isClosed && !isViewingPastStep && !isReimbursement && !(isBoardReview && boardApproved === false) && advanceLabel && (
+                                            {!isCaseClosed && !isViewingPastStep && !isReimbursement && !(isBoardReview && boardApproved === false) && advanceLabel && (
                                                 <span className="text-xs font-normal text-slate-400">→ {advanceLabel}</span>
                                             )}
                                         </button>

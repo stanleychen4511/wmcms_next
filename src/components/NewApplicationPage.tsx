@@ -388,10 +388,10 @@ export function NewApplicationPage({
                             ].join(' ')}
                         >
                             <option value="">請選擇申請類別</option>
-                            <option value="A">A 類</option>
-                            <option value="B">B 類</option>
-                            <option value="C">C 類</option>
-                            <option value="D">D 類</option>
+                            <option value="A">A 類－自費醫療補助</option>
+                            <option value="B">B 類－臨終安寧自費醫療補助</option>
+                            <option value="C">C 類－預立醫療照護諮商補助</option>
+                            <option value="D">D 類－醫事人員進修補助</option>
                         </select>
                         {appTypeError && (
                             <p className="text-xs text-red-500 mt-1 flex items-center gap-1">

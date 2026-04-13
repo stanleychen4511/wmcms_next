@@ -174,13 +174,12 @@ export function TemplateDownloadPage({ userId, onBack }: TemplateDownloadPagePro
                 <div className="container mx-auto px-4 sm:px-6 py-4 flex justify-between items-center gap-4">
                     <div className="flex items-center gap-3 min-w-0">
                         <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-white shrink-0">W</div>
-                        <h1 className="text-lg sm:text-xl font-bold tracking-tight truncate">萬美基金會補助管理系統</h1>
+                        <h1
+                            className="text-lg sm:text-xl font-bold tracking-tight truncate cursor-pointer hover:text-blue-300 transition-colors"
+                            onClick={onBack}
+                            title="返回首頁"
+                        >萬美基金會補助管理系統</h1>
                     </div>
-                    <button onClick={onBack}
-                        className="flex items-center gap-1.5 text-sm text-slate-300 hover:text-blue-400 transition px-2 py-1.5 shrink-0">
-                        <span className="text-base leading-none">←</span>
-                        <span className="hidden sm:inline">返回首頁</span>
-                    </button>
                 </div>
             </header>
 

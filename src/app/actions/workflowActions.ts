@@ -408,14 +408,19 @@ export async function saveBoardReviewData(
 export async function closeCase(
     applicationId: string,
     reviewerUserId: string | null,
+    approvedAmount?: number | null,
 ): Promise<{ success: boolean; error?: string }> {
     if (!isValidDbId(applicationId)) return { success: false, error: '無效的案件 ID' };
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
         await client.query(
-            `UPDATE applications SET status = '4', updated_at = NOW() WHERE id = $1`,
-            [applicationId]
+            `UPDATE applications
+             SET status = '4',
+                 approved_amount = COALESCE($2, approved_amount),
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [applicationId, approvedAmount ?? null]
         );
         await client.query(`
             UPDATE application_workflow

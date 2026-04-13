@@ -86,13 +86,6 @@ const QUICK_LINKS = [
         action: 'notifications',
     },
     {
-        icon: <ClipboardCheck className="w-4 h-4" />,
-        label: '系統操作紀錄',
-        desc: '檢視所有系統稽核操作日誌',
-        color: 'bg-slate-50 text-slate-600 border-slate-200',
-        action: 'audit',
-    },
-    {
         icon: <Settings className="w-4 h-4" />,
         label: '後台管理工具',
         desc: '帳號管理與系統設定',
@@ -271,10 +264,6 @@ export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCo
                             W
                         </div>
                         <h1 className="text-lg sm:text-xl font-bold tracking-tight truncate">萬美基金會補助管理系統</h1>
-                        <div className="hidden lg:flex items-center gap-1.5 text-xs text-green-400 bg-slate-800 px-2.5 py-1 rounded-full border border-slate-600 ml-2 shrink-0">
-                            <span className="w-1.5 h-1.5 bg-green-400 rounded-full animate-pulse" />
-                            <span>連線正常</span>
-                        </div>
                     </div>
                     <div className="flex items-center gap-2 sm:gap-3 shrink-0">
                         <div className="flex items-center gap-2 bg-slate-800 text-slate-200 px-2 sm:px-3 py-1.5 rounded-lg border border-slate-700">
@@ -298,41 +287,29 @@ export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCo
                 {/* Banner */}
                 <BannerCarousel />
 
-                {/* Welcome bar */}
-                <div className="flex items-center justify-between">
-                    <div>
-                        <h2 className="text-lg font-bold text-slate-800">
-                            歡迎回來，<span className="text-blue-600">{username}</span>
-                        </h2>
-                        <p className="text-sm text-slate-500 mt-0.5">
-                            今日 {new Date().toLocaleDateString('zh-TW', { year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' })}
-                        </p>
-                    </div>
-                </div>
-
                 {/* Alert banners */}
                 {(
                     (userRoles.includes('case_officer') && pendingAlerts.length > 0) ||
                     (canAssign && unassignedCount > 0)
                 ) && (
-                    <div className="space-y-2">
+                    <div className="flex flex-col sm:flex-row gap-2">
                         {/* Pending doc alert — only for case_officer */}
                         {userRoles.includes('case_officer') && pendingAlerts.length > 0 && (
-                            <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-xl px-5 py-4">
+                            <div className="w-full sm:w-1/2 flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-xl px-5 py-4">
                                 <AlertTriangle className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
                                 <div>
                                     <p className="text-sm font-semibold text-orange-800">
                                         當前有 {pendingAlerts.length} 筆案件未補件
                                     </p>
                                     <p className="text-xs text-orange-600 mt-0.5">
-                                        收件超過門檻天數且仍有必備文件未上傳，請至「申請案件管理」查看詳情。
+                                        請至「申請案件管理」進行派案作業。
                                     </p>
                                 </div>
                             </div>
                         )}
                         {/* Unassigned case alert — only for assign-capable roles */}
                         {canAssign && unassignedCount > 0 && (
-                            <div className="flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-xl px-5 py-4">
+                            <div className="w-full sm:w-1/2 flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-xl px-5 py-4">
                                 <AlertTriangle className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
                                 <div>
                                     <p className="text-sm font-semibold text-orange-800">
@@ -357,26 +334,24 @@ export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCo
                                 const hasAccess =
                                     link.action === 'new_application' ? (userRoles.includes('case_officer') || userRoles.includes('admin')) :
                                     link.action === 'admin' ? userRoles.includes('admin') :
-                                    link.action === 'audit' ? userRoles.includes('admin') :
-                                    true; // Default links are public or common
+                                    true;
+
+                                if (!hasAccess) return null;
 
                                 const handleClick =
-                                    (link.action === 'new_application' && hasAccess) ? onNewApplication :
-                                        (link.action === 'cases' && hasAccess) ? onNavigateToCases :
-                                            (link.action === 'audit' && hasAccess) ? onGoAudit :
-                                                (link.action === 'admin' && hasAccess) ? onGoAdmin :
-                                                    link.action === 'templates' ? onGoTemplates :
-                                                        link.action === 'notifications' ? onGoNotifications :
-                                                        link.action === 'external_intake' ? () => window.open('/apply', '_blank') :
-                                                            undefined;
+                                    link.action === 'new_application' ? onNewApplication :
+                                    link.action === 'cases' ? onNavigateToCases :
+                                    link.action === 'admin' ? onGoAdmin :
+                                    link.action === 'templates' ? onGoTemplates :
+                                    link.action === 'notifications' ? onGoNotifications :
+                                    link.action === 'external_intake' ? () => window.open('/apply', '_blank') :
+                                    undefined;
+
                                 return (
                                     <button
                                         key={idx}
                                         onClick={handleClick}
-                                        className={clsx(
-                                            'flex items-center gap-3 w-full px-3 py-2 rounded-lg border bg-white shadow-sm transition-all duration-150 text-left hover:shadow-md hover:bg-slate-50 active:scale-95',
-                                            handleClick ? 'cursor-pointer' : 'cursor-default opacity-70'
-                                        )}
+                                        className="flex items-center gap-3 w-full px-3 py-2 rounded-lg border bg-white shadow-sm transition-all duration-150 text-left hover:shadow-md hover:bg-slate-50 active:scale-95 cursor-pointer"
                                     >
                                         <span className={clsx('p-1.5 rounded-md border shrink-0', link.color)}>
                                             {link.icon}
