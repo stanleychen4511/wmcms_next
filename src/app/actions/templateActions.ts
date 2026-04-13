@@ -1,9 +1,9 @@
 'use server';
-import { promises as fs } from 'fs';
-import path from 'path';
 import { randomUUID } from 'crypto';
+import path from 'path';
 import { pool } from '../../lib/db';
 import { writeAuditLog } from './auditActions';
+import { uploadFile, deleteFile } from '../../lib/storage';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -216,15 +216,13 @@ export async function uploadTemplateFile(formData: FormData, operatorUserId: str
 
     const uuid = randomUUID();
     const storedName = `${uuid}${ext}`;
-    const uploadDir = path.join(process.cwd(), 'public', 'uploads', 'templates');
-    const filePath = path.join(uploadDir, storedName);
-    const publicPath = `/uploads/templates/${storedName}`;
+    const localRelPath = `/uploads/templates/${storedName}`;
+    const blobKey = `uploads/templates/${storedName}`;
 
     const client = await pool.connect();
     try {
-        await fs.mkdir(uploadDir, { recursive: true });
         const buffer = Buffer.from(await file.arrayBuffer());
-        await fs.writeFile(filePath, buffer);
+        const publicPath = await uploadFile(buffer, blobKey, localRelPath);
 
         const res = await client.query(
             `INSERT INTO template_files
@@ -246,8 +244,6 @@ export async function uploadTemplateFile(formData: FormData, operatorUserId: str
 
         return { success: true };
     } catch (err: any) {
-        // Best-effort cleanup
-        await fs.unlink(filePath).catch(() => {});
         console.error('uploadTemplateFile error:', err);
         return { success: false, error: err.message };
     } finally {

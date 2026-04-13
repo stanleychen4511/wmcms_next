@@ -3,9 +3,9 @@
 import { pool } from '../../lib/db';
 import { generateBlindIndex, encryptAES, generateSalt, hashPassword } from '../../lib/crypto';
 import path from 'path';
-import { promises as fs } from 'fs';
 import { writeAuditLog } from './auditActions';
 import { fetchSetting } from './settingsActions';
+import { uploadFile } from '../../lib/storage';
 
 export interface EligibilityResult {
     eligible: boolean;
@@ -257,18 +257,14 @@ export async function submitExternalApplication(
 
         try {
             const ext = path.extname(file.name).toLowerCase();
-            const uploadDir = path.join(process.cwd(), 'public', 'uploads', applicationId!);
-            await fs.mkdir(uploadDir, { recursive: true });
-
             const safeLabel = sanitizeForFilename(label);
             const timestamp = formatTimestamp(new Date());
             const fileName = `${caseNumber}_${safeLabel}_${timestamp}${ext}`;
-            const filePath = path.join(uploadDir, fileName);
+            const localRelPath = `/uploads/${applicationId!}/${fileName}`;
+            const blobKey = `uploads/${applicationId!}/${fileName}`;
 
             const bytes = await file.arrayBuffer();
-            await fs.writeFile(filePath, Buffer.from(bytes));
-
-            const publicUrl = `/uploads/${applicationId}/${fileName}`;
+            const publicUrl = await uploadFile(Buffer.from(bytes), blobKey, localRelPath);
 
             await pool.query(
                 `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at)

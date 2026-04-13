@@ -1,9 +1,9 @@
 'use server';
 
 import { pool } from '../../lib/db';
-import { promises as fs } from 'fs';
 import path from 'path';
 import { writeAuditLog } from './auditActions';
+import { uploadFile } from '../../lib/storage';
 
 export interface DocumentEntry {
     id: string; // The file type identifier (doc sequence number per spec)
@@ -67,22 +67,13 @@ export async function uploadApplicationDocument(
         const bytes = await file.arrayBuffer();
         const buffer = Buffer.from(bytes);
 
-        // Ensure the directory exists
-        const uploadDir = path.join(process.cwd(), 'public', 'uploads', applicationId);
-        await fs.mkdir(uploadDir, { recursive: true });
-
-        // Filename format: 案件編號_文件類型名稱_時間戳記.ext
-        // e.g. A115003_自費醫療補助申請書_20260405074600.pdf
         const safeLabel = sanitizeForFilename(documentLabel);
         const timestamp = formatTimestamp(new Date());
         const fileName = `${caseNumber}_${safeLabel}_${timestamp}${ext}`;
-        const filePath = path.join(uploadDir, fileName);
+        const localRelPath = `/uploads/${applicationId}/${fileName}`;
+        const blobKey = `uploads/${applicationId}/${fileName}`;
 
-        // Write file locally
-        await fs.writeFile(filePath, buffer);
-
-        // The URL path accessible from frontend
-        const publicUrl = `/uploads/${applicationId}/${fileName}`;
+        const publicUrl = await uploadFile(buffer, blobKey, localRelPath);
 
         // Only write to DB for real DB-backed applications (numeric IDs)
         if (/^\d+$/.test(applicationId)) {

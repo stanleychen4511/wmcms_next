@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { promises as fs } from 'fs';
 import path from 'path';
+import { promises as fs } from 'fs';
 import { getTemplateFileById } from '../../../actions/templateActions';
 import { writeAuditLog } from '../../../actions/auditActions';
 
@@ -14,7 +14,6 @@ export async function GET(
         return new NextResponse('Invalid id', { status: 400 });
     }
 
-    // userId is passed as query param (sessionStorage-based auth)
     const userId = req.nextUrl.searchParams.get('userId') || null;
 
     const result = await getTemplateFileById(id);
@@ -27,7 +26,26 @@ export async function GET(
         return new NextResponse('File is not available', { status: 403 });
     }
 
-    // Validate file_path to prevent traversal: must be /uploads/templates/<filename>
+    void writeAuditLog({
+        userId,
+        action: 'template.download',
+        targetType: 'template',
+        targetId: String(id),
+        detail: { display_name: file.display_name, original_name: file.original_name },
+    });
+
+    const encodedName = encodeURIComponent(file.original_name).replace(/'/g, '%27');
+
+    // ── Vercel Blob：DB 儲存完整 https URL，直接 redirect ───────────────────────
+    if (file.file_path.startsWith('https://')) {
+        return NextResponse.redirect(file.file_path, {
+            headers: {
+                'Content-Disposition': `attachment; filename*=UTF-8''${encodedName}`,
+            },
+        });
+    }
+
+    // ── 本地開發：從 public/ 讀取 ───────────────────────────────────────────────
     if (!/^\/uploads\/templates\/[^/]+$/.test(file.file_path)) {
         return new NextResponse('Invalid file path', { status: 400 });
     }
@@ -36,19 +54,6 @@ export async function GET(
 
     try {
         const buffer = await fs.readFile(absolutePath);
-
-        // Fire-and-forget audit log
-        void writeAuditLog({
-            userId,
-            action: 'template.download',
-            targetType: 'template',
-            targetId: String(id),
-            detail: { display_name: file.display_name, original_name: file.original_name },
-        });
-
-        // Encode filename for Content-Disposition (RFC 5987)
-        const encodedName = encodeURIComponent(file.original_name).replace(/'/g, '%27');
-
         return new NextResponse(buffer, {
             status: 200,
             headers: {

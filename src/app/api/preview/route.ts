@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { promises as fs } from 'fs';
 import path from 'path';
+import { promises as fs } from 'fs';
 
 const ALLOWED_EXTS: Record<string, string> = {
     '.pdf':  'application/pdf',
@@ -10,9 +10,15 @@ const ALLOWED_EXTS: Record<string, string> = {
 
 export async function GET(req: NextRequest) {
     const filePath = req.nextUrl.searchParams.get('path');
+    if (!filePath) return new NextResponse('Invalid path', { status: 400 });
 
-    // Validate: must start with /uploads/ and contain no path traversal
-    if (!filePath || !/^\/uploads\/\d+\/[^/]+$/.test(filePath)) {
+    // ── Vercel Blob：DB 儲存的是完整 https URL，直接 redirect ─────────────────
+    if (filePath.startsWith('https://')) {
+        return NextResponse.redirect(filePath);
+    }
+
+    // ── 本地開發：相對路徑，從 public/ 讀取 ────────────────────────────────────
+    if (!/^\/uploads\/\d+\/[^/]+$/.test(filePath)) {
         return new NextResponse('Invalid path', { status: 400 });
     }
 
@@ -30,13 +36,9 @@ export async function GET(req: NextRequest) {
             status: 200,
             headers: {
                 'Content-Type': mimeType,
-                // inline = display in browser, not download
                 'Content-Disposition': 'inline',
-                // Prevent caching of sensitive files
                 'Cache-Control': 'no-store, no-cache, must-revalidate',
-                // Only allow framing from same origin
                 'X-Frame-Options': 'SAMEORIGIN',
-                // Prevent MIME sniffing
                 'X-Content-Type-Options': 'nosniff',
             },
         });
