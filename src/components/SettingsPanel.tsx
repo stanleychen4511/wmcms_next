@@ -1,18 +1,21 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
 import { Settings, Save, RefreshCw, CheckCircle, AlertTriangle } from 'lucide-react';
-import { fetchAllSettings, updateSetting, SystemSetting } from '../app/actions/settingsActions';
+import { fetchAllSettings, updateSetting, ensureDefaultSettings, SystemSetting } from '../app/actions/settingsActions';
 
 const SETTING_LABEL: Record<string, string> = {
     pending_doc_alert_days: '未補件提示門檻天數',
+    max_apply_amount:       '申請金額上限',
 };
 
 const SETTING_UNIT: Record<string, string> = {
     pending_doc_alert_days: '天',
+    max_apply_amount:       '元',
 };
 
 const SETTING_HINT: Record<string, string> = {
     pending_doc_alert_days: '收件後超過此天數且仍有必備文件未上傳的案件，將於首頁顯示未補件提示',
+    max_apply_amount:       '每筆申請案件的申請金額上限，超過此數值時系統將拒絕儲存',
 };
 
 interface SettingsPanelProps {
@@ -28,6 +31,7 @@ export function SettingsPanel({ userId }: SettingsPanelProps) {
 
     const load = useCallback(async () => {
         setLoading(true);
+        await ensureDefaultSettings();
         const res = await fetchAllSettings();
         if (res.success && res.data) {
             setSettings(res.data);

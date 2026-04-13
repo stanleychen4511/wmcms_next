@@ -5,6 +5,7 @@ import { generateBlindIndex, encryptAES, generateSalt, hashPassword } from '../.
 import path from 'path';
 import { promises as fs } from 'fs';
 import { writeAuditLog } from './auditActions';
+import { fetchSetting } from './settingsActions';
 
 export interface EligibilityResult {
     eligible: boolean;
@@ -115,9 +116,24 @@ export async function submitExternalApplication(
     const immoveableProp = formData.get('immoveable_property') ? Number(formData.get('immoveable_property')) : null;
     const hasChildren    = formData.get('has_children') === 'true' ? true : formData.get('has_children') === 'false' ? false : null;
     const underageCount  = formData.get('underage_children_count') ? Number(formData.get('underage_children_count')) : null;
+    const adultCount     = formData.get('adult_children_count') ? Number(formData.get('adult_children_count')) : null;
+    const applyAmount    = formData.get('apply_amount') ? Number(formData.get('apply_amount')) : null;
 
     if (!name || !idNumber) {
         return { success: false, error: '請填寫完整姓名與身分證字號' };
+    }
+    if (name.length > 50) {
+        return { success: false, error: '申請人姓名不可超過 50 個字' };
+    }
+
+    // Validate apply_amount against system setting
+    const maxAmountStr = await fetchSetting('max_apply_amount', '350000');
+    const maxAmount = Number(maxAmountStr) || 350000;
+    if (applyAmount == null || applyAmount <= 0) {
+        return { success: false, error: '請輸入申請金額' };
+    }
+    if (applyAmount > maxAmount) {
+        return { success: false, error: `申請金額不可超過 ${maxAmount.toLocaleString()} 元` };
     }
 
     const client = await pool.connect();
@@ -205,13 +221,15 @@ export async function submitExternalApplication(
                 case_number, applicant_id, officer_id, status, apply_at,
                 application_type,
                 age, annual_income, moveable_property, immoveable_property,
-                marital_status, has_children, underage_children_count
-             ) VALUES ($1, $2, NULL, '1', NOW(), $3, $4, $5, $6, $7, $8, $9, $10)
+                marital_status, has_children, underage_children_count, adult_children_count,
+                apply_amount
+             ) VALUES ($1, $2, NULL, '1', NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
              RETURNING id`,
             [caseNumber, applicantId,
              applicationType,
              age, annualIncome, moveableProp, immoveableProp,
-             maritalStatus, hasChildren, underageCount]
+             maritalStatus, hasChildren, underageCount, adultCount,
+             applyAmount]
         );
         applicationId = appRes.rows[0].id;
 

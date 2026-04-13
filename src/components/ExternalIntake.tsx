@@ -1,11 +1,13 @@
 'use client';
 
-import { useState, useRef, useCallback } from 'react';
+import { useState, useRef, useCallback, useEffect } from 'react';
 import { CheckCircle, XCircle, Loader2, Upload, X, FileText, ChevronRight, ArrowLeft } from 'lucide-react';
 import { clsx } from 'clsx';
 import { ApplicationForm } from './ApplicationForm';
 import { ApplicantFormValues } from '../schemas/applicant';
 import { queryApplicantEligibility, submitExternalApplication } from '../app/actions/intakeActions';
+import { twIdError } from '../lib/validateTwId';
+import { fetchSetting } from '../app/actions/settingsActions';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -22,8 +24,9 @@ interface DocFile {
 const DEFAULT_QUALIFICATION: ApplicantFormValues = {
     type: 'single',
     age: 0,
-    hasMinorChildren: false,
+    hasChildren: false,
     underageChildrenCount: 0,
+    adultChildrenCount: 0,
     annualIncome: 0,
     movableAssets: 0,
     realEstateValue: 0,
@@ -115,6 +118,12 @@ export function ExternalIntake() {
     const [email, setEmail] = useState('');
     const [idNumber, setIdNumber] = useState('');
     const [name, setName] = useState('');
+    const [applyAmount, setApplyAmount] = useState<number | ''>('');
+    const [applyAmountError, setApplyAmountError] = useState('');
+    const [maxApplyAmount, setMaxApplyAmount] = useState<number>(350000);
+    useEffect(() => {
+        fetchSetting('max_apply_amount', '350000').then(v => setMaxApplyAmount(Number(v) || 350000));
+    }, []);
     const [ineligibleReason, setIneligibleReason] = useState('');
     const [errorMsg, setErrorMsg] = useState('');
     const [caseNumber, setCaseNumber] = useState('');
@@ -173,7 +182,9 @@ export function ExternalIntake() {
     if (step === 'query') {
         const handleQuery = async (e: React.FormEvent) => {
             e.preventDefault();
-            if (!email.trim() || !idNumber.trim()) return;
+            if (!email.trim()) return;
+            const idErr = twIdError(idNumber.trim());
+            if (idErr) { setErrorMsg(idErr); return; }
             setErrorMsg('');
             setStep('checking');
 
@@ -265,14 +276,22 @@ export function ExternalIntake() {
 
     // ── Step: Form ────────────────────────────────────────────────────────────
     if (step === 'form' || step === 'submitting') {
+        const amountNum = applyAmount === '' ? 0 : Number(applyAmount);
+        const amountValid = amountNum > 0 && amountNum <= maxApplyAmount;
         const canSubmit =
             name.trim() !== '' &&
             applicationType !== '' &&
             qualFormValid &&
+            amountValid &&
             requiredDocsMissing.length === 0;
 
         const handleSubmit = async () => {
             if (!canSubmit) return;
+            // Validate amount before submit
+            if (!amountValid) {
+                setApplyAmountError(amountNum <= 0 ? '請輸入申請金額' : `申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元`);
+                return;
+            }
             setErrorMsg('');
             setStep('submitting');
 
@@ -280,6 +299,7 @@ export function ExternalIntake() {
             fd.append('name', name.trim());
             fd.append('idNumber', idNumber);
             fd.append('email', email);
+            fd.append('apply_amount', String(amountNum));
             // Qualification fields
             fd.append('application_type', applicationType);
             fd.append('marital_status', qualFormValues.type === 'married' ? '2' : '1');
@@ -287,9 +307,12 @@ export function ExternalIntake() {
             fd.append('annual_income', String(qualFormValues.annualIncome ?? 0));
             fd.append('moveable_property', String(qualFormValues.movableAssets ?? 0));
             fd.append('immoveable_property', String(qualFormValues.realEstateValue ?? 0));
-            fd.append('has_children', String(qualFormValues.hasMinorChildren ?? false));
+            fd.append('has_children', String(qualFormValues.hasChildren ?? false));
             fd.append('underage_children_count', String(
-                qualFormValues.hasMinorChildren ? (qualFormValues.underageChildrenCount ?? 0) : 0
+                qualFormValues.hasChildren ? (qualFormValues.underageChildrenCount ?? 0) : 0
+            ));
+            fd.append('adult_children_count', String(
+                qualFormValues.hasChildren ? (qualFormValues.adultChildrenCount ?? 0) : 0
             ));
 
             for (const doc of docs) {
@@ -324,6 +347,7 @@ export function ExternalIntake() {
                                     value={name}
                                     onChange={e => setName(e.target.value)}
                                     required
+                                    maxLength={50}
                                     placeholder="請輸入真實姓名"
                                     className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
@@ -369,6 +393,39 @@ export function ExternalIntake() {
                     {/* Qualification Form */}
                     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
                         <h3 className="text-base font-bold text-gray-800 mb-4">資格預審資料</h3>
+                        {/* 申請金額 */}
+                        <div className="mb-4">
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                申請金額 <span className="text-red-500">*</span>
+                            </label>
+                            <div className="relative max-w-xs">
+                                <input
+                                    type="text"
+                                    inputMode="numeric"
+                                    pattern="[0-9]*"
+                                    maxLength={String(maxApplyAmount).length}
+                                    value={applyAmount}
+                                    onChange={e => {
+                                        const raw = e.target.value.replace(/\D/g, '');
+                                        const v = raw === '' ? '' : Number(raw);
+                                        setApplyAmount(v as number | '');
+                                        if (v !== '' && Number(v) > maxApplyAmount) {
+                                            setApplyAmountError(`申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元`);
+                                        } else {
+                                            setApplyAmountError('');
+                                        }
+                                    }}
+                                    disabled={step === 'submitting'}
+                                    placeholder={`上限 ${maxApplyAmount.toLocaleString()} 元`}
+                                    className={clsx(
+                                        'block w-full rounded-md shadow-sm p-2 border pr-8 text-sm',
+                                        applyAmountError ? 'border-red-400 focus:ring-red-300' : 'border-gray-300 focus:border-blue-500 focus:ring-blue-500'
+                                    )}
+                                />
+                                <span className="absolute right-3 top-2 text-gray-400 text-sm">元</span>
+                            </div>
+                            {applyAmountError && <p className="text-xs text-red-500 mt-1">{applyAmountError}</p>}
+                        </div>
                         <ApplicationForm
                             initialValues={DEFAULT_QUALIFICATION}
                             onValidation={handleQualValidation}

@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react';
 import { ArrowLeft, FilePlus, Search, CheckCircle, XCircle, UserCircle, LogOut, AlertTriangle } from 'lucide-react';
 import { checkApplicationStatus } from '../app/actions/applicationActions';
+import { twIdError } from '../lib/validateTwId';
 
 interface NewApplicationPageProps {
     username: string;
@@ -11,10 +12,6 @@ interface NewApplicationPageProps {
     onSubmitSuccess: (newCaseId: string) => void;
 }
 
-// Taiwan national ID validation: 1 letter + 9 digits
-function validateIdNumber(id: string): boolean {
-    return /^[A-Za-z]\d{9}$/.test(id);
-}
 
 const AMOUNT_LIMIT = 350_000;
 
@@ -176,14 +173,15 @@ export function NewApplicationPage({
         if (!name.trim()) {
             setNameError('請輸入申請人姓名');
             ok = false;
+        } else if (name.trim().length > 50) {
+            setNameError('申請人姓名不可超過 50 個字');
+            ok = false;
         } else {
             setNameError('');
         }
-        if (!idNumber.trim()) {
-            setIdError('請輸入身分證字號');
-            ok = false;
-        } else if (!validateIdNumber(idNumber.trim())) {
-            setIdError('身分證字號格式有誤（須為 1 英文字母 + 9 位數字）');
+        const idErr = twIdError(idNumber.trim());
+        if (idErr) {
+            setIdError(idErr);
             ok = false;
         } else {
             setIdError('');
@@ -327,6 +325,7 @@ export function NewApplicationPage({
                             type="text"
                             value={name}
                             onChange={e => handleNameChange(e.target.value)}
+                            maxLength={50}
                             placeholder="請輸入申請人全名"
                             className={[
                                 'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',

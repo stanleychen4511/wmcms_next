@@ -31,13 +31,14 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
         mode: 'onChange'
     });
 
-    const hasMinorChildren = watch('hasMinorChildren');
+    const hasChildren = watch('hasChildren');
 
     useEffect(() => {
-        if (!hasMinorChildren) {
+        if (!hasChildren) {
             setValue('underageChildrenCount', 0);
+            setValue('adultChildrenCount', 0);
         }
-    }, [hasMinorChildren, setValue]);
+    }, [hasChildren, setValue]);
 
     useEffect(() => {
         // Notify parent about current values and validity whenever they change
@@ -51,8 +52,8 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
 
     return (
         <form className="space-y-4">
-            {/* Row 1: 婚姻狀態 | 育有未成年子女 | 未成年子女人數 */}
-            <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+            {/* Row 1: 婚姻狀態 | 育有子女 | 未成年子女人數 | 成年子女人數 */}
+            <div className="grid grid-cols-2 md:grid-cols-4 gap-4">
                 {/* Marital Status — col 1 */}
                 <div className="md:col-span-1">
                     <label className="block text-sm font-medium text-gray-700">婚姻狀態</label>
@@ -67,37 +68,39 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
                     {errors.type && <p className="text-red-500 text-xs mt-1">{errors.type.message}</p>}
                 </div>
 
-                {/* Minor Children Checkbox — col 2 */}
+                {/* Children Checkbox — col 2 */}
                 <div className="flex flex-col justify-end pb-1">
                     <div className="flex items-center h-[38px]">
                         <input
                             type="checkbox"
-                            id="hasMinor"
-                            {...register('hasMinorChildren')}
+                            id="hasChildren"
+                            {...register('hasChildren')}
                             disabled={readOnly}
                             className="rounded text-blue-600 focus:ring-blue-500 mr-2 h-4 w-4"
                         />
-                        <label htmlFor="hasMinor" className="text-sm font-medium text-gray-700 select-none whitespace-nowrap">
-                            育有未成年子女
+                        <label htmlFor="hasChildren" className="text-sm font-medium text-gray-700 select-none whitespace-nowrap">
+                            育有子女
                         </label>
                     </div>
-                    {errors.hasMinorChildren && (
-                        <p className="text-red-500 text-xs">{errors.hasMinorChildren.message}</p>
+                    {errors.hasChildren && (
+                        <p className="text-red-500 text-xs">{errors.hasChildren.message}</p>
                     )}
                 </div>
 
-                {/* Underage Children Count — col 3-4 (right half) */}
-                <div className="md:col-span-2">
+                {/* Underage Children Count — col 3 */}
+                <div>
                     <label className="block text-sm font-medium text-gray-700">未成年子女人數</label>
                     <input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        maxLength={2}
                         {...register('underageChildrenCount')}
-                        disabled={readOnly || !hasMinorChildren}
-                        min={0}
-                        placeholder={hasMinorChildren ? '' : '—'}
+                        disabled={readOnly || !hasChildren}
+                        placeholder={hasChildren ? '' : '—'}
                         className={clsx(
                             "mt-1 block w-full rounded-md shadow-sm p-2 border",
-                            !hasMinorChildren
+                            !hasChildren
                                 ? "bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed"
                                 : errors.underageChildrenCount
                                     ? "border-red-300 focus:border-red-500 focus:ring-red-500"
@@ -108,6 +111,31 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
                         <p className="text-red-500 text-xs mt-1">{errors.underageChildrenCount.message}</p>
                     )}
                 </div>
+
+                {/* Adult Children Count — col 4 */}
+                <div>
+                    <label className="block text-sm font-medium text-gray-700">成年子女人數</label>
+                    <input
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        maxLength={2}
+                        {...register('adultChildrenCount')}
+                        disabled={readOnly || !hasChildren}
+                        placeholder={hasChildren ? '' : '—'}
+                        className={clsx(
+                            "mt-1 block w-full rounded-md shadow-sm p-2 border",
+                            !hasChildren
+                                ? "bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed"
+                                : errors.adultChildrenCount
+                                    ? "border-red-300 focus:border-red-500 focus:ring-red-500"
+                                    : "border-gray-300 focus:border-blue-500 focus:ring-blue-500"
+                        )}
+                    />
+                    {errors.adultChildrenCount && (
+                        <p className="text-red-500 text-xs mt-1">{errors.adultChildrenCount.message}</p>
+                    )}
+                </div>
             </div>
 
             <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
@@ -116,7 +144,10 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
                 <div>
                     <label className="block text-sm font-medium text-gray-700">年齡</label>
                     <input
-                        type="number"
+                        type="text"
+                        inputMode="numeric"
+                        pattern="[0-9]*"
+                        maxLength={3}
                         {...register('age')}
                         disabled={readOnly}
                         className={clsx(
@@ -132,7 +163,10 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
                     <label className="block text-sm font-medium text-gray-700">年收入 (萬)</label>
                     <div className="relative mt-1">
                         <input
-                            type="number"
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            maxLength={5}
                             {...register('annualIncome')}
                             disabled={readOnly}
                             className={clsx(
@@ -150,7 +184,10 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
                     <label className="block text-sm font-medium text-gray-700">動產 (萬)</label>
                     <div className="relative mt-1">
                         <input
-                            type="number"
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            maxLength={5}
                             {...register('movableAssets')}
                             disabled={readOnly}
                             className={clsx(
@@ -168,7 +205,10 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
                     <label className="block text-sm font-medium text-gray-700">不動產總值 (萬)</label>
                     <div className="relative mt-1">
                         <input
-                            type="number"
+                            type="text"
+                            inputMode="numeric"
+                            pattern="[0-9]*"
+                            maxLength={5}
                             {...register('realEstateValue')}
                             disabled={readOnly}
                             className={clsx(

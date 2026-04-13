@@ -2,6 +2,7 @@ import { useState } from 'react';
 import { Search, AlertCircle, CheckCircle2, FileText, ArrowLeft, Loader2, ShieldCheck, DollarSign } from 'lucide-react';
 import { checkApplicationStatus, ApplicationStatusResult } from '../app/actions/applicationActions';
 import { clsx } from 'clsx';
+import { twIdError } from '../lib/validateTwId';
 
 interface StatusInquiryPageProps {
     onBack: () => void;
@@ -11,11 +12,15 @@ export function StatusInquiryPage({ onBack }: StatusInquiryPageProps) {
     const [name, setName] = useState('');
     const [idNumber, setIdNumber] = useState('');
     const [isLoading, setIsLoading] = useState(false);
+    const [idError, setIdError] = useState('');
     const [result, setResult] = useState<ApplicationStatusResult | null>(null);
 
     const handleSearch = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!name.trim() || !idNumber.trim()) return;
+        if (!name.trim()) return;
+        const err = twIdError(idNumber.trim());
+        if (err) { setIdError(err); return; }
+        setIdError('');
 
         setIsLoading(true);
         setResult(null);
@@ -85,12 +90,12 @@ export function StatusInquiryPage({ onBack }: StatusInquiryPageProps) {
                                 <input
                                     type="text"
                                     value={idNumber}
-                                    onChange={(e) => setIdNumber(e.target.value.toUpperCase())}
+                                    onChange={(e) => { setIdNumber(e.target.value.toUpperCase()); setIdError(''); }}
                                     placeholder="請輸入完整身分證字號 (包含英文字母)"
-                                    className="w-full px-4 py-3 bg-slate-50 border border-slate-200 rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none transition-all placeholder:text-slate-400 uppercase"
-                                    required
+                                    className={clsx('w-full px-4 py-3 bg-slate-50 border rounded-xl focus:ring-2 focus:ring-blue-500 focus:bg-white outline-none transition-all placeholder:text-slate-400 uppercase', idError ? 'border-red-400' : 'border-slate-200')}
                                     disabled={isLoading}
                                 />
+                                {idError && <p className="text-xs text-red-500 mt-1">{idError}</p>}
                             </div>
 
                             <button

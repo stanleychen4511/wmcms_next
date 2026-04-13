@@ -28,6 +28,7 @@ export interface ApplicationDetail {
     maritalStatus?: string | null;
     hasChildren?: boolean | null;
     underageChildrenCount?: number | null;
+    adultChildrenCount?: number | null;
     // Board review fields
     applyAmount?: number | null;
     approvedAmount?: number | null;
@@ -59,7 +60,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 (SELECT COALESCE(SUM(a2.approved_amount), 0) FROM applications a2
                  WHERE a2.applicant_id = a.applicant_id AND a2.status = '4') AS total_approved_amount,
                 a.age, a.moveable_property, a.immoveable_property,
-                a.annual_income, a.marital_status, a.has_children, a.underage_children_count,
+                a.annual_income, a.marital_status, a.has_children, a.underage_children_count, a.adult_children_count,
                 a.apply_amount, a.approved_amount,
                 w.stage as wf_stage,
                 w.is_approved as wf_is_approved,
@@ -110,6 +111,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             maritalStatus: row.marital_status ?? null,
             hasChildren: row.has_children ?? null,
             underageChildrenCount: row.underage_children_count != null ? Number(row.underage_children_count) : null,
+            adultChildrenCount: row.adult_children_count != null ? Number(row.adult_children_count) : null,
             applyAmount: row.apply_amount != null ? Number(row.apply_amount) : null,
             approvedAmount: row.approved_amount != null ? Number(row.approved_amount) : null,
             wfIsApproved: row.wf_is_approved ?? null,
@@ -197,6 +199,7 @@ export interface QualificationData {
     marital_status?: string | null;  // '1' = 單身, '2' = 已婚
     has_children?: boolean | null;
     underage_children_count?: number | null;
+    adult_children_count?: number | null;
     apply_amount?: number | null;
 }
 
@@ -220,9 +223,10 @@ export async function saveQualificationData(
                  marital_status         = $5,
                  has_children           = $6,
                  underage_children_count = $7,
-                 apply_amount           = $8,
+                 adult_children_count   = $8,
+                 apply_amount           = $9,
                  updated_at             = NOW()
-             WHERE id = $9`,
+             WHERE id = $10`,
             [
                 data.age ?? null,
                 data.moveable_property ?? null,
@@ -231,6 +235,7 @@ export async function saveQualificationData(
                 data.marital_status ?? null,
                 data.has_children ?? null,
                 data.underage_children_count ?? null,
+                data.adult_children_count ?? null,
                 data.apply_amount ?? null,
                 applicationId,
             ]

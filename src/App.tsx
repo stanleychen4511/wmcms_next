@@ -54,6 +54,7 @@ import {
 } from './app/actions/applicationActions';
 
 import { fetchCaseOfficers, fetchCaseOfficersWithId } from './app/actions/userActions';
+import { fetchSetting } from './app/actions/settingsActions';
 
 import { STATUS_TO_STAGE, STAGE_TO_STATUS } from './lib/stageMaps';
 
@@ -131,6 +132,8 @@ function App() {
     const [isSavingQualification, setIsSavingQualification] = useState(false);
     const [saveQualToast, setSaveQualToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
     const [applyAmount, setApplyAmount] = useState<number>(0);
+    const [maxApplyAmount, setMaxApplyAmount] = useState<number>(350000);
+    const [applyAmountError, setApplyAmountError] = useState('');
 
     // Notification state
     const [showNotifModal, setShowNotifModal] = useState(false);
@@ -186,6 +189,10 @@ function App() {
             loadNotifLogs(selectedAppId);
         }
     }, [view, selectedAppId, loadAppDetail, loadNotifLogs]);
+
+    useEffect(() => {
+        fetchSetting('max_apply_amount', '350000').then(v => setMaxApplyAmount(Number(v) || 350000));
+    }, []);
 
     // Pending doc alerts (recalculated every time user returns to home)
     const [pendingAlerts, setPendingAlerts] = useState<PendingDocAlert[]>([]);
@@ -430,16 +437,18 @@ function App() {
     ) ? {
         type: appDetail.maritalStatus === '2' ? 'married' as const : 'single' as const,
         age: appDetail.age ?? 0,
-        hasMinorChildren: appDetail.hasChildren ?? false,
+        hasChildren: appDetail.hasChildren ?? false,
         underageChildrenCount: appDetail.underageChildrenCount ?? undefined,
+        adultChildrenCount: appDetail.adultChildrenCount ?? undefined,
         annualIncome: appDetail.annualIncome ?? 0,
         movableAssets: appDetail.moveableProperty ?? 0,
         realEstateValue: appDetail.immoveableProperty ?? 0,
     } : {
         type: 'single' as const,
         age: 0,
-        hasMinorChildren: false,
+        hasChildren: false,
         underageChildrenCount: undefined,
+        adultChildrenCount: undefined,
         annualIncome: 0,
         movableAssets: 0,
         realEstateValue: 0,
@@ -464,6 +473,10 @@ function App() {
 
     const handleSaveQualification = async () => {
         if (!selectedAppId) return;
+        if (applyAmount > maxApplyAmount) {
+            setSaveQualToast({ type: 'error', msg: `申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元` });
+            return;
+        }
         setIsSavingQualification(true);
         setSaveQualToast(null);
         try {
@@ -475,9 +488,11 @@ function App() {
                 immoveable_property:    v?.realEstateValue != null ? Number(v.realEstateValue) : null,
                 annual_income:          v?.annualIncome != null ? Number(v.annualIncome) : null,
                 marital_status:         v?.type === 'married' ? '2' : v?.type === 'single' ? '1' : null,
-                has_children:           v?.hasMinorChildren ?? null,
-                underage_children_count: v?.hasMinorChildren && v?.underageChildrenCount != null
+                has_children:           v?.hasChildren ?? null,
+                underage_children_count: v?.hasChildren && v?.underageChildrenCount != null
                                             ? Number(v.underageChildrenCount) : null,
+                adult_children_count:   v?.hasChildren && v?.adultChildrenCount != null
+                                            ? Number(v.adultChildrenCount) : null,
                 apply_amount:           applyAmount != null ? Number(applyAmount) : null,
             });
             if (result.success) {
@@ -519,9 +534,11 @@ function App() {
                     immoveable_property:    v.realEstateValue != null ? Number(v.realEstateValue) : null,
                     annual_income:          v.annualIncome != null ? Number(v.annualIncome) : null,
                     marital_status:         v.type === 'married' ? '2' : v.type === 'single' ? '1' : null,
-                    has_children:           v.hasMinorChildren ?? null,
-                    underage_children_count: v.hasMinorChildren && v.underageChildrenCount != null
+                    has_children:           v.hasChildren ?? null,
+                    underage_children_count: v.hasChildren && v.underageChildrenCount != null
                                                 ? Number(v.underageChildrenCount) : null,
+                    adult_children_count:   v.hasChildren && v.adultChildrenCount != null
+                                                ? Number(v.adultChildrenCount) : null,
                     apply_amount:           applyAmount != null ? Number(applyAmount) : null,
                 });
             }
@@ -590,20 +607,30 @@ function App() {
                                 <label className="block text-sm font-medium text-gray-700 mb-1">申請金額</label>
                                 <div className="relative max-w-xs">
                                     <input
-                                        type="number"
-                                        min={0}
-                                        value={applyAmount}
-                                        onChange={e => setApplyAmount(Number(e.target.value))}
+                                        type="text"
+                                        inputMode="numeric"
+                                        pattern="[0-9]*"
+                                        maxLength={String(maxApplyAmount).length}
+                                        value={applyAmount || ''}
+                                        onChange={e => {
+                                            const raw = e.target.value.replace(/\D/g, '');
+                                            const v = Number(raw);
+                                            setApplyAmount(v);
+                                            setApplyAmountError(v > maxApplyAmount ? `申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元` : '');
+                                        }}
                                         disabled={contentReadOnly || appDetail?.status === '2' || appDetail?.status === '4'}
                                         className={clsx(
                                             'block w-full rounded-md shadow-sm p-2 border pr-12',
-                                            (contentReadOnly || appDetail?.status === '2' || appDetail?.status === '4')
-                                                ? 'bg-gray-50 text-gray-500 border-gray-200 cursor-not-allowed'
-                                                : 'border-gray-300 focus:border-blue-500 focus:ring-blue-500'
+                                            applyAmountError
+                                                ? 'border-red-400 focus:ring-red-300'
+                                                : (contentReadOnly || appDetail?.status === '2' || appDetail?.status === '4')
+                                                    ? 'bg-gray-50 text-gray-500 border-gray-200 cursor-not-allowed'
+                                                    : 'border-gray-300 focus:border-blue-500 focus:ring-blue-500'
                                         )}
                                     />
                                     <span className="absolute right-3 top-2 text-gray-400 text-sm">元</span>
                                 </div>
+                                {applyAmountError && <p className="text-xs text-red-500 mt-1">{applyAmountError}</p>}
                             </div>
 
                             <ApplicationForm
@@ -612,6 +639,10 @@ function App() {
                                 applicationType={appDetail?.applicationType}
                                 onValidation={(_isValid, values) => {
                                     setLiveApplicantValues(values);
+                                    // Clear eligibility result when form fields are changed
+                                    setEligibilityCheck(prev =>
+                                        prev.checked ? { checked: false, eligible: false, reasons: [] } : prev
+                                    );
                                 }}
                             />
                             {!contentReadOnly && (
@@ -646,6 +677,12 @@ function App() {
                                         </span>
                                     )}
                                 </div>
+                            )}
+                            {!eligibilityCheck.checked && (
+                                <p className="mt-4 text-sm text-amber-600 flex items-center gap-1.5">
+                                    <AlertTriangle className="w-4 h-4 shrink-0" />
+                                    未執行資格判定
+                                </p>
                             )}
                             {eligibilityCheck.checked && (
                                 <div className={clsx('mt-4 p-4 rounded-md', eligibilityCheck.eligible ? 'bg-green-50 text-green-800' : 'bg-red-50 text-red-800')}>
@@ -754,19 +791,31 @@ function App() {
                             <div className="relative max-w-xs">
                                 <span className="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm">NT$</span>
                                 <input
-                                    type="number"
-                                    min={0}
-                                    value={boardApproved ? boardApprovedAmount : 0}
-                                    onChange={(e) => setBoardApprovedAmount(Number(e.target.value))}
+                                    type="text"
+                                    inputMode="numeric"
+                                    pattern="[0-9]*"
+                                    maxLength={String(maxApplyAmount).length}
+                                    value={boardApproved ? (boardApprovedAmount || '') : ''}
+                                    onChange={(e) => {
+                                        const raw = e.target.value.replace(/\D/g, '');
+                                        const v = Number(raw);
+                                        setBoardApprovedAmount(v);
+                                        setApplyAmountError(v > maxApplyAmount ? `通過金額不可超過 ${maxApplyAmount.toLocaleString()} 元` : '');
+                                    }}
                                     disabled={boardReadOnly || !boardApproved}
                                     className={clsx(
                                         'w-full border rounded-md pl-10 pr-3 py-2 text-sm',
-                                        (!boardApproved || boardReadOnly)
-                                            ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
-                                            : 'border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent'
+                                        (applyAmountError && boardApproved)
+                                            ? 'border-red-400 focus:ring-red-300'
+                                            : (!boardApproved || boardReadOnly)
+                                                ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
+                                                : 'border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent'
                                     )}
                                 />
                             </div>
+                            {applyAmountError && boardApproved && (
+                                <p className="text-xs text-red-500 mt-1">{applyAmountError}</p>
+                            )}
                         </div>
 
                         {/* 4. 審核意見 */}

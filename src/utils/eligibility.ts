@@ -3,7 +3,7 @@ export type ApplicantType = 'married' | 'single';
 export interface ApplicantData {
     type: ApplicantType;
     age: number;
-    hasMinorChildren: boolean;
+    hasChildren: boolean;
     annualIncome: number; // In Wan (10k TWD)
     movableAssets: number; // In Wan
     realEstateValue: number; // In Wan
@@ -22,7 +22,7 @@ export const checkEligibility = (data: ApplicantData): EligibilityResult => {
     const income     = isNaN(Number(data.annualIncome))    ? -1 : Number(data.annualIncome);
     const assets     = isNaN(Number(data.movableAssets))   ? -1 : Number(data.movableAssets);
     const realEstate = isNaN(Number(data.realEstateValue)) ? -1 : Number(data.realEstateValue);
-    const hasChildren = !!data.hasMinorChildren;
+    const hasChildren = !!data.hasChildren;
     const isMarried  = data.type === 'married';
 
     // ── 條件 1：年齡 25~65 歲 ─────────────────────────────────────────────────

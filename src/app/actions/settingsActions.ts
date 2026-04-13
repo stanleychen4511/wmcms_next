@@ -27,6 +27,29 @@ export async function fetchSetting(key: string, defaultValue = ''): Promise<stri
     }
 }
 
+/** Ensure default system settings exist (upsert on first run). */
+export async function ensureDefaultSettings(): Promise<void> {
+    const defaults: { key: string; value: string; description: string }[] = [
+        { key: 'pending_doc_alert_days', value: '7',      description: '收件後超過此天數且仍有必備文件未上傳的案件，將於首頁顯示未補件提示' },
+        { key: 'max_apply_amount',       value: '350000', description: '每筆申請案件的申請金額上限（元）' },
+    ];
+    const client = await pool.connect();
+    try {
+        for (const d of defaults) {
+            await client.query(
+                `INSERT INTO system_settings (key, value, description)
+                 VALUES ($1, $2, $3)
+                 ON CONFLICT (key) DO NOTHING`,
+                [d.key, d.value, d.description]
+            );
+        }
+    } catch (err) {
+        console.error('ensureDefaultSettings error:', err);
+    } finally {
+        client.release();
+    }
+}
+
 /** Fetch all settings for the admin settings panel. */
 export async function fetchAllSettings(): Promise<{ success: boolean; data?: SystemSetting[]; error?: string }> {
     const client = await pool.connect();

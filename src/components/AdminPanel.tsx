@@ -19,6 +19,7 @@ import { TemplateFileManager } from './TemplateFileManager';
 import { SettingsPanel } from './SettingsPanel';
 import { clsx } from 'clsx';
 import { getUsers, createUser, updateUserRoles, resetUserPassword, deleteUserAccount, fetchRoles, AdminUserView, RoleOption } from '../app/actions/userActions';
+import { twIdError } from '../lib/validateTwId';
 
 interface AdminPanelProps {
     userRoles: Role[];
@@ -70,10 +71,12 @@ export function AdminPanel({ userRoles, userId, onBack }: AdminPanelProps) {
 
     const handleAddAccount = async (e: React.FormEvent) => {
         e.preventDefault();
-        if (!newAccountName.trim() || !newPassword.trim() || !newRealName.trim() || !newIdNumber.trim() || newRoles.length === 0) {
+        if (!newAccountName.trim() || !newPassword.trim() || !newRealName.trim() || newRoles.length === 0) {
             alert('請填寫完整資料並至少選擇一個角色');
             return;
         }
+        const idErr = twIdError(newIdNumber.trim());
+        if (idErr) { alert(idErr); return; }
         setIsLoading(true);
         const res = await createUser({
             account: newAccountName,
