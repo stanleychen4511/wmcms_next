@@ -429,7 +429,15 @@ function App() {
         annualIncome: appDetail.annualIncome ?? 0,
         movableAssets: appDetail.moveableProperty ?? 0,
         realEstateValue: appDetail.immoveableProperty ?? 0,
-    } : undefined;
+    } : {
+        type: 'single' as const,
+        age: 0,
+        hasMinorChildren: false,
+        underageChildrenCount: undefined,
+        annualIncome: 0,
+        movableAssets: 0,
+        realEstateValue: 0,
+    };
     const currentStageIndex = STAGES.indexOf(stage);
 
     // Viewed stage (for read-only browsing) — defaults to true stage
