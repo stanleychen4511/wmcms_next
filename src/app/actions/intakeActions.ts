@@ -11,6 +11,9 @@ export interface EligibilityResult {
     eligible: boolean;
     reason?: string;
     error?: string;
+    remaining?: number;
+    cumulativeApproved?: number;
+    maxAmount?: number;
 }
 
 export async function queryApplicantEligibility(idNumber: string): Promise<EligibilityResult> {
@@ -24,13 +27,43 @@ export async function queryApplicantEligibility(idNumber: string): Promise<Eligi
             'SELECT id, search_salt, id_number_bidx FROM users WHERE is_active = true'
         );
 
+        const normalizedId = idNumber.trim().toUpperCase();
         let matchedUserId: string | null = null;
         for (const row of usersRes.rows) {
             if (!row.search_salt) continue;
-            const computed = generateBlindIndex(idNumber.trim().toUpperCase(), row.search_salt);
-            if (computed === row.id_number_bidx) {
+            // Coerce to string in case pg returns bytea as Buffer
+            const salt = Buffer.isBuffer(row.search_salt)
+                ? row.search_salt.toString('hex')
+                : String(row.search_salt);
+            const storedBidx = Buffer.isBuffer(row.id_number_bidx)
+                ? row.id_number_bidx.toString('hex')
+                : String(row.id_number_bidx ?? '');
+            const computed = generateBlindIndex(normalizedId, salt);
+            if (computed === storedBidx) {
                 matchedUserId = row.id;
                 break;
+            }
+        }
+
+        // DEBUG: if still no match, try to find why by querying the specific user
+        if (!matchedUserId) {
+            const debugRes = await client.query(
+                `SELECT id, account, search_salt, id_number_bidx FROM users WHERE account = $1`,
+                [`app_${normalizedId}`]
+            );
+            if (debugRes.rows.length > 0) {
+                const dr = debugRes.rows[0];
+                const recomputed = generateBlindIndex(normalizedId, dr.search_salt);
+                console.error('[EligibilityDebug] account found but blind index mismatch', {
+                    account: dr.account,
+                    saltLength: dr.search_salt?.length,
+                    bidxLength: dr.id_number_bidx?.length,
+                    bidxStored: dr.id_number_bidx?.slice(0, 16),
+                    bidxComputed: recomputed?.slice(0, 16),
+                    match: recomputed === dr.id_number_bidx,
+                });
+            } else {
+                console.error('[EligibilityDebug] no account found for', `app_${normalizedId}`);
             }
         }
 
@@ -61,14 +94,18 @@ export async function queryApplicantEligibility(idNumber: string): Promise<Eligi
         );
 
         const total = parseFloat(sumRes.rows[0].total || '0');
-        if (total >= 350000) {
+        const maxAmountStr = await fetchSetting('max_apply_amount', '350000');
+        const maxAmount = Number(maxAmountStr) || 350000;
+        const remaining = maxAmount - total;
+
+        if (remaining <= 0) {
             return {
                 eligible: false,
                 reason: `您的歷史累計獲補助金額已達上限（${total.toLocaleString()} 元），不符合申請資格。`,
             };
         }
 
-        return { eligible: true };
+        return { eligible: true, remaining, cumulativeApproved: total, maxAmount };
     } catch (err: any) {
         console.error('queryApplicantEligibility error:', err);
         return { eligible: false, error: '系統異常，請稍後再試' };
@@ -97,11 +134,6 @@ function formatTimestamp(date: Date): string {
     ].join('');
 }
 
-const INTAKE_DOCS: { field: string; docId: string; label: string }[] = [
-    { field: 'doc_1', docId: '1', label: '自費醫療補助申請表' },
-    { field: 'doc_3', docId: '3', label: '身分證正反面影本' },
-    { field: 'doc_4', docId: '4', label: '個資同意書' },
-];
 
 export async function submitExternalApplication(
     formData: FormData
@@ -133,7 +165,7 @@ export async function submitExternalApplication(
         return { success: false, error: '請輸入申請金額' };
     }
     if (applyAmount > maxAmount) {
-        return { success: false, error: `申請金額不可超過 ${maxAmount.toLocaleString()} 元` };
+        return { success: false, error: `申請金額不可超過累積補助上限 ${maxAmount.toLocaleString()} 元` };
     }
 
     const client = await pool.connect();
@@ -251,7 +283,30 @@ export async function submitExternalApplication(
     }
 
     // ── 5. Upload documents (outside transaction — partial failure OK) ───────
-    for (const { field, docId, label } of INTAKE_DOCS) {
+    // Dynamically resolve doc fields from FormData keys (doc_1, doc_2, …)
+    // and look up their labels from document_type_config.
+    const docClient = await pool.connect();
+    let docLabelMap: Map<string, string> = new Map();
+    try {
+        const dtRes = await docClient.query(
+            `SELECT id::text, label FROM document_type_config WHERE phase = 'apply' AND is_active = true`
+        );
+        for (const r of dtRes.rows) docLabelMap.set(r.id, r.label);
+    } catch { /* non-fatal */ } finally {
+        docClient.release();
+    }
+
+    // Collect all doc_* entries present in the FormData
+    const intakeDocs: { field: string; docId: string; label: string }[] = [];
+    for (const key of (formData as any).keys()) {
+        const m = (key as string).match(/^doc_(\d+)$/);
+        if (m) {
+            const docId = m[1];
+            intakeDocs.push({ field: key, docId, label: docLabelMap.get(docId) ?? `文件${docId}` });
+        }
+    }
+
+    for (const { field, docId, label } of intakeDocs) {
         const file = formData.get(field) as File | null;
         if (!file || file.size === 0) continue;
 
@@ -288,4 +343,56 @@ export async function submitExternalApplication(
     });
 
     return { success: true, caseNumber: caseNumber! };
+}
+
+export interface ApplicantQuota {
+    cumulativeApproved: number;
+    maxAmount: number;
+    remaining: number;
+}
+
+export async function fetchApplicantQuota(idNumber: string): Promise<ApplicantQuota> {
+    const maxAmountStr = await fetchSetting('max_apply_amount', '350000');
+    const maxAmount = Number(maxAmountStr) || 350000;
+
+    if (!idNumber || idNumber.trim() === '') {
+        return { cumulativeApproved: 0, maxAmount, remaining: maxAmount };
+    }
+
+    const client = await pool.connect();
+    try {
+        const usersRes = await client.query(
+            'SELECT id, search_salt, id_number_bidx FROM users WHERE is_active = true'
+        );
+        let matchedUserId: string | null = null;
+        const normalizedIdQ = idNumber.trim().toUpperCase();
+        for (const row of usersRes.rows) {
+            if (!row.search_salt) continue;
+            const salt = Buffer.isBuffer(row.search_salt)
+                ? row.search_salt.toString('hex')
+                : String(row.search_salt);
+            const storedBidx = Buffer.isBuffer(row.id_number_bidx)
+                ? row.id_number_bidx.toString('hex')
+                : String(row.id_number_bidx ?? '');
+            const computed = generateBlindIndex(normalizedIdQ, salt);
+            if (computed === storedBidx) {
+                matchedUserId = row.id;
+                break;
+            }
+        }
+        if (!matchedUserId) {
+            return { cumulativeApproved: 0, maxAmount, remaining: maxAmount };
+        }
+        const sumRes = await client.query(
+            `SELECT COALESCE(SUM(approved_amount), 0) AS total
+             FROM applications WHERE applicant_id = $1 AND status = '4'`,
+            [matchedUserId]
+        );
+        const total = parseFloat(sumRes.rows[0].total || '0');
+        return { cumulativeApproved: total, maxAmount, remaining: Math.max(0, maxAmount - total) };
+    } catch {
+        return { cumulativeApproved: 0, maxAmount, remaining: maxAmount };
+    } finally {
+        client.release();
+    }
 }

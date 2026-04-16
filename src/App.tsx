@@ -8,13 +8,11 @@ import {
     CreditCard,
     ShieldCheck,
     AlertTriangle,
-    UserCircle,
-    LogOut,
     Eye,
     Save,
     Send,
 } from 'lucide-react';
-import { RoleSwitcher } from './components/RoleSwitcher';
+import { AppHeader } from './components/AppHeader';
 import { LoginPage } from './components/LoginPage';
 import { HomePage } from './components/HomePage';
 import { fetchPendingDocAlerts, PendingDocAlert } from './app/actions/pendingDocAlertActions';
@@ -32,6 +30,7 @@ import { AuditLogViewer } from './components/AuditLogViewer';
 import { AdminPanel } from './components/AdminPanel';
 import { TemplateDownloadPage } from './components/TemplateDownloadPage';
 import { NotificationManager } from './components/NotificationManager';
+import { AnnouncementsPage } from './components/AnnouncementsPage';
 
 import {
     fetchApplicationDetail,
@@ -44,7 +43,7 @@ import {
     ApplicationDetail,
 } from './app/actions/workflowActions';
 
-import { fetchApplicationDocuments, DocumentEntry } from './app/actions/documentActions';
+import { fetchApplicationDocuments, DocumentEntry, fetchHistoricalReceipts, HistoricalReceipt, fetchLastApplicationDocs, copyDocumentToApplication } from './app/actions/documentActions';
 
 import {
     fetchCaseSummaries,
@@ -55,6 +54,8 @@ import {
 
 import { fetchCaseOfficers, fetchCaseOfficersWithId } from './app/actions/userActions';
 import { fetchSetting } from './app/actions/settingsActions';
+import { fetchActiveBanners, Banner } from './app/actions/bannerActions';
+import { fetchHomeAnnouncements, Announcement } from './app/actions/announcementActions';
 
 import { STATUS_TO_STAGE, STAGE_TO_STATUS } from './lib/stageMaps';
 
@@ -87,7 +88,7 @@ function App() {
     const [role, setRole] = useState<Role>('case_officer');
     const [loggedInUser, setLoggedInUser] = useState<{ username: string; roles: Role[]; account: string; id: string } | null>(null);
 
-    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager'>('home');
+    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager' | 'announcements'>('home');
     const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
     const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
 
@@ -135,9 +136,18 @@ function App() {
     const [maxApplyAmount, setMaxApplyAmount] = useState<number>(350000);
     const [applyAmountError, setApplyAmountError] = useState('');
 
+    // Last docs state (for "使用上次檔案" feature)
+    const [lastDocs, setLastDocs] = useState<any[]>([]);
+    const [copyingLastDocs, setCopyingLastDocs] = useState(false);
+
     // Notification state
     const [showNotifModal, setShowNotifModal] = useState(false);
     const [notifLogs, setNotifLogs] = useState<NotificationLog[]>([]);
+
+    // Historical receipts modal state
+    const [showReceiptsModal, setShowReceiptsModal] = useState(false);
+    const [historicalReceipts, setHistoricalReceipts] = useState<HistoricalReceipt[]>([]);
+    const [receiptsPreviewUrl, setReceiptsPreviewUrl] = useState<string | null>(null);
 
     const loadNotifLogs = useCallback(async (appId: string) => {
         const res = await fetchNotificationLogs(appId);
@@ -193,6 +203,28 @@ function App() {
     useEffect(() => {
         fetchSetting('max_apply_amount', '350000').then(v => setMaxApplyAmount(Number(v) || 350000));
     }, []);
+
+    // Banners for HomePage carousel
+    const [banners, setBanners] = useState<Banner[]>([]);
+    const [announcements, setAnnouncements] = useState<Announcement[]>([]);
+    const [announcementNewDays, setAnnouncementNewDays] = useState(7);
+
+    // Reload banners + announcements every time user returns to home view
+    useEffect(() => {
+        if (view === 'home') {
+            fetchActiveBanners().then(setBanners).catch(() => {});
+            fetchHomeAnnouncements().then(({ items, newDays }) => {
+                setAnnouncements(items);
+                setAnnouncementNewDays(newDays);
+            }).catch(() => {});
+        }
+    }, [view]);
+
+    useEffect(() => {
+        if (appDetail?.applicantId && appDetail?.stage === 'admin_review') {
+            fetchLastApplicationDocs(appDetail.applicantId).then(setLastDocs);
+        }
+    }, [appDetail?.applicantId, appDetail?.stage]);
 
     // Pending doc alerts (recalculated every time user returns to home)
     const [pendingAlerts, setPendingAlerts] = useState<PendingDocAlert[]>([]);
@@ -307,6 +339,10 @@ function App() {
                 userRoles={loggedInUser.roles as Role[]}
                 pendingAlerts={pendingAlerts}
                 unassignedCount={unassignedCount}
+                banners={banners}
+                announcements={announcements}
+                newDays={announcementNewDays}
+                onGoAnnouncements={() => setView('announcements')}
                 onNavigateToCases={() => setView('list')}
                 onGoAudit={() => setView('admin')}
                 onGoAdmin={() => setView('admin')}
@@ -336,12 +372,25 @@ function App() {
         );
     }
 
+    if (view === 'announcements') {
+        return (
+            <AnnouncementsPage
+                username={loggedInUser.username}
+                onBack={() => setView('home')}
+                onGoHome={() => setView('home')}
+                onLogout={handleLogout}
+            />
+        );
+    }
+
     if (view === 'admin') {
         return (
             <AdminPanel
                 userRoles={loggedInUser.roles as Role[]}
                 userId={loggedInUser.id}
                 onBack={() => setView('home')}
+                username={loggedInUser.username}
+                onLogout={handleLogout}
             />
         );
     }
@@ -351,6 +400,8 @@ function App() {
             <TemplateDownloadPage
                 userId={loggedInUser.id}
                 onBack={() => setView('home')}
+                username={loggedInUser.username}
+                onLogout={handleLogout}
             />
         );
     }
@@ -360,6 +411,8 @@ function App() {
             <NotificationManager
                 userId={loggedInUser.id}
                 onBack={() => setView('home')}
+                username={loggedInUser.username}
+                onLogout={handleLogout}
             />
         );
     }
@@ -374,6 +427,7 @@ function App() {
                 officersWithId={officersWithId}
                 isLoading={listLoading}
                 pendingAlertIds={new Set(pendingAlerts.map(a => a.applicationId))}
+                maxApplyAmount={maxApplyAmount}
                 onMount={refreshCaseSummaries}
                 onAssign={async (applicationIds, officerUserId) => {
                     const res = await assignOfficerBatch(applicationIds, officerUserId);
@@ -699,11 +753,30 @@ function App() {
                             )}
                         </div>
                         {/* ── 下半部：文件審核（申請類） ── */}
+                        {lastDocs.length > 0 && stage === 'admin_review' && (
+                            <div className="flex items-center gap-3 mb-2">
+                                <button
+                                    onClick={handleCopyLastDocs}
+                                    disabled={copyingLastDocs}
+                                    className="flex items-center gap-2 bg-white border border-gray-300 text-slate-700 px-3 py-1.5 rounded-md text-sm hover:bg-gray-50 disabled:opacity-50 transition shadow-sm"
+                                >
+                                    {copyingLastDocs ? (
+                                        <div className="w-3.5 h-3.5 border-2 border-slate-400 border-t-transparent rounded-full animate-spin" />
+                                    ) : null}
+                                    使用上次檔案（身分證、個資同意書）
+                                </button>
+                                {lastDocs[0]?.sourceCaseNumber && (
+                                    <span className="text-xs text-gray-500">來源案號：{lastDocs[0].sourceCaseNumber}</span>
+                                )}
+                            </div>
+                        )}
                         <ReviewList
                             applicationId={selectedAppId!}
                             caseNumber={appDetail?.caseNumber ?? ''}
                             phase="apply"
                             userId={loggedInUser?.id}
+                            caseClosed={!!isCaseClosed}
+                            canReview={!isCaseClosed && (hasPermission('case_officer') || hasPermission('admin'))}
                             readOnly={contentReadOnly || (!hasPermission('case_officer') && !hasPermission('admin'))}
                             onRefresh={() => {
                                 if (selectedAppId) {
@@ -854,6 +927,18 @@ function App() {
                                 <span className="font-medium">撥款狀態</span>
                                 <span className="bg-emerald-200 text-emerald-800 px-3 py-1 rounded-full text-sm font-bold">待撥款</span>
                             </div>
+                            {appDetail?.applicantId && (
+                                <button
+                                    onClick={async () => {
+                                        const receipts = await fetchHistoricalReceipts(appDetail.applicantId!);
+                                        setHistoricalReceipts(receipts);
+                                        setShowReceiptsModal(true);
+                                    }}
+                                    className="mt-2 flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium transition"
+                                >
+                                    查看歷史收據
+                                </button>
+                            )}
                         </div>
                         {/* 核銷類文件上傳 */}
                         <ReviewList
@@ -861,6 +946,8 @@ function App() {
                             caseNumber={appDetail?.caseNumber ?? ''}
                             phase="reimbursement"
                             userId={loggedInUser?.id}
+                            caseClosed={!!isCaseClosed}
+                            canReview={!isCaseClosed && (hasPermission('accountant') || hasPermission('case_officer') || hasPermission('admin'))}
                             readOnly={contentReadOnly || (!hasPermission('accountant') && !hasPermission('case_officer') && !hasPermission('admin'))}
                             onRefresh={() => {
                                 if (selectedAppId) {
@@ -876,43 +963,37 @@ function App() {
         }
     };
 
+    const handleCopyLastDocs = async () => {
+        if (!selectedAppId || lastDocs.length === 0) return;
+        setCopyingLastDocs(true);
+        for (const doc of lastDocs) {
+            await copyDocumentToApplication(
+                selectedAppId,
+                doc.docId,
+                doc.fileUrl,
+                doc.sourceCaseNumber,
+                loggedInUser?.id
+            );
+        }
+        setCopyingLastDocs(false);
+        setLastDocs([]);
+        // Reload documents
+        if (selectedAppId) {
+            fetchApplicationDocuments(selectedAppId).then(setDbDocs);
+        }
+    };
+
     const retreatLabel = currentStageIndex > 0 ? STAGE_LABEL_MAP[STAGES[currentStageIndex - 1]] : null;
     const advanceLabel = currentStageIndex < STAGES.length - 1 ? STAGE_LABEL_MAP[STAGES[currentStageIndex + 1]] : null;
 
     return (
         <div className="min-h-screen bg-gray-100 flex flex-col font-sans text-slate-800">
             {/* Header */}
-            <header className="bg-slate-900 text-white shadow-md sticky top-0 z-50">
-                <div className="container mx-auto px-4 sm:px-6 py-4 flex justify-between items-center gap-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-white shrink-0">W</div>
-                        <h1
-                            className="text-lg sm:text-xl font-bold tracking-tight cursor-pointer hover:text-blue-300 transition-colors truncate"
-                            onClick={() => setView('home')}
-                            title="返回首頁"
-                        >萬美基金會補助管理系統</h1>
-                    </div>
-                    <div className="flex items-center gap-2 sm:gap-4 shrink-0">
-                        <div className="flex items-center gap-2 bg-slate-800 text-slate-200 px-2 sm:px-3 py-1.5 rounded-lg border border-slate-700">
-                            <UserCircle className="w-4 h-4 text-slate-400" />
-                            <span className="text-xs sm:text-sm font-medium truncate max-w-[80px] sm:max-w-none">{loggedInUser.username}</span>
-                        </div>
-                        <RoleSwitcher 
-                            currentRole={role} 
-                            availableRoles={loggedInUser.roles} 
-                            onChange={setRole} 
-                        />
-                        <button
-                            onClick={handleLogout}
-                            className="flex items-center gap-1.5 text-xs sm:text-sm text-slate-300 hover:text-red-400 transition px-1 sm:px-2 py-1.5"
-                            title="登出"
-                        >
-                            <LogOut className="w-4 h-4" />
-                            <span className="hidden sm:inline">登出</span>
-                        </button>
-                    </div>
-                </div>
-            </header>
+            <AppHeader
+                username={loggedInUser.username}
+                onGoHome={() => setView('home')}
+                onLogout={handleLogout}
+            />
 
             {/* Main Content */}
             <main className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-8 flex flex-col md:flex-row gap-6 md:gap-8 overflow-x-hidden">
@@ -1123,6 +1204,60 @@ function App() {
 
                 </div>
             </main>
+
+            {/* Historical Receipts Modal */}
+            {showReceiptsModal && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
+                        <div className="p-5 border-b border-slate-200 flex items-center justify-between">
+                            <h3 className="text-lg font-bold text-slate-800">歷史收據</h3>
+                            <button
+                                onClick={() => { setShowReceiptsModal(false); setReceiptsPreviewUrl(null); }}
+                                className="text-slate-400 hover:text-slate-600 transition text-xl leading-none"
+                            >✕</button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-5 space-y-3">
+                            {historicalReceipts.length === 0 ? (
+                                <p className="text-slate-400 text-sm text-center py-8">無歷史收據紀錄</p>
+                            ) : historicalReceipts.map((r) => (
+                                <div key={`${r.caseNumber}-${r.docId}`} className="flex items-center gap-4 border border-slate-100 rounded-xl p-4 hover:bg-slate-50">
+                                    <div className="flex-1 min-w-0">
+                                        <p className="text-sm font-semibold text-slate-700">{r.caseNumber}</p>
+                                        <p className="text-xs text-slate-500">{r.docLabel}</p>
+                                        {r.uploadedAt && (
+                                            <p className="text-xs text-slate-400 mt-0.5">上傳日期：{r.uploadedAt.slice(0, 10)}</p>
+                                        )}
+                                    </div>
+                                    <button
+                                        onClick={() => setReceiptsPreviewUrl(r.fileUrl)}
+                                        className="shrink-0 flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition"
+                                    >
+                                        <Eye className="w-3.5 h-3.5" />
+                                        預覽
+                                    </button>
+                                </div>
+                            ))}
+                        </div>
+                    </div>
+                    {/* Inline preview overlay */}
+                    {receiptsPreviewUrl && (
+                        <div className="fixed inset-0 bg-black/80 z-60 flex items-center justify-center p-4" onClick={() => setReceiptsPreviewUrl(null)}>
+                            <div className="relative max-w-4xl w-full max-h-full" onClick={e => e.stopPropagation()}>
+                                <button
+                                    onClick={() => setReceiptsPreviewUrl(null)}
+                                    className="absolute -top-10 right-0 text-white text-2xl leading-none hover:text-gray-300"
+                                >✕</button>
+                                {receiptsPreviewUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
+                                    // eslint-disable-next-line @next/next/no-img-element
+                                    <img src={receiptsPreviewUrl} alt="收據預覽" className="max-w-full max-h-[80vh] object-contain mx-auto rounded-lg shadow-2xl" />
+                                ) : (
+                                    <iframe src={receiptsPreviewUrl} className="w-full h-[80vh] rounded-lg shadow-2xl" title="收據預覽" />
+                                )}
+                            </div>
+                        </div>
+                    )}
+                </div>
+            )}
 
             {/* Send Notification Modal */}
             {showNotifModal && selectedAppId && (

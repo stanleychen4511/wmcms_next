@@ -3,6 +3,7 @@ import { useState, useEffect, useCallback, useMemo } from 'react';
 import { Download, FileText, Tag, Search, AlertTriangle, CheckSquare, Square } from 'lucide-react';
 import { clsx } from 'clsx';
 import { TemplateFile, fetchActiveTemplateFiles } from '../app/actions/templateActions';
+import { AppHeader } from './AppHeader';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -76,9 +77,11 @@ function TriCheckbox({ checked, indeterminate, onChange, label, className }: Tri
 interface TemplateDownloadPageProps {
     userId: string;
     onBack: () => void;
+    username?: string;
+    onLogout?: () => void;
 }
 
-export function TemplateDownloadPage({ userId, onBack }: TemplateDownloadPageProps) {
+export function TemplateDownloadPage({ userId, onBack, username, onLogout }: TemplateDownloadPageProps) {
     const [files, setFiles] = useState<TemplateFile[]>([]);
     const [loading, setLoading] = useState(true);
     const [searchTerm, setSearchTerm] = useState('');
@@ -170,18 +173,7 @@ export function TemplateDownloadPage({ userId, onBack }: TemplateDownloadPagePro
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
             {/* Header */}
-            <header className="bg-slate-900 text-white shadow-md sticky top-0 z-50">
-                <div className="container mx-auto px-4 sm:px-6 py-4 flex justify-between items-center gap-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-white shrink-0">W</div>
-                        <h1
-                            className="text-lg sm:text-xl font-bold tracking-tight truncate cursor-pointer hover:text-blue-300 transition-colors"
-                            onClick={onBack}
-                            title="返回首頁"
-                        >萬美基金會補助管理系統</h1>
-                    </div>
-                </div>
-            </header>
+            <AppHeader username={username} onGoHome={onBack} onLogout={onLogout} />
 
             <main className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-8 space-y-6">
                 {/* Page title + search */}

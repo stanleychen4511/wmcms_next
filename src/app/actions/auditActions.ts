@@ -8,6 +8,7 @@ export type AuditAction =
     | 'application.stage_advance'
     | 'application.stage_rollback'
     | 'application.officer_assign'
+    | 'application.reassign_officer'
     | 'application.close'
     | 'home_visit.create'
     | 'home_visit.update'
@@ -15,9 +16,11 @@ export type AuditAction =
     | 'document.preview'
     | 'document.delete'
     | 'document.status_update'
+    | 'document.copy_from_previous'
     | 'user.login'
     | 'user.create'
     | 'user.update'
+    | 'user.activate'
     | 'user.deactivate'
     | 'file_location.create'
     | 'file_location.update'
@@ -29,6 +32,7 @@ export type AuditAction =
     | 'template.enable'
     | 'template.download'
     | 'notification.send'
+    | 'notification.schedule_execute'
     | 'setting.update';
 
 export type AuditTargetType =
@@ -39,6 +43,7 @@ export type AuditTargetType =
     | 'file_location'
     | 'template'
     | 'notification'
+    | 'notification_schedule'
     | 'setting';
 
 export interface WriteAuditLogParams {

@@ -7,18 +7,20 @@ import {
     FilePlus,
     Bell,
     ClipboardCheck,
-    Megaphone,
     Info,
     Calendar,
-    UserCircle,
-    LogOut,
     Settings,
     Inbox,
     AlertTriangle,
+    X,
 } from 'lucide-react';
 import { PendingDocAlert } from '../app/actions/pendingDocAlertActions';
+import { fetchActiveBanners, Banner } from '../app/actions/bannerActions';
+import { Announcement } from '../app/actions/announcementActions';
+import ReactMarkdown from 'react-markdown';
 import { clsx } from 'clsx';
 import { Role } from '../types';
+import { AppHeader } from './AppHeader';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,6 +29,10 @@ interface HomePageProps {
     userRoles: Role[];
     pendingAlerts?: PendingDocAlert[];
     unassignedCount?: number;
+    banners?: Banner[];
+    announcements?: Announcement[];
+    newDays?: number;
+    onGoAnnouncements?: () => void;
     onNavigateToCases: () => void;
     onGoAudit: () => void;
     onGoAdmin: () => void;
@@ -37,24 +43,6 @@ interface HomePageProps {
 }
 
 // ─── Data ─────────────────────────────────────────────────────────────────────
-
-const BANNERS = [
-    {
-        src: '/banner1.png',
-        title: '攜手關懷，傳遞溫暖',
-        subtitle: '萬美基金會致力於為需要幫助的家庭提供全面支持',
-    },
-    {
-        src: '/banner2.png',
-        title: '深入社區，用心訪視',
-        subtitle: '專業社工團隊定期入戶訪視，確保每一份關愛落到實處',
-    },
-    {
-        src: '/banner3.png',
-        title: '智慧管理，效率服務',
-        subtitle: '數位化補助管理系統，讓行政作業更便捷、更透明',
-    },
-];
 
 const QUICK_LINKS = [
     {
@@ -101,72 +89,9 @@ const QUICK_LINKS = [
     },
 ];
 
-const ANNOUNCEMENTS = [
-    {
-        id: 1,
-        type: 'important',
-        icon: <Megaphone className="w-4 h-4" />,
-        tag: '重要公告',
-        tagColor: 'bg-red-100 text-red-700',
-        title: '114年度補助申請截止日期公告',
-        content:
-            '本年度低收入戶生活補助申請截止日期為 114 年 6 月 30 日，請各承辦人員注意受理期限，逾期恕不受理。',
-        date: '2026-03-01',
-        isNew: true,
-    },
-    {
-        id: 2,
-        type: 'info',
-        icon: <Info className="w-4 h-4" />,
-        tag: '系統公告',
-        tagColor: 'bg-blue-100 text-blue-700',
-        title: '系統維護通知 — 3/10 凌晨 02:00～04:00',
-        content:
-            '本系統將於 3 月 10 日（週一）凌晨 02:00 至 04:00 進行例行性維護，維護期間系統暫停服務，請事先安排業務。',
-        date: '2026-02-28',
-        isNew: true,
-    },
-    {
-        id: 3,
-        type: 'info',
-        icon: <Calendar className="w-4 h-4" />,
-        tag: '活動公告',
-        tagColor: 'bg-emerald-100 text-emerald-700',
-        title: '114年度社工教育訓練課程報名開始',
-        content:
-            '本基金會辦理 114 年度社工專業能力培訓課程，歡迎各單位社工人員踴躍報名參加，名額有限，報名從速。',
-        date: '2026-02-25',
-        isNew: false,
-    },
-    {
-        id: 4,
-        type: 'info',
-        icon: <Info className="w-4 h-4" />,
-        tag: '系統公告',
-        tagColor: 'bg-blue-100 text-blue-700',
-        title: '新增「家訪排程」功能上線說明',
-        content:
-            '系統已新增家訪排程功能，支援線上預約及提醒通知，詳細操作說明請參閱作業手冊第五章。',
-        date: '2026-02-20',
-        isNew: false,
-    },
-    {
-        id: 5,
-        type: 'info',
-        icon: <Info className="w-4 h-4" />,
-        tag: '法規公告',
-        tagColor: 'bg-purple-100 text-purple-700',
-        title: '社會救助法修正條文發布',
-        content:
-            '內政部已發布社會救助法最新修正條文，相關補助標準與資格認定將於 114 年 7 月 1 日起適用，請各承辦人員詳閱。',
-        date: '2026-02-15',
-        isNew: false,
-    },
-];
-
 // ─── Banner Carousel ───────────────────────────────────────────────────────────
 
-function BannerCarousel() {
+function BannerCarousel({ banners }: { banners: Banner[] }) {
     const [current, setCurrent] = useState(0);
     const [isAnimating, setIsAnimating] = useState(false);
 
@@ -182,17 +107,19 @@ function BannerCarousel() {
         [isAnimating]
     );
 
-    const prev = () => goTo((current - 1 + BANNERS.length) % BANNERS.length);
-    const next = useCallback(() => goTo((current + 1) % BANNERS.length), [current, goTo]);
+    const prev = () => goTo((current - 1 + banners.length) % banners.length);
+    const next = useCallback(() => goTo((current + 1) % banners.length), [current, goTo, banners.length]);
 
     useEffect(() => {
         const timer = setInterval(next, 4500);
         return () => clearInterval(timer);
     }, [next]);
 
+    if (banners.length === 0) return null;
+
     return (
         <div className="relative w-full overflow-hidden rounded-xl shadow-lg h-40 sm:h-56 md:h-64 lg:h-[260px]">
-            {BANNERS.map((banner, idx) => (
+            {banners.map((banner, idx) => (
                 <div
                     key={idx}
                     className={clsx(
@@ -200,18 +127,37 @@ function BannerCarousel() {
                         idx === current ? 'opacity-100 z-10' : 'opacity-0 z-0'
                     )}
                 >
-                    <img
-                        src={banner.src}
-                        alt={banner.title}
-                        className="w-full h-full object-cover"
-                    />
-                    {/* Overlay gradient */}
-                    <div className="absolute inset-0 bg-gradient-to-r from-slate-900/70 via-slate-900/40 to-transparent" />
-                    {/* Caption */}
-                    <div className="absolute bottom-0 left-0 p-4 sm:p-6 text-white w-full sm:w-2/3">
-                        <h2 className="text-xl sm:text-2xl font-bold drop-shadow-md leading-tight">{banner.title}</h2>
-                        <p className="text-sm text-white/80 mt-1 drop-shadow">{banner.subtitle}</p>
-                    </div>
+                    {banner.link_url ? (
+                        <a href={banner.link_url} target="_blank" rel="noopener noreferrer" className="block w-full h-full">
+                            <img
+                                src={banner.image_url}
+                                alt={banner.title}
+                                className="w-full h-full object-cover"
+                            />
+                            {/* Overlay gradient */}
+                            <div className="absolute inset-0 bg-gradient-to-r from-slate-900/70 via-slate-900/40 to-transparent" />
+                            {/* Caption */}
+                            <div className="absolute bottom-0 left-0 p-4 sm:p-6 text-white w-full sm:w-2/3">
+                                <h2 className="text-xl sm:text-2xl font-bold drop-shadow-md leading-tight">{banner.title}</h2>
+                                <p className="text-sm text-white/80 mt-1 drop-shadow">{banner.subtitle}</p>
+                            </div>
+                        </a>
+                    ) : (
+                        <>
+                            <img
+                                src={banner.image_url}
+                                alt={banner.title}
+                                className="w-full h-full object-cover"
+                            />
+                            {/* Overlay gradient */}
+                            <div className="absolute inset-0 bg-gradient-to-r from-slate-900/70 via-slate-900/40 to-transparent" />
+                            {/* Caption */}
+                            <div className="absolute bottom-0 left-0 p-4 sm:p-6 text-white w-full sm:w-2/3">
+                                <h2 className="text-xl sm:text-2xl font-bold drop-shadow-md leading-tight">{banner.title}</h2>
+                                <p className="text-sm text-white/80 mt-1 drop-shadow">{banner.subtitle}</p>
+                            </div>
+                        </>
+                    )}
                 </div>
             ))}
 
@@ -231,7 +177,7 @@ function BannerCarousel() {
 
             {/* Dots */}
             <div className="absolute bottom-3 right-4 z-20 flex gap-1.5">
-                {BANNERS.map((_, idx) => (
+                {banners.map((_, idx) => (
                     <button
                         key={idx}
                         onClick={() => goTo(idx)}
@@ -252,40 +198,23 @@ function BannerCarousel() {
 
 const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
 
-export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCount = 0, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onLogout }: HomePageProps) {
+export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCount = 0, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onLogout }: HomePageProps) {
     const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
+    const [selectedAnn, setSelectedAnn] = useState<Announcement | null>(null);
+
+    function isNew(publishDate: string, days: number) {
+        return (Date.now() - new Date(publishDate).getTime()) / 86400000 <= days;
+    }
+
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
             {/* Header */}
-            <header className="bg-slate-900 text-white shadow-md sticky top-0 z-50">
-                <div className="container mx-auto px-4 sm:px-6 py-4 flex justify-between items-center gap-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-white shrink-0">
-                            W
-                        </div>
-                        <h1 className="text-lg sm:text-xl font-bold tracking-tight truncate">萬美基金會補助管理系統</h1>
-                    </div>
-                    <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                        <div className="flex items-center gap-2 bg-slate-800 text-slate-200 px-2 sm:px-3 py-1.5 rounded-lg border border-slate-700">
-                            <UserCircle className="w-4 h-4 text-slate-400" />
-                            <span className="text-xs sm:text-sm font-medium truncate max-w-[80px] sm:max-w-none">{username}</span>
-                        </div>
-                        <button
-                            onClick={onLogout}
-                            className="flex items-center gap-1.5 text-xs sm:text-sm text-slate-300 hover:text-red-400 transition px-1 sm:px-2 py-1.5"
-                            title="登出"
-                        >
-                            <LogOut className="w-4 h-4" />
-                            <span className="hidden sm:inline">登出</span>
-                        </button>
-                    </div>
-                </div>
-            </header>
+            <AppHeader username={username} onLogout={onLogout} />
 
             {/* Page Content */}
             <main className="flex-1 container mx-auto px-4 sm:px-6 py-6 space-y-6 overflow-x-hidden">
                 {/* Banner */}
-                <BannerCarousel />
+                <BannerCarousel banners={banners} />
 
                 {/* Alert banners */}
                 {(
@@ -301,9 +230,6 @@ export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCo
                                     <p className="text-sm font-semibold text-orange-800">
                                         當前有 {pendingAlerts.length} 筆案件未補件
                                     </p>
-                                    <p className="text-xs text-orange-600 mt-0.5">
-                                        請至「申請案件管理」進行派案作業。
-                                    </p>
                                 </div>
                             </div>
                         )}
@@ -314,9 +240,6 @@ export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCo
                                 <div>
                                     <p className="text-sm font-semibold text-orange-800">
                                         當前有 {unassignedCount} 筆案件尚未派案
-                                    </p>
-                                    <p className="text-xs text-orange-600 mt-0.5">
-                                        請至「申請案件管理」進行派案作業。
                                     </p>
                                 </div>
                             </div>
@@ -344,6 +267,7 @@ export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCo
                                     link.action === 'admin' ? onGoAdmin :
                                     link.action === 'templates' ? onGoTemplates :
                                     link.action === 'notifications' ? onGoNotifications :
+                                    link.action === 'announcements' ? onGoAnnouncements :
                                     link.action === 'external_intake' ? () => window.open('/apply', '_blank') :
                                     undefined;
 
@@ -367,36 +291,69 @@ export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCo
                     <div className="flex-1 min-w-0 space-y-3">
                         <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider">最新公告</h3>
                         <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden divide-y divide-gray-100">
-                            {ANNOUNCEMENTS.map((ann) => (
+                            {announcements.map((a) => (
                                 <div
-                                    key={ann.id}
+                                    key={a.id}
+                                    onClick={() => setSelectedAnn(a)}
                                     className="flex gap-4 p-4 hover:bg-slate-50 transition-colors group cursor-pointer"
                                 >
                                     <div className="shrink-0 mt-0.5">
-                                        <span className={clsx('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium', ann.tagColor)}>
-                                            {ann.icon}
-                                            {ann.tag}
+                                        <span className={clsx('inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium', a.category_color ?? 'bg-gray-100 text-gray-600')}>
+                                            {a.category_name}
                                         </span>
                                     </div>
                                     <div className="flex-1 min-w-0">
                                         <div className="flex items-start justify-between gap-2">
                                             <p className="text-sm font-semibold text-slate-800 group-hover:text-blue-700 transition-colors truncate">
-                                                {ann.isNew && (
+                                                {isNew(a.publish_date, newDays) && (
                                                     <span className="inline-block mr-1.5 text-xs font-bold text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded">NEW</span>
                                                 )}
-                                                {ann.title}
+                                                {a.title}
                                             </p>
-                                            <span className="text-xs text-slate-400 shrink-0">{ann.date}</span>
+                                            <span className="text-xs text-slate-400 shrink-0">{a.publish_date}</span>
                                         </div>
-                                        <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">{ann.content}</p>
+                                        <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">{a.content.slice(0, 100)}</p>
                                     </div>
                                 </div>
                             ))}
                         </div>
-                        <p className="text-xs text-slate-400 text-right">共 {ANNOUNCEMENTS.length} 則公告</p>
+                        <div className="text-right mt-2">
+                            <button onClick={onGoAnnouncements} className="text-xs text-blue-600 hover:text-blue-800 transition font-medium">
+                                查看全部公告 →
+                            </button>
+                        </div>
+                        <p className="text-xs text-slate-400 text-right">共 {announcements.length} 則公告</p>
                     </div>
                 </div>
             </main>
+
+            {selectedAnn && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setSelectedAnn(null)}>
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="p-5 border-b border-slate-200 flex items-start justify-between gap-4">
+                            <div>
+                                {selectedAnn.category_name && (
+                                    <span className={clsx('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mb-2', selectedAnn.category_color ?? 'bg-gray-100 text-gray-600')}>
+                                        {selectedAnn.category_name}
+                                    </span>
+                                )}
+                                <h3 className="text-lg font-bold text-slate-800 leading-snug">{selectedAnn.title}</h3>
+                                <p className="text-xs text-slate-400 mt-1">{selectedAnn.publish_date}</p>
+                            </div>
+                            <button onClick={() => setSelectedAnn(null)} className="text-slate-400 hover:text-slate-600 transition shrink-0">
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-5">
+                            <div className="prose prose-sm max-w-none text-slate-700">
+                                <ReactMarkdown components={{ img: () => null }}>
+                                    {selectedAnn.content}
+                                </ReactMarkdown>
+                            </div>
+                        </div>
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

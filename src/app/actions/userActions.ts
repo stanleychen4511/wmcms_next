@@ -320,3 +320,74 @@ export async function fetchCaseOfficersWithId(): Promise<{ id: string; name: str
         client.release();
     }
 }
+
+export async function toggleUserActive(
+    userId: string,
+    activate: boolean
+): Promise<{ success: boolean; blocked?: boolean; activeCases?: { caseNumber: string; applicantName: string }[]; error?: string }> {
+    const client = await pool.connect();
+    try {
+        if (!activate) {
+            // Check for active (non-terminal) cases assigned to this officer
+            const casesRes = await client.query(
+                `SELECT a.case_number, u2.name_enc, u2.name_iv
+                 FROM applications a
+                 LEFT JOIN users u2 ON u2.id = a.applicant_id
+                 WHERE a.officer_id = $1 AND a.status NOT IN ('2', '4')`,
+                [userId]
+            );
+            if (casesRes.rows.length > 0) {
+                const { decryptAES } = await import('../../lib/crypto');
+                const activeCases = casesRes.rows.map((r: any) => ({
+                    caseNumber: r.case_number,
+                    applicantName: r.name_enc && r.name_iv
+                        ? (decryptAES(r.name_enc, r.name_iv) || '未知')
+                        : '未知',
+                }));
+                return { success: false, blocked: true, activeCases };
+            }
+        }
+        await client.query(
+            `UPDATE users SET is_active = $1 WHERE id = $2`,
+            [activate, userId]
+        );
+        void (await import('./auditActions')).writeAuditLog({
+            userId: null,
+            action: activate ? 'user.activate' : 'user.deactivate',
+            targetType: 'user',
+            targetId: userId,
+            detail: {},
+        });
+        return { success: true };
+    } catch (err: any) {
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function reassignOfficer(
+    applicationId: string,
+    newOfficerId: string,
+    operatorUserId?: string
+): Promise<{ success: boolean; error?: string }> {
+    const client = await pool.connect();
+    try {
+        await client.query(
+            `UPDATE applications SET officer_id = $1 WHERE id = $2`,
+            [newOfficerId, applicationId]
+        );
+        void (await import('./auditActions')).writeAuditLog({
+            userId: operatorUserId ?? null,
+            action: 'application.reassign_officer',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { newOfficerId },
+        });
+        return { success: true };
+    } catch (err: any) {
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}

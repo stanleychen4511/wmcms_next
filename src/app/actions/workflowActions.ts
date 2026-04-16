@@ -39,6 +39,8 @@ export interface ApplicationDetail {
     applicationType?: string | null;
     // Cumulative approved amount across all completed applications for this applicant
     totalApprovedAmount?: number;
+    // Applicant user ID (for fetching historical receipts, etc.)
+    applicantId?: string | null;
 }
 
 // Guard: mock store IDs look like 'app-001-a', real DB IDs are numeric UUIDs or bigints.
@@ -56,7 +58,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
         const res = await client.query(`
             SELECT
                 a.id, a.case_number, a.status, a.apply_at, a.created_at,
-                a.application_type,
+                a.application_type, a.applicant_id,
                 (SELECT COALESCE(SUM(a2.approved_amount), 0) FROM applications a2
                  WHERE a2.applicant_id = a.applicant_id AND a2.status = '4') AS total_approved_amount,
                 a.age, a.moveable_property, a.immoveable_property,
@@ -118,6 +120,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             wfComments: row.wf_comments ?? null,
             applicationType: row.application_type ?? null,
             totalApprovedAmount: Number(row.total_approved_amount ?? 0),
+            applicantId: row.applicant_id ? String(row.applicant_id) : null,
         };
     } finally {
         client.release();

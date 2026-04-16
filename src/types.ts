@@ -15,6 +15,7 @@ export type WorkflowStage = 'admin_review' | 'visit' | 'board_review' | 'reimbur
 export interface CaseSummary {
     id: string;
     applicationId: string;       // latest application's DB id
+    caseNumber: string;          // latest application's case_number
     applicantName: string;
     applicationCount: number;
     totalAmount: number;

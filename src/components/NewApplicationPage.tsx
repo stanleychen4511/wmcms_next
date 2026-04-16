@@ -1,7 +1,8 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, FilePlus, Search, CheckCircle, XCircle, UserCircle, LogOut, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, FilePlus, Search, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
 import { checkApplicationStatus } from '../app/actions/applicationActions';
 import { twIdError } from '../lib/validateTwId';
+import { AppHeader } from './AppHeader';
 
 interface NewApplicationPageProps {
     username: string;
@@ -12,8 +13,6 @@ interface NewApplicationPageProps {
     onSubmitSuccess: (newCaseId: string) => void;
 }
 
-
-const AMOUNT_LIMIT = 350_000;
 
 // ── Toast component ────────────────────────────────────────────────────────────
 
@@ -66,9 +65,11 @@ interface LookupCardProps {
         applicantName?: string;
     };
     eligible: boolean;
+    maxApplyAmount: number;
+    remaining: number;
 }
 
-function LookupCard({ result, eligible }: LookupCardProps) {
+function LookupCard({ result, eligible, maxApplyAmount, remaining }: LookupCardProps) {
     return (
         <div
             className={[
@@ -110,15 +111,21 @@ function LookupCard({ result, eligible }: LookupCardProps) {
                         <p>
                             <span className="text-slate-500">累積核准補助金額：</span>
                             {result.totalApprovedAmount > 0 ? (
-                                <span className={`font-semibold ml-1 ${result.totalApprovedAmount >= AMOUNT_LIMIT ? 'text-red-600' : 'text-slate-800'}`}>
+                                <span className={`font-semibold ml-1 ${result.totalApprovedAmount >= maxApplyAmount ? 'text-red-600' : 'text-slate-800'}`}>
                                     NT${result.totalApprovedAmount.toLocaleString()}
-                                    {result.totalApprovedAmount >= AMOUNT_LIMIT && (
+                                    {result.totalApprovedAmount >= maxApplyAmount && (
                                         <span className="ml-1 text-xs font-normal text-red-500">（已達 35 萬上限）</span>
                                     )}
                                 </span>
                             ) : (
                                 <span className="font-medium text-slate-500 ml-1">—</span>
                             )}
+                        </p>
+                        <p>
+                            <span className="text-slate-500">尚可申請餘額：</span>
+                            <span className={`font-semibold ml-1 ${remaining <= 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                                NT${remaining.toLocaleString()}
+                            </span>
                         </p>
                     </>
                 ) : (
@@ -144,6 +151,8 @@ export function NewApplicationPage({
     const [name, setName] = useState('');
     const [idNumber, setIdNumber] = useState('');
     const [applicationType, setApplicationType] = useState('');
+    const [applyAmount, setApplyAmount] = useState<number | ''>('');
+    const [applyAmountError, setApplyAmountError] = useState('');
     const [appTypeError, setAppTypeError] = useState('');
     const [nameError, setNameError] = useState('');
     const [idError, setIdError] = useState('');
@@ -153,8 +162,14 @@ export function NewApplicationPage({
     const [toast, setToast] = useState<{ message: string; type: 'error' | 'warning' } | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [queried, setQueried] = useState(false);
+    const [maxApplyAmount, setMaxApplyAmount] = useState(350000);
+    useEffect(() => {
+        import('../app/actions/settingsActions').then(m =>
+            m.fetchSetting('max_apply_amount', '350000').then(v => setMaxApplyAmount(Number(v) || 350000))
+        );
+    }, []);
 
-    // Reset query result whenever form fields change
+    // Reset query result whenever identity fields change
     const handleNameChange = (v: string) => {
         setName(v);
         setLookupResult(null);
@@ -168,8 +183,18 @@ export function NewApplicationPage({
         setQueried(false);
     };
 
-    const validate = (): boolean => {
+    // Validate fields needed for lookup (id + type)
+    const validateForLookup = (): boolean => {
         let ok = true;
+        const idErr = twIdError(idNumber.trim());
+        if (idErr) { setIdError(idErr); ok = false; } else { setIdError(''); }
+        if (!applicationType) { setAppTypeError('請選擇申請類別'); ok = false; } else { setAppTypeError(''); }
+        return ok;
+    };
+
+    // Validate all fields before final submit
+    const validateForSubmit = (): boolean => {
+        let ok = validateForLookup();
         if (!name.trim()) {
             setNameError('請輸入申請人姓名');
             ok = false;
@@ -179,30 +204,27 @@ export function NewApplicationPage({
         } else {
             setNameError('');
         }
-        const idErr = twIdError(idNumber.trim());
-        if (idErr) {
-            setIdError(idErr);
+        const amtNum = applyAmount === '' ? 0 : Number(applyAmount);
+        if (amtNum <= 0) {
+            setApplyAmountError('請輸入申請金額');
+            ok = false;
+        } else if (amtNum > maxApplyAmount) {
+            setApplyAmountError(`申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元`);
             ok = false;
         } else {
-            setIdError('');
-        }
-        if (!applicationType) {
-            setAppTypeError('請選擇申請類別');
-            ok = false;
-        } else {
-            setAppTypeError('');
+            setApplyAmountError('');
         }
         return ok;
     };
 
     const handleLookup = async () => {
-        if (!validate()) return;
+        if (!validateForLookup()) return;
         setIsLoadingQuery(true);
         setQueried(false);
         setLookupResult(null);
 
         try {
-            const apiRes = await checkApplicationStatus(name.trim(), idNumber.trim());
+            const apiRes = await checkApplicationStatus(idNumber.trim().toUpperCase());
             
             if (apiRes.error) {
                 setToast({ message: apiRes.error, type: 'error' });
@@ -228,10 +250,10 @@ export function NewApplicationPage({
                     message: '該申請人目前已有進行中的申請案件，無法重複申請，請待現有案件結案後再行申請。',
                     type: 'error',
                 });
-            } else if (mappedResult.totalApprovedAmount >= AMOUNT_LIMIT) {
+            } else if (mappedResult.totalApprovedAmount >= maxApplyAmount) {
                 setEligible(false);
                 setToast({
-                    message: `該申請人累積核准補助金額（NT$${mappedResult.totalApprovedAmount.toLocaleString()}）已達補助上限 35 萬元，無法再申請。`,
+                    message: `該申請人累積核准補助金額（NT$${mappedResult.totalApprovedAmount.toLocaleString()}）已達補助上限 NT$${maxApplyAmount.toLocaleString()} 元，無法再申請。`,
                     type: 'warning',
                 });
             } else {
@@ -245,11 +267,11 @@ export function NewApplicationPage({
     };
 
     const handleSubmit = async () => {
-        if (!eligible) return;
+        if (!eligible || !validateForSubmit()) return;
         setIsSubmitting(true);
         try {
             const { createNewApplication } = await import('../app/actions/applicationActions');
-            const res = await createNewApplication(name.trim(), idNumber.trim(), userAccount, applicationType);
+            const res = await createNewApplication(name.trim(), idNumber.trim(), userAccount, applicationType, applyAmount === '' ? null : Number(applyAmount));
             if (res.success && res.caseId) {
                 onSubmitSuccess(res.caseId);
             } else {
@@ -265,34 +287,7 @@ export function NewApplicationPage({
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
             {/* Header */}
-            <header className="bg-slate-900 text-white shadow-md sticky top-0 z-50">
-                <div className="container mx-auto px-4 sm:px-6 py-4 flex justify-between items-center gap-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-white shrink-0">W</div>
-                        <h1
-                            className="text-lg sm:text-xl font-bold tracking-tight cursor-pointer hover:text-blue-300 transition-colors truncate"
-                            onClick={onGoHome}
-                            title="返回首頁"
-                        >
-                            萬美基金會補助管理系統
-                        </h1>
-                    </div>
-                    <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                        <div className="flex items-center gap-2 bg-slate-800 text-slate-200 px-2 sm:px-3 py-1.5 rounded-lg border border-slate-700">
-                            <UserCircle className="w-4 h-4 text-slate-400" />
-                            <span className="text-xs sm:text-sm font-medium truncate max-w-[80px] sm:max-w-none">{username}</span>
-                        </div>
-                        <button
-                            onClick={onLogout}
-                            className="flex items-center gap-1.5 text-xs sm:text-sm text-slate-300 hover:text-red-400 transition px-1 sm:px-2 py-1.5"
-                            title="登出"
-                        >
-                            <LogOut className="w-4 h-4" />
-                            <span className="hidden sm:inline">登出</span>
-                        </button>
-                    </div>
-                </div>
-            </header>
+            <AppHeader username={username} onGoHome={onGoHome} onLogout={onLogout} />
 
             <main className="flex-1 container mx-auto px-4 sm:px-6 py-8 max-w-2xl space-y-6 overflow-x-hidden">
                 {/* Back + title */}
@@ -309,7 +304,7 @@ export function NewApplicationPage({
                         新增申請案件
                     </h2>
                     <p className="text-sm text-slate-500 mt-1">
-                        請填寫申請人基本資料，並點選「申請狀態查詢」確認資格後再送出申請。
+                        填寫身分證字號與申請類別後可先查詢申請資格；姓名與金額於確認資格後填寫即可。
                     </p>
                 </div>
 
@@ -400,6 +395,46 @@ export function NewApplicationPage({
                         )}
                     </div>
 
+                    {/* 申請金額 */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            申請金額
+                            <span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <div className="relative max-w-xs">
+                            <input
+                                type="text"
+                                inputMode="numeric"
+                                pattern="[0-9]*"
+                                value={applyAmount}
+                                onChange={e => {
+                                    const raw = e.target.value.replace(/\D/g, '');
+                                    const v = raw === '' ? '' : Number(raw);
+                                    setApplyAmount(v as number | '');
+                                    if (v !== '' && Number(v) > maxApplyAmount) {
+                                        setApplyAmountError(`申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元`);
+                                    } else {
+                                        setApplyAmountError('');
+                                    }
+                                }}
+                                placeholder={`上限 ${maxApplyAmount.toLocaleString()} 元`}
+                                className={[
+                                    'w-full px-3 py-2.5 pr-8 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                    applyAmountError
+                                        ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                        : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                                ].join(' ')}
+                            />
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">元</span>
+                        </div>
+                        {applyAmountError && (
+                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                <XCircle className="w-3 h-3" />
+                                {applyAmountError}
+                            </p>
+                        )}
+                    </div>
+
                     {/* Query button */}
                     <div className="pt-1">
                         <button
@@ -427,7 +462,7 @@ export function NewApplicationPage({
 
                 {/* Lookup result */}
                 {queried && lookupResult !== null && (
-                    <LookupCard result={lookupResult} eligible={eligible} />
+                    <LookupCard result={lookupResult} eligible={eligible} maxApplyAmount={maxApplyAmount} remaining={maxApplyAmount - lookupResult.totalApprovedAmount} />
                 )}
 
                 {/* Submit section */}

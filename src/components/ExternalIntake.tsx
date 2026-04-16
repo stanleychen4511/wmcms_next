@@ -8,6 +8,7 @@ import { ApplicantFormValues } from '../schemas/applicant';
 import { queryApplicantEligibility, submitExternalApplication } from '../app/actions/intakeActions';
 import { twIdError } from '../lib/validateTwId';
 import { fetchSetting } from '../app/actions/settingsActions';
+import { fetchDocumentTypeConfigs } from '../app/actions/documentActions';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -18,6 +19,7 @@ interface DocFile {
     field: string;
     label: string;
     required: boolean;
+    allowSupplement: boolean;
     file: File | null;
 }
 
@@ -76,7 +78,14 @@ function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (file: File |
         <div className="flex items-center gap-3 py-2.5 border-b border-gray-100 last:border-0">
             <div className="flex-1 min-w-0">
                 <span className="text-sm font-medium text-gray-700">{doc.label}</span>
-                {doc.required && <span className="ml-1 text-red-500 text-xs">*</span>}
+                {doc.required && !doc.allowSupplement && (
+                    <span className="ml-1 text-red-500 text-xs" title="送出前必須上傳">*</span>
+                )}
+                {doc.required && doc.allowSupplement && (
+                    <span className="ml-1.5 inline-flex items-center text-xs font-medium text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 leading-none" title="必填，可於送出後補件">
+                        可補件
+                    </span>
+                )}
                 {doc.file && (
                     <p className="text-xs text-green-600 mt-0.5 truncate">{doc.file.name}</p>
                 )}
@@ -103,7 +112,7 @@ function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (file: File |
             <input
                 ref={inputRef}
                 type="file"
-                accept=".pdf,.doc,.docx"
+                accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
                 className="hidden"
                 onChange={e => onChange(e.target.files?.[0] ?? null)}
             />
@@ -124,17 +133,29 @@ export function ExternalIntake() {
     useEffect(() => {
         fetchSetting('max_apply_amount', '350000').then(v => setMaxApplyAmount(Number(v) || 350000));
     }, []);
+    useEffect(() => {
+        fetchDocumentTypeConfigs().then(configs => {
+            const applyDocs = configs
+                .filter(c => c.phase === 'apply' && c.is_active)
+                .map(c => ({
+                    docId: String(c.id),
+                    field: `doc_${c.id}`,
+                    label: c.label,
+                    required: c.is_required,
+                    allowSupplement: c.allow_supplement,
+                    file: null as File | null,
+                }));
+            if (applyDocs.length > 0) setDocs(applyDocs);
+        });
+    }, []);
     const [ineligibleReason, setIneligibleReason] = useState('');
     const [errorMsg, setErrorMsg] = useState('');
     const [caseNumber, setCaseNumber] = useState('');
     const [applicationType, setApplicationType] = useState('');
     const [qualFormValid, setQualFormValid] = useState(false);
     const [qualFormValues, setQualFormValues] = useState<ApplicantFormValues>(DEFAULT_QUALIFICATION);
-    const [docs, setDocs] = useState<DocFile[]>([
-        { docId: '1', field: 'doc_1', label: '自費醫療補助申請表', required: true, file: null },
-        { docId: '3', field: 'doc_3', label: '身分證正反面影本', required: true, file: null },
-        { docId: '4', field: 'doc_4', label: '個資同意書', required: true, file: null },
-    ]);
+    const [docs, setDocs] = useState<DocFile[]>([]);
+    const [quota, setQuota] = useState<{ cumulativeApproved: number; maxAmount: number; remaining: number } | null>(null);
 
     const handleQualValidation = useCallback((isValid: boolean, values: ApplicantFormValues) => {
         setQualFormValid(isValid);
@@ -145,25 +166,72 @@ export function ExternalIntake() {
         setDocs(prev => prev.map(d => d.field === field ? { ...d, file } : d));
     };
 
-    const requiredDocsMissing = docs.filter(d => d.required && !d.file);
+    // Only non-supplementable required docs block initial submission
+    const requiredDocsMissing = docs.filter(d => d.required && !d.allowSupplement && !d.file);
 
     // ── Step: Landing ─────────────────────────────────────────────────────────
     if (step === 'landing') {
+        const mustAttach   = docs.filter(d => d.required && !d.allowSupplement);
+        const canSupp      = docs.filter(d => d.required && d.allowSupplement);
+        const optional     = docs.filter(d => !d.required);
+
         return (
             <div className="max-w-2xl mx-auto text-center py-8 px-4">
                 <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
                     <FileText className="w-8 h-8 text-blue-600" />
                 </div>
                 <h2 className="text-2xl font-bold text-gray-800 mb-3">線上補助申請</h2>
-                <p className="text-gray-500 mb-2 leading-relaxed">
+                <p className="text-gray-500 mb-4 leading-relaxed">
                     歡迎使用萬美基金會線上補助申請系統。<br />
                     請準備好以下文件後再開始填寫：
                 </p>
-                <ul className="text-sm text-gray-600 text-left inline-block mb-8 space-y-1">
-                    <li className="flex items-center gap-2"><CheckCircle className="w-4 h-4 text-green-500 shrink-0" /> 自費醫療補助申請表</li>
-                    <li className="flex items-center gap-2"><CheckCircle className="w-4 h-4 text-green-500 shrink-0" /> 身分證正反面影本（掃描或拍照）</li>
-                    <li className="flex items-center gap-2"><CheckCircle className="w-4 h-4 text-green-500 shrink-0" /> 個資同意書</li>
-                </ul>
+
+                {docs.length === 0 ? (
+                    <div className="text-sm text-gray-400 mb-8">載入文件清單中…</div>
+                ) : (
+                    <div className="text-left inline-block mb-8 space-y-4 w-full max-w-md mx-auto">
+                        {mustAttach.length > 0 && (
+                            <div>
+                                <p className="text-xs font-semibold text-red-500 uppercase tracking-wider mb-1.5">送出前必須上傳</p>
+                                <ul className="space-y-1">
+                                    {mustAttach.map(d => (
+                                        <li key={d.docId} className="flex items-center gap-2 text-sm text-gray-700">
+                                            <CheckCircle className="w-4 h-4 text-red-400 shrink-0" />
+                                            {d.label}
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                        {canSupp.length > 0 && (
+                            <div>
+                                <p className="text-xs font-semibold text-amber-500 uppercase tracking-wider mb-1.5">可於送出後補件（建議事先準備）</p>
+                                <ul className="space-y-1">
+                                    {canSupp.map(d => (
+                                        <li key={d.docId} className="flex items-center gap-2 text-sm text-gray-600">
+                                            <CheckCircle className="w-4 h-4 text-amber-400 shrink-0" />
+                                            {d.label}
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                        {optional.length > 0 && (
+                            <div>
+                                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">選填文件</p>
+                                <ul className="space-y-1">
+                                    {optional.map(d => (
+                                        <li key={d.docId} className="flex items-center gap-2 text-sm text-gray-500">
+                                            <CheckCircle className="w-4 h-4 text-gray-300 shrink-0" />
+                                            {d.label}
+                                        </li>
+                                    ))}
+                                </ul>
+                            </div>
+                        )}
+                    </div>
+                )}
+
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-8 text-sm text-amber-700 text-left">
                     <strong>注意事項：</strong>每位申請人僅限申請一次（進行中案件），累計補助上限為 35 萬元。
                 </div>
@@ -198,6 +266,21 @@ export function ExternalIntake() {
                 setStep('ineligible');
             } else {
                 setStep('form');
+                // Use quota data already returned by eligibility check (avoids redundant DB call).
+                // For first-time applicants result.remaining is undefined → show full max amount.
+                if (result.remaining !== undefined && result.maxAmount !== undefined) {
+                    setQuota({
+                        cumulativeApproved: result.cumulativeApproved ?? 0,
+                        maxAmount: result.maxAmount,
+                        remaining: result.remaining,
+                    });
+                } else {
+                    // First-time applicant: no prior history
+                    fetchSetting('max_apply_amount', '350000').then(v => {
+                        const max = Number(v) || 350000;
+                        setQuota({ cumulativeApproved: 0, maxAmount: max, remaining: max });
+                    });
+                }
             }
         };
 
@@ -277,7 +360,8 @@ export function ExternalIntake() {
     // ── Step: Form ────────────────────────────────────────────────────────────
     if (step === 'form' || step === 'submitting') {
         const amountNum = applyAmount === '' ? 0 : Number(applyAmount);
-        const amountValid = amountNum > 0 && amountNum <= maxApplyAmount;
+        const effectiveMax = quota ? Math.min(quota.remaining, maxApplyAmount) : maxApplyAmount;
+        const amountValid = amountNum > 0 && amountNum <= effectiveMax;
         const canSubmit =
             name.trim() !== '' &&
             applicationType !== '' &&
@@ -289,7 +373,7 @@ export function ExternalIntake() {
             if (!canSubmit) return;
             // Validate amount before submit
             if (!amountValid) {
-                setApplyAmountError(amountNum <= 0 ? '請輸入申請金額' : `申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元`);
+                setApplyAmountError(amountNum <= 0 ? '請輸入申請金額' : `申請金額不可超過 ${effectiveMax.toLocaleString()} 元`);
                 return;
             }
             setErrorMsg('');
@@ -393,6 +477,21 @@ export function ExternalIntake() {
                     {/* Qualification Form */}
                     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
                         <h3 className="text-base font-bold text-gray-800 mb-4">資格預審資料</h3>
+                        {/* Quota display */}
+                        {quota && (
+                            <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm space-y-1">
+                                <p className="text-slate-600">
+                                    <span className="text-slate-500">累積已獲補助：</span>
+                                    <span className="font-semibold text-slate-800">NT${quota.cumulativeApproved.toLocaleString()} 元</span>
+                                </p>
+                                <p className="text-slate-600">
+                                    <span className="text-slate-500">尚可申請額度：</span>
+                                    <span className={`font-semibold ${quota.remaining <= 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                                        NT${quota.remaining.toLocaleString()} 元
+                                    </span>
+                                </p>
+                            </div>
+                        )}
                         {/* 申請金額 */}
                         <div className="mb-4">
                             <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -403,20 +502,20 @@ export function ExternalIntake() {
                                     type="text"
                                     inputMode="numeric"
                                     pattern="[0-9]*"
-                                    maxLength={String(maxApplyAmount).length}
+                                    maxLength={String(effectiveMax).length}
                                     value={applyAmount}
                                     onChange={e => {
                                         const raw = e.target.value.replace(/\D/g, '');
                                         const v = raw === '' ? '' : Number(raw);
                                         setApplyAmount(v as number | '');
-                                        if (v !== '' && Number(v) > maxApplyAmount) {
-                                            setApplyAmountError(`申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元`);
+                                        if (v !== '' && Number(v) > effectiveMax) {
+                                            setApplyAmountError(`申請金額不可超過 ${effectiveMax.toLocaleString()} 元`);
                                         } else {
                                             setApplyAmountError('');
                                         }
                                     }}
                                     disabled={step === 'submitting'}
-                                    placeholder={`上限 ${maxApplyAmount.toLocaleString()} 元`}
+                                    placeholder={`上限 ${effectiveMax.toLocaleString()} 元`}
                                     className={clsx(
                                         'block w-full rounded-md shadow-sm p-2 border pr-8 text-sm',
                                         applyAmountError ? 'border-red-400 focus:ring-red-300' : 'border-gray-300 focus:border-blue-500 focus:ring-blue-500'
@@ -436,7 +535,12 @@ export function ExternalIntake() {
                     {/* Document Upload */}
                     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
                         <h3 className="text-base font-bold text-gray-800 mb-1">文件上傳</h3>
-                        <p className="text-xs text-gray-400 mb-4">接受 PDF、Word 格式（.pdf、.doc、.docx）。標記 <span className="text-red-500">*</span> 為必傳文件。</p>
+                        <p className="text-xs text-gray-400 mb-4">
+                            接受 PDF、Word、圖片格式（.pdf .doc .docx .jpg .jpeg .png）。
+                            標記 <span className="text-red-500 font-bold">*</span> 為送出前必須上傳；標記
+                            <span className="mx-1 inline-flex items-center text-xs font-medium text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 leading-none">可補件</span>
+                            者可於送出後補交。
+                        </p>
                         <div>
                             {docs.map(doc => (
                                 <DocUploadRow
@@ -448,7 +552,12 @@ export function ExternalIntake() {
                         </div>
                         {requiredDocsMissing.length > 0 && (
                             <p className="text-xs text-red-500 mt-2">
-                                尚未上傳：{requiredDocsMissing.map(d => d.label).join('、')}
+                                送出前必須上傳：{requiredDocsMissing.map(d => d.label).join('、')}
+                            </p>
+                        )}
+                        {docs.some(d => d.required && d.allowSupplement && !d.file) && (
+                            <p className="text-xs text-amber-600 mt-1.5">
+                                標示「可補件」的文件可於送出後補交，建議盡早提供以利審核。
                             </p>
                         )}
                     </div>

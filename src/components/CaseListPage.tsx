@@ -1,6 +1,7 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Search, ChevronRight, FileText, ArrowUpDown, UserCircle, LogOut, UserCheck, AlertTriangle } from 'lucide-react';
+import { Search, ChevronRight, FileText, UserCheck, AlertTriangle, ArrowUp, ArrowDown, Plus, X, RefreshCw } from 'lucide-react';
 import { CaseSummary, Role, WorkflowStage } from '../types';
+import { AppHeader } from './AppHeader';
 
 interface OfficerOption { id: string; name: string; }
 
@@ -12,6 +13,7 @@ interface CaseListPageProps {
     officersWithId: OfficerOption[];
     isLoading?: boolean;
     pendingAlertIds?: Set<string>;
+    maxApplyAmount?: number;
     onMount?: () => void;
     onAssign: (applicationIds: string[], officerUserId: string) => Promise<void>;
     onSelectCase: (caseId: string) => void;
@@ -49,6 +51,27 @@ function getMonthRange(): { first: string; last: string } {
 
 const FILTER_STORAGE_KEY = 'caseListFilters';
 
+type SortKey = 'appliedAt' | 'pending' | 'totalAmount' | 'applicantName' | 'applicationCount' | 'remaining' | 'stage' | 'officer';
+type SortDir = 'asc' | 'desc';
+interface SortEntry { key: SortKey; dir: SortDir; }
+
+const SORT_LABELS: Record<SortKey, string> = {
+    appliedAt:        '申請時間',
+    pending:          '缺件狀態',
+    totalAmount:      '累積金額',
+    applicantName:    '申請人姓名',
+    applicationCount: '申請次數',
+    remaining:        '剩餘金額',
+    stage:            '當前流程',
+    officer:          '經辦人',
+};
+
+const DEFAULT_SORT: SortEntry[] = [
+    { key: 'appliedAt',   dir: 'asc' },
+    { key: 'pending',     dir: 'asc' },
+    { key: 'totalAmount', dir: 'asc' },
+];
+
 function loadSavedFilters() {
     try {
         const raw = localStorage.getItem(FILTER_STORAGE_KEY);
@@ -59,7 +82,7 @@ function loadSavedFilters() {
 
 export function CaseListPage({
     username, userRoles, cases, allOfficers, officersWithId,
-    isLoading, pendingAlertIds = new Set(), onMount, onAssign, onSelectCase, onLogout, onGoHome,
+    isLoading, pendingAlertIds = new Set(), maxApplyAmount = 350000, onMount, onAssign, onSelectCase, onLogout, onGoHome,
 }: CaseListPageProps) {
     const { first, last } = getMonthRange();
     const saved = loadSavedFilters();
@@ -80,6 +103,35 @@ export function CaseListPage({
     const [officerFilter,  setOfficerFilter]  = useState<string>(saved?.officerFilter  ?? '');
     const [assignFilter,   setAssignFilter]   = useState<'all' | 'unassigned' | 'assigned'>(saved?.assignFilter ?? 'all');
     const [pendingOnly,    setPendingOnly]    = useState<boolean>(false);
+
+    // Sort conditions (min 3)
+    const [sortStack, setSortStack] = useState<SortEntry[]>(DEFAULT_SORT);
+
+    const updateSort = (idx: number, patch: Partial<SortEntry>) =>
+        setSortStack(prev => {
+            // If changing key and the new key is already used elsewhere, swap
+            if (patch.key !== undefined) {
+                const conflictIdx = prev.findIndex((e, i) => i !== idx && e.key === patch.key);
+                if (conflictIdx !== -1) {
+                    const next = [...prev];
+                    const oldKey = next[idx].key;
+                    next[idx] = { ...next[idx], ...patch };
+                    next[conflictIdx] = { ...next[conflictIdx], key: oldKey };
+                    return next;
+                }
+            }
+            return prev.map((e, i) => i === idx ? { ...e, ...patch } : e);
+        });
+
+    const removeSort = (idx: number) =>
+        setSortStack(prev => prev.length > 3 ? prev.filter((_, i) => i !== idx) : prev);
+
+    const addSort = () =>
+        setSortStack(prev => {
+            const used = new Set(prev.map(e => e.key));
+            const next = (Object.keys(SORT_LABELS) as SortKey[]).find(k => !used.has(k));
+            return next ? [...prev, { key: next, dir: 'asc' }] : prev;
+        });
 
     // Effective filter values — locked roles override user-selected values
     const effectiveOfficerFilter = lockOfficer ? username : officerFilter;
@@ -113,8 +165,25 @@ export function CaseListPage({
             if (effectiveAssignFilter === 'assigned'   && c.officerId === null) return false;
             if (pendingOnly && !pendingAlertIds.has(c.applicationId)) return false;
             return true;
+        }).sort((a, b) => {
+            for (const { key, dir } of sortStack) {
+                const d = dir === 'asc' ? 1 : -1;
+                let cmp = 0;
+                switch (key) {
+                    case 'appliedAt':        cmp = a.appliedAt.localeCompare(b.appliedAt); break;
+                    case 'pending':          cmp = (pendingAlertIds.has(a.applicationId) ? 1 : 0) - (pendingAlertIds.has(b.applicationId) ? 1 : 0); break;
+                    case 'totalAmount':      cmp = (a.totalAmount ?? 0) - (b.totalAmount ?? 0); break;
+                    case 'applicantName':    cmp = a.applicantName.localeCompare(b.applicantName, 'zh-TW'); break;
+                    case 'applicationCount': cmp = (a.applicationCount ?? 0) - (b.applicationCount ?? 0); break;
+                    case 'remaining':        cmp = (maxApplyAmount - (a.totalAmount ?? 0)) - (maxApplyAmount - (b.totalAmount ?? 0)); break;
+                    case 'stage':            cmp = a.stage.localeCompare(b.stage); break;
+                    case 'officer':          cmp = (a.officer ?? '').localeCompare(b.officer ?? '', 'zh-TW'); break;
+                }
+                if (cmp !== 0) return d * cmp;
+            }
+            return 0;
         });
-    }, [cases, nameQuery, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds]);
+    }, [cases, nameQuery, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, sortStack, maxApplyAmount]);
 
     const allFilteredSelected = filteredCases.length > 0 &&
         filteredCases.every(c => selectedIds.has(c.applicationId));
@@ -150,44 +219,35 @@ export function CaseListPage({
         }
     };
 
-    const colSpan = canAssign ? 9 : 8;
+    const colSpan = canAssign ? 10 : 9;
+
+    const [refreshing, setRefreshing] = useState(false);
+    const handleRefresh = async () => {
+        if (!onMount) return;
+        setRefreshing(true);
+        try { await onMount(); } finally { setRefreshing(false); }
+    };
 
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800 pb-24">
             {/* Header */}
-            <header className="bg-slate-900 text-white shadow-md sticky top-0 z-50">
-                <div className="container mx-auto px-4 sm:px-6 py-4 flex justify-between items-center gap-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-white shrink-0">W</div>
-                        <h1
-                            className="text-lg sm:text-xl font-bold tracking-tight cursor-pointer hover:text-blue-300 transition-colors truncate"
-                            onClick={onGoHome}
-                            title="返回首頁"
-                        >萬美基金會補助管理系統</h1>
-                    </div>
-                    <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                        <div className="flex items-center gap-2 bg-slate-800 text-slate-200 px-2 sm:px-3 py-1.5 rounded-lg border border-slate-700">
-                            <UserCircle className="w-4 h-4 text-slate-400" />
-                            <span className="text-xs sm:text-sm font-medium truncate max-w-[80px] sm:max-w-none">{username}</span>
-                        </div>
-                        <button
-                            onClick={onLogout}
-                            className="flex items-center gap-1.5 text-xs sm:text-sm text-slate-300 hover:text-red-400 transition px-1 sm:px-2 py-1.5"
-                            title="登出"
-                        >
-                            <LogOut className="w-4 h-4" />
-                            <span className="hidden sm:inline">登出</span>
-                        </button>
-                    </div>
-                </div>
-            </header>
+            <AppHeader username={username} onGoHome={onGoHome} onLogout={onLogout} />
 
             <main className="flex-1 container mx-auto px-4 sm:px-6 py-8 space-y-6 overflow-x-hidden">
-                <div>
+                <div className="flex items-center justify-between">
                     <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
                         <FileText className="w-6 h-6 text-blue-600" />
                         申請人資料查詢
                     </h2>
+                    <button
+                        onClick={handleRefresh}
+                        disabled={refreshing || isLoading}
+                        className="flex items-center gap-2 text-sm text-slate-600 bg-white border border-slate-300 hover:bg-slate-50 px-3 py-2 rounded-lg transition disabled:opacity-50 shadow-sm"
+                        title="重新載入最新資料"
+                    >
+                        <RefreshCw className={`w-4 h-4 ${refreshing || isLoading ? 'animate-spin' : ''}`} />
+                        重新整理
+                    </button>
                 </div>
 
                 {/* Filter Card */}
@@ -290,6 +350,64 @@ export function CaseListPage({
                     </div>
                 </div>
 
+                {/* Sort conditions editor */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                    <div className="flex items-center justify-between mb-3">
+                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider">排序條件</span>
+                        <button
+                            onClick={addSort}
+                            disabled={sortStack.length >= Object.keys(SORT_LABELS).length}
+                            className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800 disabled:opacity-30 disabled:cursor-not-allowed transition font-medium"
+                        >
+                            <Plus className="w-3.5 h-3.5" />
+                            新增條件
+                        </button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                        {sortStack.map((entry, idx) => {
+                            const isFixed = idx < 3;
+                            return (
+                                <div key={idx} className="flex items-center gap-1.5 bg-gray-50 border border-gray-200 rounded-lg px-2 py-1.5">
+                                    {/* Priority badge */}
+                                    <span className="text-[11px] font-bold text-gray-400 w-4 text-center shrink-0">
+                                        {idx + 1}
+                                    </span>
+                                    {/* Field selector */}
+                                    <select
+                                        value={entry.key}
+                                        onChange={e => updateSort(idx, { key: e.target.value as SortKey })}
+                                        className="text-xs border-0 bg-transparent text-slate-700 font-medium focus:outline-none focus:ring-0 cursor-pointer pr-1"
+                                    >
+                                        {(Object.entries(SORT_LABELS) as [SortKey, string][]).map(([k, label]) => (
+                                            <option key={k} value={k}>{label}</option>
+                                        ))}
+                                    </select>
+                                    {/* Asc / Desc toggle */}
+                                    <button
+                                        onClick={() => updateSort(idx, { dir: entry.dir === 'asc' ? 'desc' : 'asc' })}
+                                        className="flex items-center gap-0.5 text-xs text-slate-500 hover:text-blue-600 transition px-1 py-0.5 rounded hover:bg-blue-50"
+                                        title={entry.dir === 'asc' ? '升冪（點擊切換）' : '降冪（點擊切換）'}
+                                    >
+                                        {entry.dir === 'asc'
+                                            ? <><ArrowUp className="w-3 h-3" /><span>升冪</span></>
+                                            : <><ArrowDown className="w-3 h-3" /><span>降冪</span></>}
+                                    </button>
+                                    {/* Remove (only non-fixed rows) */}
+                                    {!isFixed && (
+                                        <button
+                                            onClick={() => removeSort(idx)}
+                                            className="text-gray-300 hover:text-red-400 transition ml-0.5"
+                                            title="移除此條件"
+                                        >
+                                            <X className="w-3.5 h-3.5" />
+                                        </button>
+                                    )}
+                                </div>
+                            );
+                        })}
+                    </div>
+                </div>
+
                 {/* Result count */}
                 <div className="flex justify-end">
                     <span className="text-sm text-slate-500">
@@ -316,6 +434,7 @@ export function CaseListPage({
                                         />
                                     </th>
                                 )}
+                                <Th>案件編號</Th>
                                 <Th>申請人姓名</Th>
                                 <Th>申請次數</Th>
                                 <ThCenter>累積金額</ThCenter>
@@ -352,6 +471,7 @@ export function CaseListPage({
                                         canAssign={canAssign}
                                         selected={selectedIds.has(c.applicationId)}
                                         isPending={pendingAlertIds.has(c.applicationId)}
+                                        maxApplyAmount={maxApplyAmount}
                                         onToggle={() => toggleOne(c.applicationId)}
                                         onClick={() => onSelectCase(c.id)}
                                     />
@@ -406,36 +526,31 @@ export function CaseListPage({
     );
 }
 
-function ThCenter({ children }: { children: React.ReactNode }) {
+function Th({ children }: { children: React.ReactNode }) {
     return (
-        <th className="py-3 px-4 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">
-            <span className="flex items-center justify-center gap-1">
-                {children}
-                <ArrowUpDown className="w-3 h-3 opacity-40" />
-            </span>
+        <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
+            {children}
         </th>
     );
 }
 
-function Th({ children }: { children: React.ReactNode }) {
+function ThCenter({ children }: { children: React.ReactNode }) {
     return (
-        <th className="py-3 px-4 text-left text-xs font-semibold text-gray-500 uppercase tracking-wider">
-            <span className="flex items-center gap-1">
-                {children}
-                <ArrowUpDown className="w-3 h-3 opacity-40" />
-            </span>
+        <th className="py-3 px-4 text-center text-xs font-semibold text-gray-500 uppercase tracking-wider">
+            {children}
         </th>
     );
 }
 
 function CaseRow({
-    case: c, isLast, canAssign, selected, isPending, onToggle, onClick,
+    case: c, isLast, canAssign, selected, isPending, maxApplyAmount, onToggle, onClick,
 }: {
     case: CaseSummary; isLast: boolean;
     canAssign: boolean; selected: boolean; isPending: boolean;
+    maxApplyAmount: number;
     onToggle: () => void; onClick: () => void;
 }) {
-    const remaining = 350000 - (c.totalAmount ?? 0);
+    const remaining = maxApplyAmount - (c.totalAmount ?? 0);
     return (
         <tr className={`transition-colors group ${!isLast ? 'border-b border-gray-100' : ''} ${selected ? 'bg-blue-50' : isPending ? 'bg-orange-50 hover:bg-orange-100' : 'hover:bg-blue-50'}`}>
             {canAssign && (
@@ -448,6 +563,9 @@ function CaseRow({
                     />
                 </td>
             )}
+            <td className="py-3.5 px-4 font-mono text-xs text-slate-500 cursor-pointer whitespace-nowrap" onClick={onClick}>
+                {c.caseNumber || <span className="text-slate-300">—</span>}
+            </td>
             <td className="py-3.5 px-4 font-medium text-slate-800 group-hover:text-blue-700 transition-colors cursor-pointer" onClick={onClick}>
                 <span className="flex items-center gap-2">
                     {c.applicantName}

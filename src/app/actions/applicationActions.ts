@@ -5,6 +5,7 @@ import { generateBlindIndex } from '../../lib/crypto';
 import { CaseSummary, ApplicationRecord, WorkflowStage, ApplicationStatus } from '../../types';
 import { STATUS_TO_STAGE, DB_STAGE_TO_FRONTEND, STATUS_LABEL } from '../../lib/stageMaps';
 import { writeAuditLog } from './auditActions';
+import { fetchSetting } from './settingsActions';
 
 export interface ApplicationStatusResult {
     found: boolean;
@@ -13,46 +14,63 @@ export interface ApplicationStatusResult {
     applyAmount?: number | null;
     approvedAmount?: number | null;
     totalApprovedAmount?: number;
+    maxAmount?: number;
+    remaining?: number;
     error?: string;
 }
 
-export async function checkApplicationStatus(name: string, idNumber: string): Promise<ApplicationStatusResult> {
-    if (!name || !idNumber) {
-        return { found: false, error: '請提供完整的姓名與身分證字號' };
+export async function checkApplicationStatus(idNumber: string): Promise<ApplicationStatusResult> {
+    if (!idNumber) {
+        return { found: false, error: '請提供身分證字號' };
     }
 
     const client = await pool.connect();
     try {
-        // 1. Fetch all active users with their search_salt and blind indexes
-        // Note: For large DBs, generating custom search salts per user means we do an application-layer scan. 
-        // This is safe provided user count allows this O(N) scan in memory or small batches.
+        // 1. Fetch all active users with their search_salt and id blind index.
+        //    Match by id_number_bidx only — name is not used for lookup.
+        //    Coerce to string first — pg may return bytea columns as Buffer objects.
         const usersRes = await client.query(`
-            SELECT id, search_salt, name_bidx, id_number_bidx 
-            FROM users 
+            SELECT id, search_salt, id_number_bidx
+            FROM users
             WHERE is_active = true
         `);
 
+        const normalizedId = idNumber.trim().toUpperCase();
         let matchedUserId: string | null = null;
 
-        // Loop through and compute the blind index against each user's unique salt
         for (const row of usersRes.rows) {
             if (!row.search_salt) continue;
+            const salt = Buffer.isBuffer(row.search_salt)
+                ? row.search_salt.toString('hex')
+                : String(row.search_salt);
+            const storedIdBidx = Buffer.isBuffer(row.id_number_bidx)
+                ? row.id_number_bidx.toString('hex')
+                : String(row.id_number_bidx ?? '');
 
-            const computedNameBidx = generateBlindIndex(name, row.search_salt);
-            const computedIdBidx = generateBlindIndex(idNumber, row.search_salt);
-
-            if (computedNameBidx === row.name_bidx && computedIdBidx === row.id_number_bidx) {
+            if (generateBlindIndex(normalizedId, salt) === storedIdBidx) {
                 matchedUserId = row.id;
                 break;
             }
         }
 
         if (!matchedUserId) {
-            // Identity not found or mismatch
             return { found: false };
         }
 
-        // 2. We found the user, now check their latest application
+        // 2. Check whether ANY application is still active (status NOT IN '2','4').
+        //    Per spec: 2=審核未通過(結案), 4=核銷完成(結案); all others are in-progress.
+        //    We must check ALL rows, not just the latest one — a person could have an
+        //    older active case even if their newest case is already closed.
+        const activeRes = await client.query(`
+            SELECT id FROM applications
+            WHERE applicant_id = $1
+              AND status NOT IN ('2', '4')
+            LIMIT 1
+        `, [matchedUserId]);
+
+        const hasActiveApplication = activeRes.rows.length > 0;
+
+        // 3. Get latest application data for display purposes
         const appRes = await client.query(`
             SELECT status, apply_amount, approved_amount
             FROM applications
@@ -61,38 +79,29 @@ export async function checkApplicationStatus(name: string, idNumber: string): Pr
             LIMIT 1
         `, [matchedUserId]);
 
-        if (appRes.rows.length === 0) {
-            // Found user, but no applications
-            return { 
-                found: true, 
-                hasActiveApplication: false 
-            };
-        }
-
-        const appData = appRes.rows[0];
-        
-        // Define terminal statuses per spec (applications.status VARCHAR(1)):
-        // 1=審核中, 2=審核未通過, 3=審核通過, 4=待補助, 5=補助完成
-        const TERMINAL_STATUSES = ['4', '2'];
-        
-        const isTerminal = TERMINAL_STATUSES.includes(appData.status || '');
-
-        // 3. Get total approved amount from historical completed applications
+        // 4. Get total approved amount (status='4' 核銷完成 only)
         const sumRes = await client.query(`
-            SELECT SUM(approved_amount) as total_approved
+            SELECT COALESCE(SUM(approved_amount), 0) AS total_approved
             FROM applications
             WHERE applicant_id = $1 AND status = '4'
         `, [matchedUserId]);
-        
+
         const totalApprovedAmount = parseInt(sumRes.rows[0].total_approved || '0', 10);
 
+        const maxAmountStr = await fetchSetting('max_apply_amount', '350000');
+        const maxAmount = Number(maxAmountStr) || 350000;
+        const remaining = Math.max(0, maxAmount - totalApprovedAmount);
+
+        const appData = appRes.rows[0] ?? null;
         return {
             found: true,
-            hasActiveApplication: !isTerminal,
-            status: appData.status,
-            applyAmount: appData.apply_amount,
-            approvedAmount: appData.approved_amount,
-            totalApprovedAmount
+            hasActiveApplication,
+            status: appData?.status ?? null,
+            applyAmount: appData?.apply_amount ?? null,
+            approvedAmount: appData?.approved_amount ?? null,
+            totalApprovedAmount,
+            maxAmount,
+            remaining,
         };
 
     } catch (err: any) {
@@ -112,23 +121,29 @@ export async function createNewApplication(
     name: string,
     idNumber: string,
     officerAccount: string,
-    applicationType: string = 'A'
+    applicationType: string = 'A',
+    applyAmount?: number | null,
 ): Promise<{ success: boolean; caseId?: string; error?: string }> {
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
-        // 1. Find or create the applicant user
+        // 1. Find or create the applicant user.
+        //    Match by id_number_bidx only — name is for case data, not for lookup.
         let applicantId: string | null = null;
-        
-        const usersRes = await client.query('SELECT id, search_salt, name_bidx, id_number_bidx FROM users WHERE is_active = true');
+        const normalizedId = idNumber.trim().toUpperCase();
+
+        const usersRes = await client.query('SELECT id, search_salt, id_number_bidx FROM users WHERE is_active = true');
         for (const row of usersRes.rows) {
             if (!row.search_salt) continue;
-            // Lazy load crypto logic since this is same action file
             const { generateBlindIndex } = await import('../../lib/crypto');
-            const computedNameBidx = generateBlindIndex(name, row.search_salt);
-            const computedIdBidx = generateBlindIndex(idNumber, row.search_salt);
-            if (computedNameBidx === row.name_bidx && computedIdBidx === row.id_number_bidx) {
+            const salt = Buffer.isBuffer(row.search_salt)
+                ? row.search_salt.toString('hex')
+                : String(row.search_salt);
+            const storedIdBidx = Buffer.isBuffer(row.id_number_bidx)
+                ? row.id_number_bidx.toString('hex')
+                : String(row.id_number_bidx ?? '');
+            if (generateBlindIndex(normalizedId, salt) === storedIdBidx) {
                 applicantId = row.id;
                 break;
             }
@@ -196,10 +211,10 @@ export async function createNewApplication(
         // 4. Create the application — status '1' = 審核中 (per spec)
         const appRes = await client.query(`
             INSERT INTO applications (
-                case_number, applicant_id, officer_id, status, apply_at, application_type
-            ) VALUES ($1, $2, $3, '1', NOW(), $4)
+                case_number, applicant_id, officer_id, status, apply_at, application_type, apply_amount
+            ) VALUES ($1, $2, $3, '1', NOW(), $4, $5)
             RETURNING id;
-        `, [caseNumber, applicantId, officerId, typePrefix]);
+        `, [caseNumber, applicantId, officerId, typePrefix, applyAmount ?? null]);
 
         const newCaseId = appRes.rows[0].id;
 
@@ -253,6 +268,7 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                 SELECT DISTINCT ON (applicant_id)
                     a.id as app_id,
                     a.applicant_id,
+                    a.case_number,
                     a.officer_id,
                     a.apply_at,
                     a.status,
@@ -271,6 +287,7 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                 s.app_count,
                 s.total_approved,
                 l.app_id,
+                l.case_number,
                 l.officer_id,
                 l.apply_at,
                 l.status,
@@ -309,6 +326,7 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
             return {
                 id: row.applicant_id,
                 applicationId: String(row.app_id),
+                caseNumber: row.case_number ?? '',
                 applicantName: name,
                 applicationCount: parseInt(row.app_count),
                 totalAmount: parseInt(row.total_approved) || 0,
@@ -427,6 +445,29 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
  * Count active cases that have not yet been assigned to an officer.
  * Used to show the unassigned-case reminder on the homepage for assign-capable roles.
  */
+export async function fetchApplicationIdsByCaseNumbers(
+    caseNumbers: string[]
+): Promise<Record<string, string>> {
+    if (!caseNumbers.length) return {};
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT id::text, case_number FROM applications WHERE case_number = ANY($1)`,
+            [caseNumbers]
+        );
+        const map: Record<string, string> = {};
+        for (const row of res.rows) {
+            map[row.case_number] = String(row.id);
+        }
+        return map;
+    } catch (err) {
+        console.error('fetchApplicationIdsByCaseNumbers error', err);
+        return {};
+    } finally {
+        client.release();
+    }
+}
+
 export async function fetchUnassignedCount(): Promise<number> {
     const client = await pool.connect();
     try {

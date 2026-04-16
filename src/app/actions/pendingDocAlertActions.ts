@@ -4,9 +4,6 @@ import { pool } from '../../lib/db';
 import { fetchSetting } from './settingsActions';
 import { decryptAES } from '../../lib/crypto';
 
-// Required apply-phase document IDs (isRequired=true, phase='apply')
-const REQUIRED_APPLY_DOC_IDS = ['1', '2', '3', '4', '6', '8', '11', '13'];
-
 export interface PendingDocAlert {
     applicationId: string;
     caseNumber: string;
@@ -20,6 +17,9 @@ export interface PendingDocAlert {
  * For a given case_officer, find all active admin_review cases where:
  * - apply_at is >= N days ago (N from system_settings)
  * - at least one required apply-phase document is missing (status '0' or '2', or no DB record)
+ *
+ * Required doc IDs are read dynamically from document_type_config
+ * (phase='apply', is_required=true, is_active=true).
  */
 export async function fetchPendingDocAlerts(
     officerId: string
@@ -28,9 +28,20 @@ export async function fetchPendingDocAlerts(
     try {
         const thresholdDays = parseInt(await fetchSetting('pending_doc_alert_days', '14'), 10);
 
+        // Step 0: fetch required apply-phase doc IDs from DB
+        const docTypeRes = await client.query(
+            `SELECT id::text FROM document_type_config
+             WHERE phase = 'apply' AND is_required = true AND is_active = true`
+        );
+        const requiredDocIds: string[] = docTypeRes.rows.map((r: any) => r.id);
+
+        if (requiredDocIds.length === 0) {
+            // No required docs configured → nothing to alert
+            return { success: true, data: [] };
+        }
+
         // Step 1: fetch active admin_review cases assigned to this officer
-        // status: 1=待審, 3=初審中, 4=核銷完成 are active; 2=駁回, 5=結案 are closed
-        // wf stage: 'apply' or 'admin_review' maps to admin_review in frontend
+        // Use LATERAL to get the latest workflow record's stage per case
         const casesRes = await client.query(
             `SELECT
                 a.id::text AS application_id,
@@ -41,10 +52,14 @@ export async function fetchPendingDocAlerts(
                 u.name_iv
              FROM applications a
              LEFT JOIN users u ON u.id = a.applicant_id
-             LEFT JOIN application_workflow w ON w.application_id = a.id
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY reviewed_at DESC NULLS LAST, id DESC LIMIT 1
+             ) w ON true
              WHERE a.officer_id = $1
-               AND a.status NOT IN ('2', '5')
-               AND (w.stage IN ('apply', 'admin_review') OR w.stage IS NULL)
+               AND a.status NOT IN ('2', '4')
+               AND (w.stage = 'admin_review' OR w.stage IS NULL)
                AND a.apply_at IS NOT NULL
                AND NOW() - a.apply_at >= ($2 || ' days')::interval
              ORDER BY a.apply_at ASC`,
@@ -63,7 +78,7 @@ export async function fetchPendingDocAlerts(
              FROM application_documents
              WHERE application_id = ANY($1::bigint[])
                AND id = ANY($2::smallint[])`,
-            [appIds, REQUIRED_APPLY_DOC_IDS]
+            [appIds, requiredDocIds]
         );
 
         // Build a map: applicationId -> { docId -> status }
@@ -80,14 +95,10 @@ export async function fetchPendingDocAlerts(
             const appDocs = docMap.get(row.application_id);
             let missingCount = 0;
 
-            for (const docId of REQUIRED_APPLY_DOC_IDS) {
-                if (!appDocs || !appDocs.has(docId)) {
-                    // No record at all → not uploaded
-                    missingCount++;
-                } else {
-                    const status = appDocs.get(docId)!;
-                    if (status === '0' || status === '2') missingCount++;
-                }
+            for (const docId of requiredDocIds) {
+                const status = appDocs?.get(docId);
+                // No record, status '0' (not uploaded), or status '2' (overdue) = missing
+                if (!status || status === '0' || status === '2') missingCount++;
             }
 
             if (missingCount === 0) continue;

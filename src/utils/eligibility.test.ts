@@ -5,7 +5,7 @@ describe('Eligibility Check', () => {
     it('should approve eligible single applicant', () => {
         const data: ApplicantData = {
             type: 'single',
-            hasMinorChildren: false,
+            hasChildren: false,
             annualIncome: 50, // within 40-105
             movableAssets: 10, // < 50
             realEstateValue: 1000 // < 2500
@@ -18,7 +18,7 @@ describe('Eligibility Check', () => {
     it('should reject single applicant with low income', () => {
         const data: ApplicantData = {
             type: 'single',
-            hasMinorChildren: false,
+            hasChildren: false,
             annualIncome: 30, // < 40
             movableAssets: 10,
             realEstateValue: 1000
@@ -31,7 +31,7 @@ describe('Eligibility Check', () => {
     it('should reject single applicant with high income', () => {
         const data: ApplicantData = {
             type: 'single',
-            hasMinorChildren: false,
+            hasChildren: false,
             annualIncome: 120, // > 105
             movableAssets: 10,
             realEstateValue: 1000
@@ -44,7 +44,7 @@ describe('Eligibility Check', () => {
     it('should reject single applicant with high movable assets', () => {
         const data: ApplicantData = {
             type: 'single',
-            hasMinorChildren: false,
+            hasChildren: false,
             annualIncome: 50,
             movableAssets: 60, // > 50
             realEstateValue: 1000
@@ -57,7 +57,7 @@ describe('Eligibility Check', () => {
     it('should approve eligible married applicant', () => {
         const data: ApplicantData = {
             type: 'married',
-            hasMinorChildren: true,
+            hasChildren: true,
             annualIncome: 80, // within 70-195
             movableAssets: 20, // < 80
             realEstateValue: 1000
@@ -69,7 +69,7 @@ describe('Eligibility Check', () => {
     it('should reject married applicant without minor children', () => {
         const data: ApplicantData = {
             type: 'married',
-            hasMinorChildren: false,
+            hasChildren: false,
             annualIncome: 80,
             movableAssets: 20,
             realEstateValue: 1000
@@ -82,7 +82,7 @@ describe('Eligibility Check', () => {
     it('should reject applicant with high real estate value', () => {
         const data: ApplicantData = {
             type: 'single',
-            hasMinorChildren: false,
+            hasChildren: false,
             annualIncome: 50,
             movableAssets: 10,
             realEstateValue: 3000 // > 2500

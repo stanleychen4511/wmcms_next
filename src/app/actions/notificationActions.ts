@@ -417,6 +417,239 @@ export async function sendNotificationEmail(
     }
 }
 
+// ─── Internal email sender (used by schedule execution) ──────────────────────
+
+async function sendScheduledEmail(opts: {
+    to: { name: string; address: string }[];
+    subject: string;
+    html: string;
+}): Promise<{ success: boolean; error?: string }> {
+    const cfgRes = await loadSmtpConfig();
+    if (!cfgRes.success || !cfgRes.data) {
+        return { success: false, error: 'SMTP 設定尚未完成' };
+    }
+    const cfg = cfgRes.data;
+    if (!cfg.host || !cfg.user) return { success: false, error: 'SMTP 設定不完整' };
+    try {
+        const nodemailer = await import('nodemailer');
+        const transporter = nodemailer.default.createTransport({
+            host: cfg.host,
+            port: cfg.port,
+            secure: cfg.secure,
+            auth: { user: cfg.user, pass: cfg.password },
+        });
+        const toAddresses = opts.to.map(r => `"${r.name}" <${r.address}>`).join(', ');
+        await transporter.sendMail({
+            from: `"${cfg.from_name}" <${cfg.from_email}>`,
+            to: toAddresses,
+            subject: opts.subject,
+            html: opts.html,
+        });
+        return { success: true };
+    } catch (err: any) {
+        return { success: false, error: err.message ?? '發送失敗' };
+    }
+}
+
+// ── Notification Schedules ─────────────────────────────────────────────────
+
+export interface NotificationSchedule {
+    id: number;
+    name: string;
+    channel: string;
+    template_id: number | null;
+    template_name?: string;
+    recipient_type: string;
+    conditions: Record<string, any>;
+    frequency: string;
+    day_of_week: number | null;
+    is_active: boolean;
+    last_sent_at: string | null;
+    created_at: string;
+}
+
+export async function fetchSchedules(): Promise<{ success: boolean; data?: NotificationSchedule[]; error?: string }> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(`
+            SELECT s.id, s.name, s.channel, s.template_id, t.name AS template_name,
+                   s.recipient_type, s.conditions, s.frequency, s.day_of_week,
+                   s.is_active, s.last_sent_at::text, s.created_at::text
+            FROM notification_schedules s
+            LEFT JOIN notification_templates t ON t.id = s.template_id
+            ORDER BY s.created_at DESC
+        `);
+        return { success: true, data: res.rows };
+    } catch (err: any) {
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function saveSchedule(data: {
+    id?: number;
+    name: string;
+    template_id: number | null;
+    recipient_type: string;
+    conditions: Record<string, any>;
+    frequency: string;
+    day_of_week: number | null;
+    is_active: boolean;
+}): Promise<{ success: boolean; error?: string }> {
+    const client = await pool.connect();
+    try {
+        if (data.id) {
+            await client.query(
+                `UPDATE notification_schedules
+                 SET name=$1, template_id=$2, recipient_type=$3, conditions=$4,
+                     frequency=$5, day_of_week=$6, is_active=$7, updated_at=NOW()
+                 WHERE id=$8`,
+                [data.name, data.template_id, data.recipient_type, JSON.stringify(data.conditions),
+                 data.frequency, data.day_of_week, data.is_active, data.id]
+            );
+        } else {
+            await client.query(
+                `INSERT INTO notification_schedules
+                     (name, template_id, recipient_type, conditions, frequency, day_of_week, is_active)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7)`,
+                [data.name, data.template_id, data.recipient_type, JSON.stringify(data.conditions),
+                 data.frequency, data.day_of_week, data.is_active]
+            );
+        }
+        return { success: true };
+    } catch (err: any) {
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function deleteSchedule(id: number): Promise<{ success: boolean; error?: string }> {
+    const client = await pool.connect();
+    try {
+        await client.query(`DELETE FROM notification_schedules WHERE id = $1`, [id]);
+        return { success: true };
+    } catch (err: any) {
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function toggleScheduleActive(id: number, isActive: boolean): Promise<{ success: boolean; error?: string }> {
+    const client = await pool.connect();
+    try {
+        await client.query(`UPDATE notification_schedules SET is_active=$1, updated_at=NOW() WHERE id=$2`, [isActive, id]);
+        return { success: true };
+    } catch (err: any) {
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function executeSchedule(
+    scheduleId: number,
+    triggeredBy: 'cron' | 'manual' = 'manual'
+): Promise<{ success: boolean; sent: number; failed: number; error?: string }> {
+    const client = await pool.connect();
+    try {
+        // Load the schedule
+        const schRes = await client.query(
+            `SELECT s.*, t.subject, t.body FROM notification_schedules s
+             LEFT JOIN notification_templates t ON t.id = s.template_id
+             WHERE s.id = $1`,
+            [scheduleId]
+        );
+        if (schRes.rows.length === 0) return { success: false, sent: 0, failed: 0, error: '找不到排程' };
+        const schedule = schRes.rows[0];
+        if (!schedule.subject || !schedule.body) return { success: false, sent: 0, failed: 0, error: '模板未設定' };
+
+        // Build recipient list based on conditions
+        const conditions = schedule.conditions as Record<string, any>;
+        const missingDocDaysGt = conditions.missing_doc_days_gt ?? 0;
+
+        // Query applicants with missing docs older than threshold days
+        const recipientsRes = await client.query(
+            `SELECT DISTINCT a.id AS application_id, a.case_number, a.apply_at,
+                    u.name_enc, u.name_iv, u.account
+             FROM applications a
+             JOIN users u ON u.id = a.applicant_id
+             LEFT JOIN application_documents d ON d.application_id = a.id
+             WHERE a.status NOT IN ('2', '4')
+               AND NOW() - a.apply_at > ($1 || ' days')::interval
+               AND (
+                   d.id IS NULL
+                   OR d.status IN ('0', '2')
+               )
+             ORDER BY a.apply_at ASC`,
+            [missingDocDaysGt]
+        );
+
+        const { decryptAES } = await import('../../lib/crypto');
+        let sent = 0;
+        let failed = 0;
+
+        for (const row of recipientsRes.rows) {
+            const applicantName = row.name_enc && row.name_iv
+                ? (decryptAES(row.name_enc, row.name_iv) || '申請人')
+                : '申請人';
+
+            // Get applicant email from account (format: app_IDNUMBER — no email stored)
+            // Skip if no real email available
+            // For now we use the account as a placeholder identifier
+            // In production this would need an email field on users table
+            const emailMatch = row.account?.match(/^app_(.+)$/);
+            if (!emailMatch) { failed++; continue; }
+
+            const vars: Record<string, string> = {
+                '案號': row.case_number,
+                '申請人': applicantName,
+                '申請日期': row.apply_at ? new Date(row.apply_at).toLocaleDateString('zh-TW') : '',
+                '缺件天數': String(Math.floor((Date.now() - new Date(row.apply_at).getTime()) / 86400000)),
+            };
+
+            const { applyPlaceholders } = await import('../../lib/notificationUtils');
+            const subject = applyPlaceholders(schedule.subject, vars);
+            const body = applyPlaceholders(schedule.body, vars);
+
+            // Send email — get channel config
+            const chRes = await client.query(
+                `SELECT config FROM notification_channels WHERE type='email' AND is_enabled=true LIMIT 1`
+            );
+            if (chRes.rows.length === 0) { failed++; continue; }
+
+            const result = await sendScheduledEmail({
+                to: [{ name: applicantName, address: `${row.account}@placeholder.local` }],
+                subject,
+                html: body,
+            });
+            if (result.success) sent++; else failed++;
+        }
+
+        // Update last_sent_at
+        await client.query(
+            `UPDATE notification_schedules SET last_sent_at=NOW(), updated_at=NOW() WHERE id=$1`,
+            [scheduleId]
+        );
+
+        void writeAuditLog({
+            userId: null,
+            action: 'notification.schedule_execute',
+            targetType: 'notification_schedule',
+            targetId: String(scheduleId),
+            detail: { triggeredBy, sent, failed },
+        });
+
+        return { success: true, sent, failed };
+    } catch (err: any) {
+        return { success: false, sent: 0, failed: 0, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
 // ─── Notification Logs ────────────────────────────────────────────────────────
 
 export async function fetchNotificationLogs(applicationId: string): Promise<{ success: boolean; data?: NotificationLog[]; error?: string }> {

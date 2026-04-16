@@ -1,5 +1,6 @@
 import { ChevronRight, FileText, ArrowLeft, UserCircle, LogOut, Clock, CheckCircle, XCircle } from 'lucide-react';
 import { ApplicationRecord, WorkflowStage } from '../types';
+import { AppHeader } from './AppHeader';
 
 interface ApplicantHistoryPageProps {
     applicantName: string;
@@ -47,34 +48,7 @@ export function ApplicantHistoryPage({
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
             {/* Header */}
-            <header className="bg-slate-900 text-white shadow-md sticky top-0 z-50">
-                <div className="container mx-auto px-4 sm:px-6 py-4 flex justify-between items-center gap-4">
-                    <div className="flex items-center gap-3 min-w-0">
-                        <div className="w-8 h-8 bg-blue-500 rounded-lg flex items-center justify-center font-bold text-white shrink-0">W</div>
-                        <h1
-                            className="text-lg sm:text-xl font-bold tracking-tight cursor-pointer hover:text-blue-300 transition-colors truncate"
-                            onClick={onGoHome}
-                            title="返回首頁"
-                        >
-                            萬美基金會補助管理系統
-                        </h1>
-                    </div>
-                    <div className="flex items-center gap-2 sm:gap-3 shrink-0">
-                        <div className="flex items-center gap-2 bg-slate-800 text-slate-200 px-2 sm:px-3 py-1.5 rounded-lg border border-slate-700">
-                            <UserCircle className="w-4 h-4 text-slate-400" />
-                            <span className="text-xs sm:text-sm font-medium truncate max-w-[80px] sm:max-w-none">{username}</span>
-                        </div>
-                        <button
-                            onClick={onLogout}
-                            className="flex items-center gap-1.5 text-xs sm:text-sm text-slate-300 hover:text-red-400 transition px-1 sm:px-2 py-1.5"
-                            title="登出"
-                        >
-                            <LogOut className="w-4 h-4" />
-                            <span className="hidden sm:inline">登出</span>
-                        </button>
-                    </div>
-                </div>
-            </header>
+            <AppHeader username={username} onGoHome={onGoHome} onLogout={onLogout} />
 
             <main className="flex-1 container mx-auto px-4 sm:px-6 py-8 space-y-6 overflow-x-hidden">
                 {/* Back + title */}

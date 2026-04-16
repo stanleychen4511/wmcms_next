@@ -180,7 +180,12 @@ function DocxViewer({ fileUrl, zoom = 100, onZoomChange }: {
 interface ReviewListProps {
     applicationId: string;
     caseNumber: string;
+    /** Legacy read-only flag — kept for non-document-related uses; does NOT affect upload or review. */
     readOnly?: boolean;
+    /** When true, hides upload AND review buttons. Set only when case is fully closed ('2'/'4'). */
+    caseClosed?: boolean;
+    /** When true, shows 符合/未符合/重置 review actions. Should encode role permission + case-not-closed. */
+    canReview?: boolean;
     onRefresh?: () => void;
     /** Filter docs by phase. Omit to show all. */
     phase?: string;
@@ -211,7 +216,7 @@ function isImageFile(url: string) {
     return /\.(jpe?g|png|gif|webp)$/i.test(url);
 }
 
-export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefresh, phase, userId }: ReviewListProps) {
+export function ReviewList({ applicationId, caseNumber, readOnly = false, caseClosed = false, canReview = false, onRefresh, phase, userId }: ReviewListProps) {
     const [docs, setDocs] = useState<DocumentEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [uploading, setUploading] = useState<Record<string, boolean>>({});
@@ -356,6 +361,11 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
                                             <span className="ml-2 text-[10px] font-normal text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">非必填</span>
                                         )}
                                     </p>
+                                    {doc.storageLocationPath && (
+                                        <p className="text-xs text-slate-400 mt-0.5">
+                                            📍 {doc.storageLocationPath}
+                                        </p>
+                                    )}
                                     <div className="flex items-center gap-2 mt-0.5">
                                         <StatusBadge status={doc.status} />
                                         {doc.uploadedAt && (
@@ -391,58 +401,63 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, onRefr
 
                                 {busy ? (
                                     <Loader2 className="w-5 h-5 animate-spin text-slate-400 shrink-0" />
-                                ) : !readOnly && (
+                                ) : (
                                     <div className="flex items-center gap-2 shrink-0">
-                                        {/* Upload button: status '0' = 待上傳/未符合, '2' = 逾期可重新上傳 */}
-                                        {(doc.status === '0' || doc.status === '2') && (
-                                            <button
-                                                onClick={() => handleUploadClick(doc.id)}
-                                                className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition"
-                                            >
-                                                <Upload className="w-3.5 h-3.5" />
-                                                上傳
-                                            </button>
-                                        )}
-
-                                        {/* Re-upload for already conforming docs */}
-                                        {doc.status === '1' && (
-                                            <button
-                                                onClick={() => handleUploadClick(doc.id)}
-                                                className="p-1.5 text-xs text-gray-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
-                                                title="重新上傳"
-                                            >
-                                                <RotateCcw className="w-3.5 h-3.5" />
-                                            </button>
-                                        )}
-
-                                        {/* Review actions: status '0' = 待審核 (檔案已上傳且有 fileUrl) */}
-                                        {doc.status === '0' && doc.fileUrl && (
+                                        {/* ── Upload / re-upload: available as long as case is not closed ── */}
+                                        {!caseClosed && (
                                             <>
-                                                <button
-                                                    onClick={() => handleStatusChange(doc.id, '1')} // '1' = 符合
-                                                    className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-green-700 bg-green-50 hover:bg-green-100 rounded-lg transition"
-                                                >
-                                                    <CheckCircle className="w-3.5 h-3.5" />
-                                                    符合
-                                                </button>
-                                                <button
-                                                    onClick={() => setRejectModal({ docId: doc.id })}
-                                                    className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 rounded-lg transition"
-                                                >
-                                                    <XCircle className="w-3.5 h-3.5" />
-                                                    未符合
-                                                </button>
+                                                {(doc.status === '0' || doc.status === '2') && (
+                                                    <button
+                                                        onClick={() => handleUploadClick(doc.id)}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-blue-700 bg-blue-50 hover:bg-blue-100 rounded-lg transition"
+                                                    >
+                                                        <Upload className="w-3.5 h-3.5" />
+                                                        上傳
+                                                    </button>
+                                                )}
+                                                {doc.status === '1' && (
+                                                    <button
+                                                        onClick={() => handleUploadClick(doc.id)}
+                                                        className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-500 bg-slate-50 hover:bg-slate-100 rounded-lg transition"
+                                                        title="重新上傳補件"
+                                                    >
+                                                        <RotateCcw className="w-3.5 h-3.5" />
+                                                        補件
+                                                    </button>
+                                                )}
                                             </>
                                         )}
 
-                                        {/* Reset '1' = 符合 back to '0' = 待上傳 */}
-                                        {doc.status === '1' && (
-                                            <button
-                                                onClick={() => handleStatusChange(doc.id, '0')}
-                                                className="text-xs text-gray-400 hover:text-gray-600 underline"
-                                            >
-                                                重置
-                                            </button>
+                                        {/* ── Review actions: role permission + case not closed, independent of step view ── */}
+                                        {canReview && (
+                                            <>
+                                                {doc.status === '0' && doc.fileUrl && (
+                                                    <>
+                                                        <button
+                                                            onClick={() => handleStatusChange(doc.id, '1')}
+                                                            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-green-700 bg-green-50 hover:bg-green-100 rounded-lg transition"
+                                                        >
+                                                            <CheckCircle className="w-3.5 h-3.5" />
+                                                            符合
+                                                        </button>
+                                                        <button
+                                                            onClick={() => setRejectModal({ docId: doc.id })}
+                                                            className="flex items-center gap-1 px-3 py-1.5 text-xs font-semibold text-red-700 bg-red-50 hover:bg-red-100 rounded-lg transition"
+                                                        >
+                                                            <XCircle className="w-3.5 h-3.5" />
+                                                            未符合
+                                                        </button>
+                                                    </>
+                                                )}
+                                                {doc.status === '1' && (
+                                                    <button
+                                                        onClick={() => handleStatusChange(doc.id, '0')}
+                                                        className="text-xs text-gray-400 hover:text-gray-600 underline"
+                                                    >
+                                                        重置
+                                                    </button>
+                                                )}
+                                            </>
                                         )}
                                     </div>
                                 )}
