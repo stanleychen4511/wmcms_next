@@ -131,7 +131,7 @@ function BannerCarousel({ banners }: { banners: Banner[] }) {
                         <a href={banner.link_url} target="_blank" rel="noopener noreferrer" className="block w-full h-full">
                             <img
                                 src={banner.image_url}
-                                alt={banner.title}
+                                alt={banner.title ?? ''}
                                 className="w-full h-full object-cover"
                             />
                             {/* Overlay gradient */}
@@ -146,7 +146,7 @@ function BannerCarousel({ banners }: { banners: Banner[] }) {
                         <>
                             <img
                                 src={banner.image_url}
-                                alt={banner.title}
+                                alt={banner.title ?? ''}
                                 className="w-full h-full object-cover"
                             />
                             {/* Overlay gradient */}

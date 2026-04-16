@@ -26,7 +26,7 @@ async function runTest() {
         const testId = 'Z' + Math.floor(Math.random() * 900000000 + 100000000); // Random Z123456789
         
         console.log(`Checking status for NEW user: ${testName} (${testId})`);
-        let res = await checkApplicationStatus(testName, testId);
+        let res = await checkApplicationStatus(testId);
         console.log('New User Result:', JSON.stringify(res, null, 2));
         if (res.found === false && res.hasActiveApplication === undefined) {
              console.log('✅ Correct: New user not found.');
@@ -45,7 +45,7 @@ async function runTest() {
         }
 
         console.log('\n--- Scenario: Check Active Application ---');
-        res = await checkApplicationStatus(testName, testId);
+        res = await checkApplicationStatus(testId);
         console.log('Active User Result:', JSON.stringify(res, null, 2));
         if (res.found === true && res.hasActiveApplication === true) {
             console.log('✅ Correct: Identified active application.');
@@ -56,7 +56,7 @@ async function runTest() {
         console.log('\n--- Scenario: Close Application (Rejected) and Re-check ---');
         // Manually update status to '2' (Rejected) in DB
         await client.query(`UPDATE applications SET status = '2' WHERE id = $1`, [createRes.caseId]);
-        res = await checkApplicationStatus(testName, testId);
+        res = await checkApplicationStatus(testId);
         if (res.found === true && res.hasActiveApplication === false) {
             console.log('✅ Correct: Identified NO active application after rejection.');
         } else {
@@ -64,15 +64,15 @@ async function runTest() {
         }
 
         console.log('\n--- Scenario: Check Amount Summing ---');
-        // Add a COMPLETED application (status '5') with 200,000
+        // Add a COMPLETED application (status '4') with 200,000
         const appRes = await client.query(`
             INSERT INTO applications (case_number, applicant_id, officer_id, status, apply_at, approved_amount)
-            SELECT 'TEST' || id, applicant_id, officer_id, '5', NOW(), 200000 
+            SELECT 'TEST' || id, applicant_id, officer_id, '4', NOW(), 200000
             FROM applications WHERE id = $1
             RETURNING id
         `, [createRes.caseId]);
-        
-        res = await checkApplicationStatus(testName, testId);
+
+        res = await checkApplicationStatus(testId);
         console.log('Total Approved Amount:', res.totalApprovedAmount);
         if (res.totalApprovedAmount === 200000) {
             console.log('✅ Correct: Amount summed correctly.');

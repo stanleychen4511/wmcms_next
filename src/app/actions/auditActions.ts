@@ -33,7 +33,18 @@ export type AuditAction =
     | 'template.download'
     | 'notification.send'
     | 'notification.schedule_execute'
-    | 'setting.update';
+    | 'setting.update'
+    | 'announcement.create'
+    | 'announcement.update'
+    | 'announcement.delete'
+    | 'announcement_category.create'
+    | 'announcement_category.update'
+    | 'announcement_category.delete'
+    | 'banner.create'
+    | 'banner.update'
+    | 'banner.delete'
+    | 'banner.toggle'
+    | 'banner.reorder';
 
 export type AuditTargetType =
     | 'application'
@@ -44,7 +55,10 @@ export type AuditTargetType =
     | 'template'
     | 'notification'
     | 'notification_schedule'
-    | 'setting';
+    | 'setting'
+    | 'announcement'
+    | 'announcement_category'
+    | 'banner';
 
 export interface WriteAuditLogParams {
     userId: string | null;
