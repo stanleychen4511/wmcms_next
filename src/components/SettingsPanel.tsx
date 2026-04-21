@@ -4,17 +4,23 @@ import { Settings, Save, RefreshCw, CheckCircle, AlertTriangle } from 'lucide-re
 import { fetchAllSettings, updateSetting, ensureDefaultSettings, SystemSetting } from '../app/actions/settingsActions';
 
 const SETTING_LABEL: Record<string, string> = {
-    pending_doc_alert_days: '未補件提示門檻天數',
+    pending_doc_alert_days: '未補件天數警示門檻',
+    pending_doc_notification_threshold: '未補件提醒次數門檻',
+    board_auto_assign:      '董事審核自動派案',
     max_apply_amount:       '申請金額上限',
 };
 
 const SETTING_UNIT: Record<string, string> = {
     pending_doc_alert_days: '天',
+    pending_doc_notification_threshold: '次',
+    board_auto_assign:      '',
     max_apply_amount:       '元',
 };
 
 const SETTING_HINT: Record<string, string> = {
-    pending_doc_alert_days: '收件後超過此天數且仍有必備文件未上傳的案件，將於首頁顯示未補件提示',
+    pending_doc_alert_days: '【天數警示】收件後超過此天數且仍有必備文件未上傳的案件，將於首頁顯示未補件提示',
+    pending_doc_notification_threshold: '【次數提醒】同案件累計發送幾次未補件提醒 Email 後，於首頁與案件詳情頁提示承辦人考慮以不通過結案',
+    board_auto_assign:      '填 true 或 false。開啟後，案件進入 board_review 階段時自動派給當前案件最少、優先序最小的組別',
     max_apply_amount:       '每筆申請案件的申請金額上限，超過此數值時系統將拒絕儲存',
 };
 

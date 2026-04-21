@@ -13,6 +13,8 @@ import {
     SlidersHorizontal,
     Image,
     Megaphone,
+    Building2,
+    Users2,
 } from 'lucide-react';
 import { Role } from '../types';
 import { AuditLogViewer } from './AuditLogViewer';
@@ -22,6 +24,8 @@ import { SettingsPanel } from './SettingsPanel';
 import { DocumentTypeManager } from './DocumentTypeManager';
 import { BannerManager } from './BannerManager';
 import { AnnouncementManager } from './AnnouncementManager';
+import { ReferralUnitManager } from './ReferralUnitManager';
+import { BoardGroupManager } from './BoardGroupManager';
 import { clsx } from 'clsx';
 import { getUsers, createUser, updateUserRoles, resetUserPassword, deleteUserAccount, fetchRoles, toggleUserActive, reassignOfficer, fetchCaseOfficersWithId, AdminUserView, RoleOption } from '../app/actions/userActions';
 import { twIdError } from '../lib/validateTwId';
@@ -36,7 +40,12 @@ interface AdminPanelProps {
 }
 
 export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: AdminPanelProps) {
-    const [activeTab, setActiveTab] = useState<'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'logs' | 'settings'>('accounts');
+    // Default tab: admin → accounts; chairman-only → board_groups; otherwise first allowed tab
+    const initialTab: 'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'referral_units' | 'board_groups' | 'logs' | 'settings' =
+        userRoles.includes('admin') ? 'accounts'
+        : userRoles.includes('chairman' as Role) ? 'board_groups'
+        : 'logs';
+    const [activeTab, setActiveTab] = useState<'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'referral_units' | 'board_groups' | 'logs' | 'settings'>(initialTab);
     const [searchTerm, setSearchTerm] = useState('');
     const [showAddForm, setShowAddForm] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
@@ -68,15 +77,20 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
     const [newPassword, setNewPassword] = useState('');
     const [newRoles, setNewRoles] = useState<Role[]>(['case_officer']);
 
-    const fetchAccounts = async () => {
-        setLoadingAccounts(true);
+    /**
+     * 載入帳號清單。silent=true 時不切換 loading 狀態，避免列表被替換為
+     * 「載入中…」單列導致畫面高度劇烈變動、瀏覽器自動 scroll to top。
+     * 異動權限／停用啟用等場景應傳 silent=true。
+     */
+    const fetchAccounts = async (silent: boolean = false) => {
+        if (!silent) setLoadingAccounts(true);
         try {
             const data = await getUsers();
             setAccounts(data);
         } catch (e) {
             console.error('Failed to fetch accounts', e);
         } finally {
-            setLoadingAccounts(false);
+            if (!silent) setLoadingAccounts(false);
         }
     };
 
@@ -117,7 +131,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
             setNewPassword('');
             setNewRoles(['case_officer']);
             setShowAddForm(false);
-            fetchAccounts();
+            fetchAccounts(true);
         } else {
             alert('新增失敗: ' + res.error);
         }
@@ -155,7 +169,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
         // Optimistic UI could go here
         const res = await updateUserRoles(id, nextRoles);
         if (res.success) {
-            fetchAccounts();
+            fetchAccounts(true);
         } else {
             alert('權限更新失敗: ' + res.error);
         }
@@ -165,7 +179,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
         if (confirm(`確定要刪除帳號 ${name} 嗎？此操作無法恢復。`)) {
             const res = await deleteUserAccount(id);
             if (res.success) {
-                fetchAccounts();
+                fetchAccounts(true);
             } else {
                 alert('刪除失敗: ' + res.error);
             }
@@ -187,7 +201,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
             setDeactivateModal({ userId: accountUserId, userName, activeCases: casesWithIds });
             setCaseReassignments({});
         } else if (res.success) {
-            await fetchAccounts();
+            await fetchAccounts(true);
         } else {
             alert(res.error || '停用失敗');
         }
@@ -211,7 +225,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
             const res = await toggleUserActive(deactivateModal.userId, false);
             if (res.success) {
                 setDeactivateModal(null);
-                await fetchAccounts();
+                await fetchAccounts(true);
             } else {
                 setDeactivateError(res.error || '停用失敗');
             }
@@ -223,13 +237,14 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
     const handleActivate = async (accountUserId: string) => {
         const res = await toggleUserActive(accountUserId, true);
         if (res.success) {
-            await fetchAccounts();
+            await fetchAccounts(true);
         } else {
             alert(res.error || '啟用失敗');
         }
     };
 
     const isAdmin = userRoles.includes('admin');
+    const isChairman = userRoles.includes('chairman' as Role);
     const canManageLocations = userRoles.some(r => ['admin', 'supervisor', 'board_member'].includes(r));
     const canManageTemplates = userRoles.some(r => ['admin', 'supervisor'].includes(r));
 
@@ -241,18 +256,20 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                 <div className="flex flex-col lg:flex-row gap-6 lg:gap-8">
                     {/* Sidebar Tabs */}
                     <div className="w-full lg:w-64 shrink-0 flex flex-row lg:flex-col gap-2 overflow-x-auto lg:overflow-visible pb-2 lg:pb-0">
-                        <button
-                            onClick={() => setActiveTab('accounts')}
-                            className={clsx(
-                                "whitespace-nowrap lg:whitespace-normal flex-1 lg:flex-none flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-left font-medium",
-                                activeTab === 'accounts' 
-                                    ? "bg-blue-600 text-white shadow-lg shadow-blue-200" 
-                                    : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
-                            )}
-                        >
-                            <Users className="w-5 h-5 shrink-0" />
-                            <span>帳號權限管理</span>
-                        </button>
+                        {isAdmin && (
+                            <button
+                                onClick={() => setActiveTab('accounts')}
+                                className={clsx(
+                                    "whitespace-nowrap lg:whitespace-normal flex-1 lg:flex-none flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-left font-medium",
+                                    activeTab === 'accounts'
+                                        ? "bg-blue-600 text-white shadow-lg shadow-blue-200"
+                                        : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                                )}
+                            >
+                                <Users className="w-5 h-5 shrink-0" />
+                                <span>帳號權限管理</span>
+                            </button>
+                        )}
                         {canManageLocations && (
                             <button
                                 onClick={() => setActiveTab('locations')}
@@ -321,6 +338,34 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                             >
                                 <Megaphone className="w-5 h-5 shrink-0" />
                                 <span>公告管理</span>
+                            </button>
+                        )}
+                        {(isChairman || isAdmin) && (
+                            <button
+                                onClick={() => setActiveTab('board_groups')}
+                                className={clsx(
+                                    "whitespace-nowrap lg:whitespace-normal flex-1 lg:flex-none flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-left font-medium",
+                                    activeTab === 'board_groups'
+                                        ? "bg-blue-600 text-white shadow-lg shadow-blue-200"
+                                        : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                                )}
+                            >
+                                <Users2 className="w-5 h-5 shrink-0" />
+                                <span>董事組別管理</span>
+                            </button>
+                        )}
+                        {isAdmin && (
+                            <button
+                                onClick={() => setActiveTab('referral_units')}
+                                className={clsx(
+                                    "whitespace-nowrap lg:whitespace-normal flex-1 lg:flex-none flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-left font-medium",
+                                    activeTab === 'referral_units'
+                                        ? "bg-blue-600 text-white shadow-lg shadow-blue-200"
+                                        : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                                )}
+                            >
+                                <Building2 className="w-5 h-5 shrink-0" />
+                                <span>轉介單位管理</span>
                             </button>
                         )}
                         <button
@@ -594,6 +639,14 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                             <BannerManager userId={userId} />
                         ) : activeTab === 'announcements' ? (
                             <AnnouncementManager userId={userId} />
+                        ) : activeTab === 'referral_units' ? (
+                            <div className="flex-1 p-6 overflow-y-auto">
+                                <ReferralUnitManager operatorUserId={userId} />
+                            </div>
+                        ) : activeTab === 'board_groups' ? (
+                            <div className="flex-1 p-6 overflow-y-auto">
+                                <BoardGroupManager operatorUserId={userId} />
+                            </div>
                         ) : activeTab === 'settings' ? (
                             <div className="flex-1 flex flex-col min-h-0">
                                 <div className="p-6 border-b border-slate-200">

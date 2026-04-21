@@ -7,12 +7,15 @@ interface OfficerOption { id: string; name: string; }
 
 interface CaseListPageProps {
     username: string;
+    userId: string;
     userRoles: Role[];
     cases: CaseSummary[];
     allOfficers: string[];
     officersWithId: OfficerOption[];
     isLoading?: boolean;
     pendingAlertIds?: Set<string>;
+    /** Map of applicationId → reminderCount, only includes cases at/over threshold */
+    thresholdReminderCounts?: Map<string, number>;
     maxApplyAmount?: number;
     onMount?: () => void;
     onAssign: (applicationIds: string[], officerUserId: string) => Promise<void>;
@@ -81,8 +84,8 @@ function loadSavedFilters() {
 }
 
 export function CaseListPage({
-    username, userRoles, cases, allOfficers, officersWithId,
-    isLoading, pendingAlertIds = new Set(), maxApplyAmount = 350000, onMount, onAssign, onSelectCase, onLogout, onGoHome,
+    username, userId, userRoles, cases, allOfficers, officersWithId,
+    isLoading, pendingAlertIds = new Set(), thresholdReminderCounts = new Map(), maxApplyAmount = 350000, onMount, onAssign, onSelectCase, onLogout, onGoHome,
 }: CaseListPageProps) {
     const { first, last } = getMonthRange();
     const saved = loadSavedFilters();
@@ -103,6 +106,12 @@ export function CaseListPage({
     const [officerFilter,  setOfficerFilter]  = useState<string>(saved?.officerFilter  ?? '');
     const [assignFilter,   setAssignFilter]   = useState<'all' | 'unassigned' | 'assigned'>(saved?.assignFilter ?? 'all');
     const [pendingOnly,    setPendingOnly]    = useState<boolean>(false);
+    const [thresholdOnly,  setThresholdOnly]  = useState<boolean>(false);
+    const [boardUnassignedOnly, setBoardUnassignedOnly] = useState<boolean>(false);
+    const [batchAssignResult, setBatchAssignResult] = useState<string | null>(null);
+    const [batchAssignBusy, setBatchAssignBusy] = useState(false);
+
+    const isChairmanOrAdminView = userRoles.includes('admin') || userRoles.includes('chairman' as Role);
 
     // Sort conditions (min 3)
     const [sortStack, setSortStack] = useState<SortEntry[]>(DEFAULT_SORT);
@@ -152,7 +161,7 @@ export function CaseListPage({
     }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter]);
 
     // Clear selection when filter changes
-    useEffect(() => { setSelectedIds(new Set()); }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter, pendingOnly]);
+    useEffect(() => { setSelectedIds(new Set()); }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter, pendingOnly, thresholdOnly]);
 
     const filteredCases = useMemo(() => {
         return cases.filter((c) => {
@@ -164,6 +173,11 @@ export function CaseListPage({
             if (effectiveAssignFilter === 'unassigned' && c.officerId !== null) return false;
             if (effectiveAssignFilter === 'assigned'   && c.officerId === null) return false;
             if (pendingOnly && !pendingAlertIds.has(c.applicationId)) return false;
+            if (thresholdOnly && !thresholdReminderCounts.has(c.applicationId)) return false;
+            if (boardUnassignedOnly) {
+                if (c.stage !== 'board_review') return false;
+                if (c.assignedBoardGroupId) return false;
+            }
             return true;
         }).sort((a, b) => {
             for (const { key, dir } of sortStack) {
@@ -183,7 +197,7 @@ export function CaseListPage({
             }
             return 0;
         });
-    }, [cases, nameQuery, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, sortStack, maxApplyAmount]);
+    }, [cases, nameQuery, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, thresholdOnly, thresholdReminderCounts, boardUnassignedOnly, sortStack, maxApplyAmount]);
 
     const allFilteredSelected = filteredCases.length > 0 &&
         filteredCases.every(c => selectedIds.has(c.applicationId));
@@ -347,6 +361,44 @@ export function CaseListPage({
                                 </label>
                             </div>
                         )}
+
+                        {/* Board-review unassigned filter (chairman/admin only) */}
+                        {isChairmanOrAdminView && (
+                            <div className="sm:col-span-1 flex items-end">
+                                <label className="flex items-center gap-2 cursor-pointer select-none w-full border border-purple-200 bg-purple-50 rounded-lg px-3 py-2 hover:bg-purple-100 transition">
+                                    <input
+                                        type="checkbox"
+                                        checked={boardUnassignedOnly}
+                                        onChange={e => setBoardUnassignedOnly(e.target.checked)}
+                                        className="w-4 h-4 accent-purple-500"
+                                    />
+                                    <span className="text-sm font-medium text-purple-700">
+                                        僅顯示未派案的董事審核案件
+                                    </span>
+                                </label>
+                            </div>
+                        )}
+
+                        {/* Threshold-reached filter */}
+                        {thresholdReminderCounts.size > 0 && (
+                            <div className="sm:col-span-1 flex items-end">
+                                <label className="flex items-center gap-2 cursor-pointer select-none w-full border border-red-200 bg-red-50 rounded-lg px-3 py-2 hover:bg-red-100 transition">
+                                    <input
+                                        type="checkbox"
+                                        checked={thresholdOnly}
+                                        onChange={e => setThresholdOnly(e.target.checked)}
+                                        className="w-4 h-4 accent-red-500"
+                                    />
+                                    <span className="text-sm font-medium text-red-700 flex items-center gap-1">
+                                        <AlertTriangle className="w-3.5 h-3.5" />
+                                        已達補件提醒門檻
+                                        <span className="ml-1 bg-red-600 text-white text-xs rounded-full px-1.5 py-0.5 leading-none">
+                                            {thresholdReminderCounts.size}
+                                        </span>
+                                    </span>
+                                </label>
+                            </div>
+                        )}
                     </div>
                 </div>
 
@@ -471,6 +523,7 @@ export function CaseListPage({
                                         canAssign={canAssign}
                                         selected={selectedIds.has(c.applicationId)}
                                         isPending={pendingAlertIds.has(c.applicationId)}
+                                        thresholdReminderCount={thresholdReminderCounts.get(c.applicationId) ?? 0}
                                         maxApplyAmount={maxApplyAmount}
                                         onToggle={() => toggleOne(c.applicationId)}
                                         onClick={() => onSelectCase(c.id)}
@@ -482,8 +535,48 @@ export function CaseListPage({
                 </div>
             </main>
 
+            {/* Board-review batch auto-assign bar (chairman/admin with filter on) */}
+            {isChairmanOrAdminView && boardUnassignedOnly && selectedIds.size > 0 && (
+                <div className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-purple-200 shadow-xl px-4 sm:px-6 py-4">
+                    <div className="container mx-auto flex flex-col sm:flex-row items-start sm:items-center gap-3">
+                        <div className="flex items-center gap-2 text-purple-700 font-semibold shrink-0">
+                            <UserCheck className="w-5 h-5" />
+                            <span>批次董事派案（已選 {selectedIds.size} 筆）</span>
+                        </div>
+                        {batchAssignResult && <span className="text-sm text-slate-600">{batchAssignResult}</span>}
+                        <div className="flex-1" />
+                        <div className="flex items-center gap-2 shrink-0">
+                            <button
+                                onClick={() => { setSelectedIds(new Set()); setBatchAssignResult(null); }}
+                                className="px-4 py-2 text-sm text-gray-600 border border-gray-300 rounded-lg hover:bg-gray-50 transition"
+                            >
+                                取消
+                            </button>
+                            <button
+                                disabled={batchAssignBusy}
+                                onClick={async () => {
+                                    setBatchAssignBusy(true);
+                                    setBatchAssignResult(null);
+                                    const ids = Array.from(selectedIds);
+                                    const { batchAutoAssignCases } = await import('../app/actions/boardGroupActions');
+                                    const res = await batchAutoAssignCases(ids, userId);
+                                    setBatchAssignBusy(false);
+                                    setBatchAssignResult(`成功 ${res.success} / 失敗 ${res.failed}`);
+                                    // Reload cases to reflect new assignment badges
+                                    onMount?.();
+                                    setSelectedIds(new Set());
+                                }}
+                                className="px-4 py-2 text-sm font-medium bg-purple-600 text-white rounded-lg hover:bg-purple-700 transition disabled:opacity-50 cursor-pointer"
+                            >
+                                {batchAssignBusy ? '處理中…' : '批次自動派案'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {/* Batch assignment bar */}
-            {canAssign && selectedIds.size > 0 && (
+            {canAssign && selectedIds.size > 0 && !boardUnassignedOnly && (
                 <div className="fixed bottom-0 left-0 right-0 z-40 bg-white border-t border-blue-200 shadow-xl px-4 sm:px-6 py-4">
                     <div className="container mx-auto flex flex-col sm:flex-row items-start sm:items-center gap-3">
                         <div className="flex items-center gap-2 text-blue-700 font-semibold shrink-0">
@@ -543,10 +636,11 @@ function ThCenter({ children }: { children: React.ReactNode }) {
 }
 
 function CaseRow({
-    case: c, isLast, canAssign, selected, isPending, maxApplyAmount, onToggle, onClick,
+    case: c, isLast, canAssign, selected, isPending, thresholdReminderCount, maxApplyAmount, onToggle, onClick,
 }: {
     case: CaseSummary; isLast: boolean;
     canAssign: boolean; selected: boolean; isPending: boolean;
+    thresholdReminderCount: number;
     maxApplyAmount: number;
     onToggle: () => void; onClick: () => void;
 }) {
@@ -572,6 +666,11 @@ function CaseRow({
                     {isPending && (
                         <span className="inline-flex items-center gap-0.5 text-xs bg-orange-100 text-orange-600 border border-orange-200 rounded-full px-1.5 py-0.5 font-medium shrink-0">
                             <AlertTriangle className="w-3 h-3" />未補件
+                        </span>
+                    )}
+                    {thresholdReminderCount > 0 && (
+                        <span className="inline-flex items-center gap-0.5 text-xs bg-red-100 text-red-700 border border-red-300 rounded-full px-1.5 py-0.5 font-medium shrink-0" title="已達補件提醒次數門檻，建議結案">
+                            <AlertTriangle className="w-3 h-3" />已提醒 {thresholdReminderCount} 次
                         </span>
                     )}
                 </span>

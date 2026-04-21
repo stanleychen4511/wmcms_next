@@ -31,6 +31,8 @@ export async function fetchSetting(key: string, defaultValue = ''): Promise<stri
 export async function ensureDefaultSettings(): Promise<void> {
     const defaults: { key: string; value: string; description: string }[] = [
         { key: 'pending_doc_alert_days', value: '7',      description: '收件後超過此天數且仍有必備文件未上傳的案件，將於首頁顯示未補件提示' },
+        { key: 'pending_doc_notification_threshold', value: '3', description: '同案件累計發送幾次未補件提醒後，於 UI 提示承辦人考慮以不通過結案' },
+        { key: 'board_auto_assign',      value: 'false',  description: '董事審核階段自動派案開關（true/false）：true 時案件進 board_review 自動派給當前案件最少、priority 最小的組別' },
         { key: 'max_apply_amount',       value: '350000', description: '每筆申請案件的申請金額上限（元）' },
     ];
     const client = await pool.connect();

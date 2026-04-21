@@ -41,12 +41,82 @@ export interface ApplicationDetail {
     totalApprovedAmount?: number;
     // Applicant user ID (for fetching historical receipts, etc.)
     applicantId?: string | null;
+    // Officer user ID (for UI permission check — e.g. basics-edit button)
+    officerId?: string | null;
+    // Referral tracking
+    applicationWay?: '1' | '2';
+    referralUnitId?: string | null;
+    referralUnitName?: string | null;   // null when way='2' but unit was deleted
 }
 
 // Guard: mock store IDs look like 'app-001-a', real DB IDs are numeric UUIDs or bigints.
 // The applications table uses BIGSERIAL (bigint PK), so valid IDs are all-digit strings.
 function isValidDbId(id: string): boolean {
     return /^\d+$/.test(id);
+}
+
+/**
+ * Verify that every current member of the case's assigned board group has a
+ * signature row whose content_hash equals the freshly recomputed current hash.
+ * Invoked within existing transactions before status updates.
+ */
+async function checkBoardSignatureGate(
+    client: any,
+    applicationId: string,
+): Promise<{ ok: true } | { ok: false; error: string }> {
+    // Must have an assignment first
+    const asg = await client.query(
+        `SELECT group_id FROM board_review_assignments WHERE application_id = $1::bigint LIMIT 1`,
+        [applicationId]
+    );
+    if (asg.rowCount === 0) {
+        return { ok: false, error: '案件尚未派組，無法推進（請董事長先派組並由組員簽章）' };
+    }
+    const groupId = String(asg.rows[0].group_id);
+
+    // Recompute current content hash inline (keep this file independent of boardSignatureActions module boundary)
+    const inputs = await client.query(
+        `SELECT a.approved_amount, w.comments AS wf_comments, w.is_approved AS wf_is_approved
+         FROM applications a
+         LEFT JOIN application_workflow w ON w.application_id = a.id
+         WHERE a.id = $1::bigint LIMIT 1`,
+        [applicationId]
+    );
+    const i = inputs.rows[0] ?? {};
+    const { createHash } = await import('crypto');
+    const parts = [
+        'v1',
+        String(applicationId),
+        i.approved_amount != null ? String(Number(i.approved_amount)) : 'null',
+        i.wf_comments != null ? i.wf_comments : 'null',
+        i.wf_is_approved != null ? String(i.wf_is_approved) : 'null',
+        groupId,
+    ];
+    const currentHash = createHash('sha256').update(parts.join('|')).digest('hex');
+
+    // Count current members and valid signatures
+    const cnt = await client.query(
+        `SELECT
+            (SELECT COUNT(*)::int FROM board_group_members WHERE group_id = $1::bigint) AS member_count,
+            (SELECT COUNT(*)::int
+             FROM board_review_signatures s
+             JOIN board_group_members m
+               ON m.user_id = s.signer_user_id AND m.group_id = $1::bigint
+             WHERE s.application_id = $2::bigint AND s.content_hash = $3
+            ) AS valid_count`,
+        [groupId, applicationId, currentHash]
+    );
+    const { member_count, valid_count } = cnt.rows[0];
+    const memberCount = Number(member_count ?? 0);
+    const validCount = Number(valid_count ?? 0);
+    if (memberCount === 0) {
+        return { ok: false, error: '派組無任何成員，無法推進' };
+    }
+    if (memberCount !== validCount) {
+        const missing = memberCount - validCount;
+        return { ok: false, error: `尚有 ${missing} 位組員未簽署（或簽章已因內容變動失效）` };
+    }
+    return { ok: true };
 }
 
 export async function fetchApplicationDetail(applicationId: string): Promise<ApplicationDetail | null> {
@@ -58,12 +128,14 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
         const res = await client.query(`
             SELECT
                 a.id, a.case_number, a.status, a.apply_at, a.created_at,
-                a.application_type, a.applicant_id,
+                a.application_type, a.applicant_id, a.officer_id,
                 (SELECT COALESCE(SUM(a2.approved_amount), 0) FROM applications a2
                  WHERE a2.applicant_id = a.applicant_id AND a2.status = '4') AS total_approved_amount,
                 a.age, a.moveable_property, a.immoveable_property,
                 a.annual_income, a.marital_status, a.has_children, a.underage_children_count, a.adult_children_count,
                 a.apply_amount, a.approved_amount,
+                a.application_way, a.referral_unit_id,
+                ru.name AS referral_unit_name,
                 w.stage as wf_stage,
                 w.is_approved as wf_is_approved,
                 w.comments as wf_comments,
@@ -73,6 +145,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             LEFT JOIN application_workflow w ON w.application_id = a.id
             LEFT JOIN users u_app ON u_app.id = a.applicant_id
             LEFT JOIN users u_off ON u_off.id = a.officer_id
+            LEFT JOIN referral_units ru ON ru.id = a.referral_unit_id
             WHERE a.id = $1
             LIMIT 1
         `, [applicationId]);
@@ -121,6 +194,10 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             applicationType: row.application_type ?? null,
             totalApprovedAmount: Number(row.total_approved_amount ?? 0),
             applicantId: row.applicant_id ? String(row.applicant_id) : null,
+            officerId: row.officer_id ? String(row.officer_id) : null,
+            applicationWay: (row.application_way === '2' ? '2' : '1') as '1' | '2',
+            referralUnitId: row.referral_unit_id != null ? String(row.referral_unit_id) : null,
+            referralUnitName: row.referral_unit_name ?? null,
         };
     } finally {
         client.release();
@@ -145,6 +222,15 @@ export async function advanceWorkflowStage(
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+
+        // 0. 若自 board_review 推進，須驗證全員簽章完整且 hash 有效
+        if (fromStage === 'board_review') {
+            const gate = await checkBoardSignatureGate(client, applicationId);
+            if (!gate.ok) {
+                await client.query('ROLLBACK');
+                return { success: false, error: gate.error };
+            }
+        }
 
         // 1. Update applications.status
         await client.query(
@@ -184,6 +270,13 @@ export async function advanceWorkflowStage(
             targetId: applicationId,
             detail: { from: fromStage, to: toStage, comments },
         });
+
+        // 進入 board_review 階段時，若系統設定 board_auto_assign='true'，觸發自動派組
+        if (toStage === 'board_review') {
+            const { maybeAutoAssignOnBoardReviewEntry } = await import('./boardGroupActions');
+            void maybeAutoAssignOnBoardReviewEntry(applicationId);
+        }
+
         return { success: true };
     } catch (err: any) {
         await client.query('ROLLBACK');
@@ -337,6 +430,21 @@ export async function closeCaseRejected(
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+
+        // 若案件目前在 board_review 階段才呼叫此結案，須驗全員簽章
+        const stageRes = await client.query(
+            `SELECT stage FROM application_workflow WHERE application_id = $1 LIMIT 1`,
+            [applicationId]
+        );
+        const curStage = stageRes.rows[0]?.stage;
+        if (curStage === 'board_review') {
+            const gate = await checkBoardSignatureGate(client, applicationId);
+            if (!gate.ok) {
+                await client.query('ROLLBACK');
+                return { success: false, error: gate.error };
+            }
+        }
+
         await client.query(
             `UPDATE applications SET status = '2', approved_amount = 0, updated_at = NOW() WHERE id = $1`,
             [applicationId]
@@ -375,6 +483,43 @@ export async function closeCaseRejected(
     } finally {
         client.release();
     }
+}
+
+/**
+ * Close a case as rejected because the pending-doc reminder threshold has been
+ * reached and the officer judges no further nudge is worthwhile. Reuses the
+ * existing closeCaseRejected logic but writes an additional audit entry tagged
+ * `pending_doc.threshold_close` with reminder metadata for traceability.
+ *
+ * Caller is expected to look up reminderCount / lastReminderAt before calling
+ * (typically via fetchPendingDocReminderStatus).
+ */
+export async function closeCaseByPendingDocThreshold(
+    applicationId: string,
+    reason: string,
+    officerUserId: string | null,
+    reminderCount: number,
+    lastReminderAt: string | null,
+): Promise<{ success: boolean; error?: string }> {
+    const trimmed = (reason ?? '').trim();
+    if (trimmed.length < 5) {
+        return { success: false, error: '結案原因至少需 5 字' };
+    }
+    const result = await closeCaseRejected(applicationId, trimmed, officerUserId);
+    if (!result.success) return result;
+
+    void writeAuditLog({
+        userId: officerUserId,
+        action: 'pending_doc.threshold_close',
+        targetType: 'application',
+        targetId: applicationId,
+        detail: {
+            reason: trimmed,
+            reminder_count: reminderCount,
+            last_reminder_at: lastReminderAt,
+        },
+    });
+    return { success: true };
 }
 
 /**

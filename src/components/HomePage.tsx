@@ -14,7 +14,7 @@ import {
     AlertTriangle,
     X,
 } from 'lucide-react';
-import { PendingDocAlert } from '../app/actions/pendingDocAlertActions';
+import { PendingDocAlert, PendingDocThresholdAlert } from '../app/actions/pendingDocAlertActions';
 import { fetchActiveBanners, Banner } from '../app/actions/bannerActions';
 import { Announcement } from '../app/actions/announcementActions';
 import ReactMarkdown from 'react-markdown';
@@ -28,7 +28,9 @@ interface HomePageProps {
     username: string;
     userRoles: Role[];
     pendingAlerts?: PendingDocAlert[];
+    thresholdAlerts?: PendingDocThresholdAlert[];
     unassignedCount?: number;
+    onSelectCase?: (applicationId: string) => void;
     banners?: Banner[];
     announcements?: Announcement[];
     newDays?: number;
@@ -198,7 +200,7 @@ function BannerCarousel({ banners }: { banners: Banner[] }) {
 
 const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
 
-export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCount = 0, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onLogout }: HomePageProps) {
+export function HomePage({ username, userRoles, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onLogout, onSelectCase }: HomePageProps) {
     const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
     const [selectedAnn, setSelectedAnn] = useState<Announcement | null>(null);
 
@@ -247,6 +249,46 @@ export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCo
                     </div>
                 )}
 
+                {/* Threshold-reached cases — only for case_officer */}
+                {userRoles.includes('case_officer') && thresholdAlerts.length > 0 && (
+                    <div className="bg-red-50 border border-red-300 rounded-xl px-5 py-4 space-y-3">
+                        <div className="flex items-center gap-2">
+                            <AlertTriangle className="w-5 h-5 text-red-600" />
+                            <p className="text-sm font-semibold text-red-800">
+                                達補件提醒門檻案件
+                            </p>
+                            <span className="ml-1 inline-flex items-center justify-center min-w-[1.5rem] h-6 px-2 rounded-full bg-red-600 text-white text-xs font-bold">
+                                {thresholdAlerts.length}
+                            </span>
+                        </div>
+                        <p className="text-xs text-red-700">
+                            以下案件已多次發送未補件提醒，建議於案件詳情頁以「不通過結案」收尾。
+                        </p>
+                        <ul className="space-y-1.5">
+                            {thresholdAlerts.map(a => (
+                                <li key={a.applicationId}>
+                                    <button
+                                        type="button"
+                                        onClick={() => onSelectCase?.(a.applicationId)}
+                                        className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg bg-white border border-red-200 hover:bg-red-100 transition cursor-pointer"
+                                    >
+                                        <span className="text-sm font-mono text-slate-700">{a.caseNumber}</span>
+                                        <span className="text-sm text-slate-800">{a.applicantName}</span>
+                                        <span className="ml-auto inline-flex items-center px-2 py-0.5 rounded-full bg-red-100 text-red-700 text-xs font-semibold">
+                                            已提醒 {a.reminderCount} 次
+                                        </span>
+                                        {a.missingCount > 0 && (
+                                            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-orange-100 text-orange-700 text-xs">
+                                                缺 {a.missingCount} 件
+                                            </span>
+                                        )}
+                                    </button>
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+
                 {/* Two-column layout */}
                 <div className="flex flex-col lg:flex-row gap-8 items-start">
                     {/* ── Left: Quick Functions ── */}
@@ -256,7 +298,7 @@ export function HomePage({ username, userRoles, pendingAlerts = [], unassignedCo
                             {QUICK_LINKS.map((link, idx) => {
                                 const hasAccess =
                                     link.action === 'new_application' ? (userRoles.includes('case_officer') || userRoles.includes('admin')) :
-                                    link.action === 'admin' ? userRoles.includes('admin') :
+                                    link.action === 'admin' ? (userRoles.includes('admin') || userRoles.includes('chairman' as Role)) :
                                     true;
 
                                 if (!hasAccess) return null;

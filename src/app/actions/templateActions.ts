@@ -228,7 +228,7 @@ export async function uploadTemplateFile(formData: FormData, operatorUserId: str
             `INSERT INTO template_files
                 (display_name, description, category_id, file_name, original_name,
                  file_path, file_size, mime_type, sort_order, uploaded_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10::uuid)
+             VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING id`,
             [displayName, description, categoryId, storedName, file.name,
              publicPath, file.size, file.type, sortOrder, operatorUserId || null]

@@ -191,6 +191,10 @@ interface ReviewListProps {
     phase?: string;
     /** Current logged-in user ID for audit logging */
     userId?: string | null;
+    /** 申請日期（ISO string），用於判斷是否逾期需補件 */
+    applyAt?: string;
+    /** 未補件提示門檻天數（來自 system_settings） */
+    pendingThresholdDays?: number;
 }
 
 function StatusBadge({ status }: { status: DocumentEntry['status'] }) {
@@ -216,7 +220,15 @@ function isImageFile(url: string) {
     return /\.(jpe?g|png|gif|webp)$/i.test(url);
 }
 
-export function ReviewList({ applicationId, caseNumber, readOnly = false, caseClosed = false, canReview = false, onRefresh, phase, userId }: ReviewListProps) {
+export function ReviewList({ applicationId, caseNumber, readOnly = false, caseClosed = false, canReview = false, onRefresh, phase, userId, applyAt, pendingThresholdDays = 7 }: ReviewListProps) {
+    // 判斷申請日是否已過門檻天數（逾期補件判斷基準）
+    const isOverduePastThreshold = (() => {
+        if (!applyAt) return false;
+        const applyMs = new Date(applyAt).getTime();
+        if (isNaN(applyMs)) return false;
+        const daysSince = (Date.now() - applyMs) / (1000 * 60 * 60 * 24);
+        return daysSince >= pendingThresholdDays;
+    })();
     const [docs, setDocs] = useState<DocumentEntry[]>([]);
     const [loading, setLoading] = useState(true);
     const [uploading, setUploading] = useState<Record<string, boolean>>({});
@@ -368,6 +380,13 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                                     )}
                                     <div className="flex items-center gap-2 mt-0.5">
                                         <StatusBadge status={doc.status} />
+                                        {/* 逾期補件警示：已過門檻天數、必備文件、且尚未通過審核 */}
+                                        {isOverduePastThreshold && doc.isRequired && doc.status !== '1' && (
+                                            <span className="inline-flex items-center gap-1 text-[10px] font-semibold bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded-full" title={`申請已超過 ${pendingThresholdDays} 天`}>
+                                                <AlertCircle className="w-3 h-3" />
+                                                逾期補件
+                                            </span>
+                                        )}
                                         {doc.uploadedAt && (
                                             <span className="text-xs text-gray-400">
                                                 {new Date(doc.uploadedAt).toLocaleDateString('zh-TW')}
@@ -419,10 +438,10 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                                                     <button
                                                         onClick={() => handleUploadClick(doc.id)}
                                                         className="flex items-center gap-1.5 px-3 py-1.5 text-xs font-medium text-slate-500 bg-slate-50 hover:bg-slate-100 rounded-lg transition"
-                                                        title="重新上傳補件"
+                                                        title="重新上傳此文件"
                                                     >
                                                         <RotateCcw className="w-3.5 h-3.5" />
-                                                        補件
+                                                        重新上傳
                                                     </button>
                                                 )}
                                             </>

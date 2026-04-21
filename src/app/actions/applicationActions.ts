@@ -123,10 +123,38 @@ export async function createNewApplication(
     officerAccount: string,
     applicationType: string = 'A',
     applyAmount?: number | null,
+    applicationWay: '1' | '2' = '1',
+    referralUnitId: number | string | null = null,
 ): Promise<{ success: boolean; caseId?: string; error?: string }> {
+    // 案件來源與轉介單位驗證：way='1' 時一律寫 NULL；way='2' 時必須給有效且啟用中的單位
+    const way: '1' | '2' = applicationWay === '2' ? '2' : '1';
+    let effectiveUnitId: string | null = null;
+    if (way === '2') {
+        if (referralUnitId === null || referralUnitId === undefined || referralUnitId === '') {
+            return { success: false, error: '選擇「轉介」時必須指定轉介單位' };
+        }
+        effectiveUnitId = String(referralUnitId);
+    }
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+
+        // 0. 驗證轉介單位存在且啟用中（僅 way=2 時檢查）
+        if (way === '2' && effectiveUnitId) {
+            const unitRes = await client.query(
+                `SELECT is_active FROM referral_units WHERE id = $1::bigint`,
+                [effectiveUnitId]
+            );
+            if (unitRes.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '轉介單位不存在' };
+            }
+            if (!unitRes.rows[0].is_active) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '轉介單位已停用，請改選其他單位' };
+            }
+        }
 
         // 1. Find or create the applicant user.
         //    Match by id_number_bidx only — name is for case data, not for lookup.
@@ -152,19 +180,22 @@ export async function createNewApplication(
         if (!applicantId) {
             // Applicant doesn't exist. Create them!
             const { encryptAES, generateSalt, hashPassword, generateBlindIndex } = await import('../../lib/crypto');
-            
+
             // Use full ID number as account key — unique per person, server-side only
             const generatedAccount = `app_${idNumber.toUpperCase()}`;
             const tempPass = generateTempPassword();
             const searchSalt = generateSalt();
+            // 必須存成 Buffer（二進位），讀回時 .toString('hex') 才能還原原始 hex 字串
+            const saltBuffer = Buffer.from(searchSalt, 'hex');
             const passHash = hashPassword(tempPass, searchSalt);
-            
+
             const { enc: nameEnc, iv: nameIv } = encryptAES(name);
             const nameBidx = generateBlindIndex(name, searchSalt);
-            
-            const { enc: idEnc, iv: idIv } = encryptAES(idNumber);
-            const idBidx = generateBlindIndex(idNumber, searchSalt);
 
+            const { enc: idEnc, iv: idIv } = encryptAES(normalizedId);
+            const idBidx = generateBlindIndex(normalizedId, searchSalt);
+
+            // ON CONFLICT：帳號已存在時更新加密資料（同一身分證換名字等情境）
             const insertUserQuery = `
                 INSERT INTO users (
                     account, password, search_salt,
@@ -172,11 +203,21 @@ export async function createNewApplication(
                     id_number_enc, id_number_iv, id_number_bidx,
                     is_active
                 ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
+                ON CONFLICT (account) DO UPDATE SET
+                    name_enc         = EXCLUDED.name_enc,
+                    name_iv          = EXCLUDED.name_iv,
+                    name_bidx        = EXCLUDED.name_bidx,
+                    id_number_enc    = EXCLUDED.id_number_enc,
+                    id_number_iv     = EXCLUDED.id_number_iv,
+                    id_number_bidx   = EXCLUDED.id_number_bidx,
+                    search_salt      = EXCLUDED.search_salt,
+                    password         = EXCLUDED.password,
+                    is_active        = TRUE
                 RETURNING id;
             `;
-            
+
             const newU = await client.query(insertUserQuery, [
-                generatedAccount, passHash, searchSalt,
+                generatedAccount, passHash, saltBuffer,
                 nameEnc, nameIv, nameBidx,
                 idEnc, idIv, idBidx
             ]);
@@ -211,10 +252,11 @@ export async function createNewApplication(
         // 4. Create the application — status '1' = 審核中 (per spec)
         const appRes = await client.query(`
             INSERT INTO applications (
-                case_number, applicant_id, officer_id, status, apply_at, application_type, apply_amount
-            ) VALUES ($1, $2, $3, '1', NOW(), $4, $5)
+                case_number, applicant_id, officer_id, status, apply_at,
+                application_type, apply_amount, application_way, referral_unit_id
+            ) VALUES ($1, $2, $3, '1', NOW(), $4, $5, $6, $7::bigint)
             RETURNING id;
-        `, [caseNumber, applicantId, officerId, typePrefix, applyAmount ?? null]);
+        `, [caseNumber, applicantId, officerId, typePrefix, applyAmount ?? null, way, effectiveUnitId]);
 
         const newCaseId = appRes.rows[0].id;
 
@@ -257,10 +299,12 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
         // We join applications to get counts and sums, and another join for latest application details
         const res = await client.query(`
             WITH user_stats AS (
-                SELECT 
+                SELECT
                     applicant_id,
                     COUNT(*) as app_count,
-                    SUM(COALESCE(approved_amount, 0)) FILTER (WHERE approved_amount IS NOT NULL AND approved_amount > 0) as total_approved
+                    -- 僅核銷完成（status='4'）的案件才計入累積核准金額。
+                    -- 共筆模式下 board_review 階段即可儲存 approved_amount，若不加 status 過濾會提前計入未結案的草案金額。
+                    SUM(COALESCE(approved_amount, 0)) FILTER (WHERE status = '4' AND approved_amount IS NOT NULL AND approved_amount > 0) as total_approved
                 FROM applications
                 GROUP BY applicant_id
             ),
@@ -274,10 +318,12 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                     a.status,
                     u_off.name_enc as off_name_enc, u_off.name_iv as off_name_iv,
                     u_off.account as officer_account,
-                    w.stage as wf_stage
+                    w.stage as wf_stage,
+                    bra.group_id AS board_group_id
                 FROM applications a
                 LEFT JOIN users u_off ON u_off.id = a.officer_id
                 LEFT JOIN application_workflow w ON w.application_id = a.id
+                LEFT JOIN board_review_assignments bra ON bra.application_id = a.id
                 ORDER BY a.applicant_id, a.apply_at DESC
             )
             SELECT
@@ -294,7 +340,8 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                 l.wf_stage,
                 l.off_name_enc,
                 l.off_name_iv,
-                l.officer_account
+                l.officer_account,
+                l.board_group_id
             FROM users u
             JOIN user_stats s ON s.applicant_id = u.id
             LEFT JOIN latest_apps l ON l.applicant_id = u.id
@@ -334,6 +381,7 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                 stage,
                 officer: offName,
                 officerId: row.officer_id ? String(row.officer_id) : null,
+                assignedBoardGroupId: row.board_group_id != null ? String(row.board_group_id) : null,
             };
         });
     } catch (err) {
@@ -481,6 +529,229 @@ export async function fetchUnassignedCount(): Promise<number> {
     } catch (err) {
         console.error('fetchUnassignedCount error', err);
         return 0;
+    } finally {
+        client.release();
+    }
+}
+
+// ─── Edit case basics (admin_review stage only) ─────────────────────────────
+
+export interface UpdateApplicationBasicsPatch {
+    applicantName?: string;
+    applicationWay?: '1' | '2';
+    referralUnitId?: string | null;
+}
+
+/**
+ * Edit a case's basic info (applicant name / source / referral unit) during the
+ * `admin_review` stage only. Writes a single audit entry with before/after diff
+ * of only the fields that actually changed. No audit log when nothing changed.
+ *
+ * 申請類別（application_type）不在可編輯欄位內 — 案號 case_number 已綁定類別首字母，
+ * 類別有誤須以不通過結案重新建立新案件。
+ *
+ * Permission: caller must be the case's officer OR have the admin role.
+ * Stage: applications.status must be '1' AND workflow.stage must be 'admin_review'.
+ */
+export async function updateApplicationBasics(
+    applicationId: string,
+    patch: UpdateApplicationBasicsPatch,
+    operatorUserId: string,
+): Promise<{ success: boolean; error?: string; changedFields?: string[] }> {
+    if (!/^\d+$/.test(applicationId)) return { success: false, error: '無效的案件 ID' };
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // ── Step a: load current values + workflow stage ───────────────────
+        const caseRes = await client.query(
+            `SELECT a.status, a.officer_id, a.applicant_id,
+                    a.application_type, a.application_way, a.referral_unit_id,
+                    w.stage AS wf_stage
+             FROM applications a
+             LEFT JOIN application_workflow w ON w.application_id = a.id
+             WHERE a.id = $1::bigint
+             LIMIT 1`,
+            [applicationId]
+        );
+        if (caseRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件不存在' };
+        }
+        const row = caseRes.rows[0];
+
+        // ── Step b: stage check ────────────────────────────────────────────
+        if (row.status !== '1' || row.wf_stage !== 'admin_review') {
+            await client.query('ROLLBACK');
+            return { success: false, error: '僅行政初審階段可修改案件基本資訊' };
+        }
+
+        // ── Step c: permission check ───────────────────────────────────────
+        const isOfficer = String(row.officer_id ?? '') === String(operatorUserId ?? '');
+        let isAdmin = false;
+        if (!isOfficer) {
+            const roleRes = await client.query(
+                `SELECT 1 FROM user_roles ur
+                 JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = $1::bigint AND r.code = 'admin'
+                 LIMIT 1`,
+                [operatorUserId]
+            );
+            isAdmin = (roleRes.rowCount ?? 0) > 0;
+        }
+        if (!isOfficer && !isAdmin) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '無權限修改此案件' };
+        }
+
+        // ── Step d: normalize & validate referral fields ───────────────────
+        // 申請類別不可修改（鎖住與 case_number 首字母的對應），僅讀取現值供後續 UPDATE 使用
+        const currentType = row.application_type;
+
+        const nextWay: '1' | '2' = (patch.applicationWay ?? row.application_way ?? '1') as '1' | '2';
+        if (nextWay !== '1' && nextWay !== '2') {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件來源必須為自提(1)或轉介(2)' };
+        }
+
+        let nextReferralUnitId: string | null;
+        if (nextWay === '1') {
+            // way='1' → force null regardless of patch input
+            nextReferralUnitId = null;
+        } else {
+            // way='2' → required & must point to active unit
+            const candidate = patch.referralUnitId !== undefined
+                ? patch.referralUnitId
+                : (row.referral_unit_id !== null ? String(row.referral_unit_id) : null);
+            if (!candidate) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '選擇「轉介」時必須指定轉介單位' };
+            }
+            const unitRes = await client.query(
+                `SELECT is_active FROM referral_units WHERE id = $1::bigint`,
+                [candidate]
+            );
+            if (unitRes.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '轉介單位不存在' };
+            }
+            if (!unitRes.rows[0].is_active) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '轉介單位已停用，請改選其他單位' };
+            }
+            nextReferralUnitId = candidate;
+        }
+
+        // ── Step e: applicant name handling ────────────────────────────────
+        let oldApplicantName: string | undefined;
+        let nameActuallyChanged = false;
+        let newNameEncArgs: { enc: Buffer; iv: Buffer; bidx: string | null } | null = null;
+
+        if (patch.applicantName !== undefined) {
+            const newName = patch.applicantName.trim();
+            if (newName.length < 1 || newName.length > 50) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '申請人姓名長度須為 1–50 字' };
+            }
+
+            // Decrypt current applicant name for comparison
+            const userRes = await client.query(
+                `SELECT search_salt, name_enc, name_iv
+                 FROM users WHERE id = $1::bigint LIMIT 1`,
+                [row.applicant_id]
+            );
+            if (userRes.rowCount === 0) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '找不到申請人資料' };
+            }
+            const u = userRes.rows[0];
+
+            const { decryptAES, encryptAES } = await import('../../lib/crypto');
+            oldApplicantName = u.name_enc && u.name_iv
+                ? decryptAES(u.name_enc, u.name_iv) || ''
+                : '';
+
+            if (oldApplicantName !== newName) {
+                nameActuallyChanged = true;
+                const { enc, iv } = encryptAES(newName);
+                // Re-use existing search_salt (Buffer → hex) for blind index
+                const saltHex = Buffer.isBuffer(u.search_salt)
+                    ? u.search_salt.toString('hex')
+                    : String(u.search_salt ?? '');
+                const bidx = saltHex ? generateBlindIndex(newName, saltHex) : null;
+                newNameEncArgs = { enc: enc as Buffer, iv: iv as Buffer, bidx };
+            }
+        }
+
+        // ── Step f: diff & UPDATE ──────────────────────────────────────────
+        const changedFields: string[] = [];
+        const before: Record<string, unknown> = {};
+        const after: Record<string, unknown> = {};
+
+        if (nameActuallyChanged) {
+            changedFields.push('applicantName');
+            before.applicantName = oldApplicantName;
+            after.applicantName = patch.applicantName!.trim();
+        }
+        if (patch.applicationWay !== undefined && nextWay !== row.application_way) {
+            changedFields.push('applicationWay');
+            before.applicationWay = row.application_way;
+            after.applicationWay = nextWay;
+        }
+        const currentUnitIdStr = row.referral_unit_id !== null ? String(row.referral_unit_id) : null;
+        if (nextReferralUnitId !== currentUnitIdStr) {
+            changedFields.push('referralUnitId');
+            before.referralUnitId = currentUnitIdStr;
+            after.referralUnitId = nextReferralUnitId;
+        }
+
+        // No-op: commit and return without audit
+        if (changedFields.length === 0) {
+            await client.query('COMMIT');
+            return { success: true, changedFields: [] };
+        }
+
+        // UPDATE users name if changed
+        if (nameActuallyChanged && newNameEncArgs) {
+            await client.query(
+                `UPDATE users SET name_enc = $1, name_iv = $2, name_bidx = $3
+                 WHERE id = $4::bigint`,
+                [newNameEncArgs.enc, newNameEncArgs.iv, newNameEncArgs.bidx, row.applicant_id]
+            );
+        }
+
+        // UPDATE applications if any of its columns changed
+        // 不會更新 application_type（維持與 case_number 首字母一致）
+        const appChangedCols = changedFields.filter(f => f !== 'applicantName');
+        if (appChangedCols.length > 0) {
+            await client.query(
+                `UPDATE applications
+                 SET application_way  = $1,
+                     referral_unit_id = $2::bigint,
+                     updated_at       = NOW()
+                 WHERE id = $3::bigint`,
+                [nextWay, nextReferralUnitId, applicationId]
+            );
+        }
+        // currentType 被保留以供未來除錯參考（目前未使用於 UPDATE）
+        void currentType;
+
+        await client.query('COMMIT');
+
+        void writeAuditLog({
+            userId: operatorUserId || null,
+            action: 'application.basics_update',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { changedFields, before, after },
+        });
+
+        return { success: true, changedFields };
+    } catch (err: any) {
+        try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+        console.error('updateApplicationBasics error:', err);
+        return { success: false, error: err.message };
     } finally {
         client.release();
     }

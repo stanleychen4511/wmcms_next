@@ -279,11 +279,12 @@ export async function fetchCaseOfficers(): Promise<string[]> {
     const client = await pool.connect();
     try {
         const query = `
-            SELECT u.name_enc, u.name_iv
+            SELECT DISTINCT ON (u.id) u.name_enc, u.name_iv
             FROM users u
             JOIN user_roles ur ON u.id = ur.user_id
             JOIN roles r ON ur.role_id = r.id
-            WHERE r.code = 'case_officer' OR r.id = 2;
+            WHERE r.code = 'case_officer'
+              AND u.is_active = TRUE;
         `;
         const res = await client.query(query);
         return res.rows.map(row => decryptAES(row.name_enc, row.name_iv) || 'Unknown');
@@ -302,11 +303,12 @@ export async function fetchCaseOfficersWithId(): Promise<{ id: string; name: str
     const client = await pool.connect();
     try {
         const res = await client.query(`
-            SELECT u.id, u.name_enc, u.name_iv
+            SELECT DISTINCT ON (u.id) u.id, u.name_enc, u.name_iv
             FROM users u
             JOIN user_roles ur ON u.id = ur.user_id
             JOIN roles r ON ur.role_id = r.id
-            WHERE r.code = 'case_officer' OR r.id = 2
+            WHERE r.code = 'case_officer'
+              AND u.is_active = TRUE
             ORDER BY u.id
         `);
         return res.rows.map(row => ({

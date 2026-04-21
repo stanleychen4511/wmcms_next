@@ -44,7 +44,21 @@ export type AuditAction =
     | 'banner.update'
     | 'banner.delete'
     | 'banner.toggle'
-    | 'banner.reorder';
+    | 'banner.reorder'
+    | 'pending_doc.threshold_close'
+    | 'referral_unit.create'
+    | 'referral_unit.update'
+    | 'referral_unit.toggle_active'
+    | 'application.basics_update'
+    | 'board_group.create'
+    | 'board_group.update'
+    | 'board_group.toggle_active'
+    | 'board_group.delete'
+    | 'board_review.assign'
+    | 'board_review.reassign'
+    | 'board_review.draft_save'
+    | 'board_review.signature_added'
+    | 'board_review.signatures_invalidated';
 
 export type AuditTargetType =
     | 'application'
@@ -58,7 +72,10 @@ export type AuditTargetType =
     | 'setting'
     | 'announcement'
     | 'announcement_category'
-    | 'banner';
+    | 'banner'
+    | 'referral_unit'
+    | 'board_group'
+    | 'board_assignment';
 
 export interface WriteAuditLogParams {
     userId: string | null;

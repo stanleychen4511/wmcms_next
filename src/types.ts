@@ -23,6 +23,8 @@ export interface CaseSummary {
     stage: WorkflowStage;
     officer: string;
     officerId: string | null;    // null = 未派案
+    /** Board group id if case is currently in board_review with an assignment; null otherwise. */
+    assignedBoardGroupId?: string | null;
 }
 
 export type ApplicationStatus = 'active' | 'closed';

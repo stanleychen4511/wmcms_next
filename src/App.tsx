@@ -15,13 +15,18 @@ import {
 import { AppHeader } from './components/AppHeader';
 import { LoginPage } from './components/LoginPage';
 import { HomePage } from './components/HomePage';
-import { fetchPendingDocAlerts, PendingDocAlert } from './app/actions/pendingDocAlertActions';
+import { fetchPendingDocAlerts, fetchPendingDocThresholdAlerts, fetchPendingDocReminderStatus, PendingDocAlert, PendingDocThresholdAlert } from './app/actions/pendingDocAlertActions';
 import { CaseListPage } from './components/CaseListPage';
 import { ApplicantHistoryPage } from './components/ApplicantHistoryPage';
 import { NewApplicationPage } from './components/NewApplicationPage';
 import { ReviewList } from './components/ReviewList';
 import { HomeVisitForm } from './components/HomeVisitForm';
 import { SendNotificationModal, ChecklistDoc } from './components/SendNotificationModal';
+import { EditCaseBasicsModal } from './components/EditCaseBasicsModal';
+import { BoardVoteCard } from './components/BoardVoteCard';
+import { BoardSignaturePanel } from './components/BoardSignaturePanel';
+import type { BoardReviewSignatureStatus } from './app/actions/boardSignatureActions';
+import { fetchActiveBoardGroups, assignCaseToBoardGroup, isUserInAssignedGroupForCase, saveBoardReviewDraft, BoardGroup } from './app/actions/boardGroupActions';
 import { fetchNotificationLogs, NotificationLog } from './app/actions/notificationActions';
 import { ApplicationForm } from './components/ApplicationForm';
 import { StageContainer } from './components/StageContainer';
@@ -40,6 +45,7 @@ import {
     saveBoardReviewData,
     closeCaseRejected,
     closeCase,
+    closeCaseByPendingDocThreshold,
     ApplicationDetail,
 } from './app/actions/workflowActions';
 
@@ -134,6 +140,7 @@ function App() {
     const [saveQualToast, setSaveQualToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
     const [applyAmount, setApplyAmount] = useState<number>(0);
     const [maxApplyAmount, setMaxApplyAmount] = useState<number>(350000);
+    const [pendingThresholdDays, setPendingThresholdDays] = useState<number>(7);
     const [applyAmountError, setApplyAmountError] = useState('');
 
     // Last docs state (for "使用上次檔案" feature)
@@ -182,6 +189,12 @@ function App() {
                 if (detail.wfComments) {
                     setBoardOpinion(detail.wfComments);
                 }
+                // Snapshot of initial board-review values for dirty detection
+                setInitialBoardValues({
+                    approved: detail.wfIsApproved ?? null,
+                    amount: detail.approvedAmount ?? 0,
+                    opinion: detail.wfComments ?? '',
+                });
             }
         } finally {
             if (!silent) {
@@ -193,15 +206,79 @@ function App() {
         }
     }, []);
 
+    // Per-application pending-doc reminder counter (for detail-view banner)
+    const [reminderStatus, setReminderStatus] = useState<{ count: number; threshold: number; lastReminderAt: string | null } | null>(null);
+    const [showThresholdCloseModal, setShowThresholdCloseModal] = useState(false);
+    const [thresholdCloseReason, setThresholdCloseReason] = useState('');
+    const [thresholdCloseError, setThresholdCloseError] = useState<string | null>(null);
+    const [thresholdClosing, setThresholdClosing] = useState(false);
+
+    const loadReminderStatus = useCallback(async (appId: string) => {
+        const res = await fetchPendingDocReminderStatus(appId);
+        if (res.success && res.data) setReminderStatus(res.data);
+        else setReminderStatus(null);
+    }, []);
+
+    // Edit-case-basics modal state
+    const [showEditBasicsModal, setShowEditBasicsModal] = useState(false);
+
+    // Board group re-assignment state (chairman/admin)
+    const [showAssignDropdown, setShowAssignDropdown] = useState(false);
+    const [activeBoardGroups, setActiveBoardGroups] = useState<BoardGroup[]>([]);
+    const [assignBusy, setAssignBusy] = useState(false);
+    const [assignMsg, setAssignMsg] = useState<string | null>(null);
+
+    // Board review collaborative edit: is the logged-in user a current member of this case's assigned group?
+    const [isAssignedGroupMember, setIsAssignedGroupMember] = useState(false);
+    // Initial board review values snapshot (for dirty-state detection)
+    const [initialBoardValues, setInitialBoardValues] = useState<{ approved: boolean | null; amount: number; opinion: string } | null>(null);
+    // Save-draft state
+    const [savingBoardDraft, setSavingBoardDraft] = useState(false);
+    const [boardDraftMsg, setBoardDraftMsg] = useState<string | null>(null);
+
+    // Signature completeness (from BoardSignaturePanel callback) — feeds advance-button gating
+    const [signatureStatus, setSignatureStatus] = useState<BoardReviewSignatureStatus | null>(null);
+    // Bump this after reassign / save / anything that invalidates board card caches
+    const [boardRefreshKey, setBoardRefreshKey] = useState(0);
+    const signaturesComplete = !!signatureStatus
+        && signatureStatus.memberCount > 0
+        && signatureStatus.memberCount === signatureStatus.signedCount;
+    const signaturesMissing = signatureStatus
+        ? Math.max(0, signatureStatus.memberCount - signatureStatus.signedCount)
+        : 0;
+
+    // Permission: can edit the board_review section?
+    const userRolesList = (loggedInUser?.roles ?? []) as Role[];
+    const isAdminOrChairman = userRolesList.includes('admin') || userRolesList.includes('chairman' as Role);
+    const canEditBoardReview = isAssignedGroupMember || isAdminOrChairman;
+
+    // Dirty state: current values differ from the loaded snapshot
+    const boardDirty = !!initialBoardValues && (
+        boardApproved !== initialBoardValues.approved ||
+        (boardApprovedAmount || 0) !== (initialBoardValues.amount || 0) ||
+        (boardOpinion || '') !== (initialBoardValues.opinion || '')
+    );
+
     useEffect(() => {
         if (view === 'detail' && selectedAppId) {
             loadAppDetail(selectedAppId);
             loadNotifLogs(selectedAppId);
+            loadReminderStatus(selectedAppId);
         }
-    }, [view, selectedAppId, loadAppDetail, loadNotifLogs]);
+    }, [view, selectedAppId, loadAppDetail, loadNotifLogs, loadReminderStatus]);
+
+    // Refresh "is group member?" whenever the app detail shows a board_review case
+    useEffect(() => {
+        if (view !== 'detail' || !selectedAppId || !loggedInUser) { setIsAssignedGroupMember(false); return; }
+        if (appDetail?.stage !== 'board_review') { setIsAssignedGroupMember(false); return; }
+        isUserInAssignedGroupForCase(selectedAppId, loggedInUser.id).then(res => {
+            setIsAssignedGroupMember(!!res.data);
+        });
+    }, [view, selectedAppId, appDetail?.stage, loggedInUser]);
 
     useEffect(() => {
         fetchSetting('max_apply_amount', '350000').then(v => setMaxApplyAmount(Number(v) || 350000));
+        fetchSetting('pending_doc_alert_days', '7').then(v => setPendingThresholdDays(Number(v) || 7));
     }, []);
 
     // Banners for HomePage carousel
@@ -228,11 +305,15 @@ function App() {
 
     // Pending doc alerts (recalculated every time user returns to home)
     const [pendingAlerts, setPendingAlerts] = useState<PendingDocAlert[]>([]);
+    const [thresholdAlerts, setThresholdAlerts] = useState<PendingDocThresholdAlert[]>([]);
 
     const loadPendingAlerts = useCallback(async (userId: string) => {
-        const res = await fetchPendingDocAlerts(userId);
-        if (res.success && res.data) setPendingAlerts(res.data);
-        else setPendingAlerts([]);
+        const [res, thRes] = await Promise.all([
+            fetchPendingDocAlerts(userId),
+            fetchPendingDocThresholdAlerts(userId),
+        ]);
+        if (res.success && res.data) setPendingAlerts(res.data); else setPendingAlerts([]);
+        if (thRes.success && thRes.data) setThresholdAlerts(thRes.data); else setThresholdAlerts([]);
     }, []);
 
     // Unassigned case count for assign-capable roles
@@ -244,9 +325,9 @@ function App() {
         setUnassignedCount(count);
     }, []);
 
-    // Recalculate both alerts every time user returns to home view
+    // Recalculate both alerts every time user returns to home or list view
     useEffect(() => {
-        if (view === 'home' && loggedInUser) {
+        if ((view === 'home' || view === 'list') && loggedInUser) {
             const roles = loggedInUser.roles as Role[];
             if (roles.includes('case_officer')) loadPendingAlerts(loggedInUser.id);
             if (roles.some(r => ASSIGN_ROLES.includes(r))) loadUnassignedCount();
@@ -338,7 +419,9 @@ function App() {
                 username={loggedInUser.username}
                 userRoles={loggedInUser.roles as Role[]}
                 pendingAlerts={pendingAlerts}
+                thresholdAlerts={thresholdAlerts}
                 unassignedCount={unassignedCount}
+                onSelectCase={(appId) => { setSelectedAppId(appId); setView('detail'); }}
                 banners={banners}
                 announcements={announcements}
                 newDays={announcementNewDays}
@@ -421,12 +504,14 @@ function App() {
         return (
             <CaseListPage
                 username={loggedInUser.username}
+                userId={loggedInUser.id}
                 userRoles={loggedInUser.roles as Role[]}
                 cases={dbCases}
                 allOfficers={officerList}
                 officersWithId={officersWithId}
                 isLoading={listLoading}
                 pendingAlertIds={new Set(pendingAlerts.map(a => a.applicationId))}
+                thresholdReminderCounts={new Map(thresholdAlerts.map(a => [a.applicationId, a.reminderCount]))}
                 maxApplyAmount={maxApplyAmount}
                 onMount={refreshCaseSummaries}
                 onAssign={async (applicationIds, officerUserId) => {
@@ -774,6 +859,8 @@ function App() {
                             applicationId={selectedAppId!}
                             caseNumber={appDetail?.caseNumber ?? ''}
                             phase="apply"
+                            applyAt={appDetail?.applyAt}
+                            pendingThresholdDays={pendingThresholdDays}
                             userId={loggedInUser?.id}
                             caseClosed={!!isCaseClosed}
                             canReview={!isCaseClosed && (hasPermission('case_officer') || hasPermission('admin'))}
@@ -799,7 +886,8 @@ function App() {
                 );
 
             case 'board_review': {
-                const boardReadOnly = contentReadOnly || (!hasPermission('board_member') && !hasPermission('admin'));
+                // 共筆模式權限：僅派組成員 OR chairman OR admin 可編輯（取代原本僅看角色的判斷）
+                const boardReadOnly = contentReadOnly || !canEditBoardReview;
                 const dbApplyAmount = appDetail?.applyAmount ?? null;
                 return (
                     <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative space-y-6">
@@ -911,6 +999,62 @@ function App() {
                         {boardApproved === null && !boardReadOnly && (
                             <p className="text-xs text-amber-600">請先選擇審核結果</p>
                         )}
+
+                        {/* 共筆儲存按鈕 — 任一派組成員可儲存當前編輯讓組員共享，同時解除 dirty 狀態以允許推進 */}
+                        {!boardReadOnly && (
+                            <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
+                                <button
+                                    type="button"
+                                    disabled={savingBoardDraft || !boardDirty}
+                                    onClick={async () => {
+                                        if (!selectedAppId || !loggedInUser) return;
+                                        // Warn if existing signatures will be invalidated
+                                        const existingSigs = signatureStatus
+                                            ? signatureStatus.members.filter(m => m.status === 'signed' || m.status === 'invalid').length
+                                            : 0;
+                                        if (existingSigs > 0) {
+                                            const ok = window.confirm(`修改會使 ${existingSigs} 個已簽名失效，確認繼續？`);
+                                            if (!ok) return;
+                                        }
+                                        setSavingBoardDraft(true);
+                                        setBoardDraftMsg(null);
+                                        const res = await saveBoardReviewDraft(
+                                            selectedAppId,
+                                            {
+                                                approvedAmount: boardApproved ? (boardApprovedAmount || 0) : 0,
+                                                comments: boardOpinion,
+                                                isApproved: boardApproved,
+                                            },
+                                            loggedInUser.id,
+                                        );
+                                        setSavingBoardDraft(false);
+                                        if (!res.success) {
+                                            setBoardDraftMsg(res.error ?? '儲存失敗');
+                                            return;
+                                        }
+                                        setBoardDraftMsg(res.data && res.data.changedFields.length > 0
+                                            ? `已儲存（變動欄位：${res.data.changedFields.join(', ')}）`
+                                            : '沒有變動，未建立稽核紀錄');
+                                        // Reload detail → initialBoardValues reset → dirty cleared automatically
+                                        // Also refresh signature panel since save may have invalidated signatures (hash change)
+                                        if (res.data && res.data.changedFields.length > 0) {
+                                            setBoardRefreshKey(k => k + 1);
+                                        }
+                                        await loadAppDetail(selectedAppId, true);
+                                    }}
+                                    className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
+                                    title={boardDirty ? '儲存當前編輯，讓同組成員看見' : '沒有變動'}
+                                >
+                                    {savingBoardDraft ? '儲存中…' : '儲存'}
+                                </button>
+                                {boardDirty && (
+                                    <span className="text-xs text-amber-600">⚠️ 有未儲存的編輯，無法按「進入下一階段」</span>
+                                )}
+                                {boardDraftMsg && !boardDirty && (
+                                    <span className="text-xs text-slate-500">{boardDraftMsg}</span>
+                                )}
+                            </div>
+                        )}
                     </div>
                 );
             }
@@ -945,6 +1089,8 @@ function App() {
                             applicationId={selectedAppId!}
                             caseNumber={appDetail?.caseNumber ?? ''}
                             phase="reimbursement"
+                            applyAt={appDetail?.applyAt}
+                            pendingThresholdDays={pendingThresholdDays}
                             userId={loggedInUser?.id}
                             caseClosed={!!isCaseClosed}
                             canReview={!isCaseClosed && (hasPermission('accountant') || hasPermission('case_officer') || hasPermission('admin'))}
@@ -1092,6 +1238,43 @@ function App() {
                         totalApprovedAmount={appDetail?.totalApprovedAmount}
                     />
 
+                    {/* 案件來源與轉介單位 */}
+                    {appDetail && (() => {
+                        const canEditBasics =
+                            appDetail.status === '1' &&
+                            appDetail.stage === 'admin_review' &&
+                            !!loggedInUser &&
+                            (
+                                String(loggedInUser.id) === String(appDetail.officerId ?? '')
+                                || (loggedInUser.roles as Role[]).includes('admin')
+                            );
+                        return (
+                            <div className="bg-white rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-700 flex flex-wrap items-center gap-x-6 gap-y-1">
+                                <span>
+                                    <span className="font-semibold text-slate-600">案件來源：</span>
+                                    {appDetail.applicationWay === '2' ? '轉介' : '自提'}
+                                </span>
+                                {appDetail.applicationWay === '2' && (
+                                    <span>
+                                        <span className="font-semibold text-slate-600">轉介單位：</span>
+                                        {appDetail.referralUnitName
+                                            ? appDetail.referralUnitName
+                                            : <span className="text-slate-400 italic">（單位已刪除）</span>}
+                                    </span>
+                                )}
+                                {canEditBasics && (
+                                    <button
+                                        type="button"
+                                        onClick={() => setShowEditBasicsModal(true)}
+                                        className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition cursor-pointer"
+                                    >
+                                        編輯案件基本資訊
+                                    </button>
+                                )}
+                            </div>
+                        );
+                    })()}
+
                     {/* 結案 banner */}
                     {(appDetail?.status === '2' || appDetail?.status === '4') && (
                         <div className={clsx(
@@ -1126,6 +1309,104 @@ function App() {
                                 返回目前步驟
                             </button>
                         </div>
+                    )}
+
+                    {/* Pending-doc reminder counter + threshold banner */}
+                    {reminderStatus && appDetail && appDetail.status !== '2' && appDetail.status !== '4' && (
+                        <>
+                            <div className="text-xs text-slate-500 px-1">
+                                未補件提醒已發送 <strong className="text-slate-700">{reminderStatus.count}</strong> / {reminderStatus.threshold} 次
+                                {reminderStatus.lastReminderAt && (
+                                    <span className="ml-2 text-slate-400">最近一次：{new Date(reminderStatus.lastReminderAt).toLocaleDateString('zh-TW')}</span>
+                                )}
+                            </div>
+                            {reminderStatus.count >= reminderStatus.threshold && (
+                                <div className="flex items-center gap-3 bg-red-50 border border-red-300 rounded-lg px-4 py-3">
+                                    <AlertTriangle className="w-5 h-5 text-red-600 shrink-0" />
+                                    <div className="flex-1 text-sm text-red-800">
+                                        <strong>建議以不通過結案</strong>
+                                        <span className="ml-2 text-red-700">
+                                            本案件已發送 {reminderStatus.count} 次未補件提醒（門檻 {reminderStatus.threshold} 次），仍未補齊文件。
+                                        </span>
+                                    </div>
+                                    <button
+                                        type="button"
+                                        onClick={() => { setThresholdCloseReason(''); setThresholdCloseError(null); setShowThresholdCloseModal(true); }}
+                                        className="shrink-0 px-3 py-1.5 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 transition cursor-pointer"
+                                    >
+                                        立即結案
+                                    </button>
+                                </div>
+                            )}
+                        </>
+                    )}
+
+                    {/* 董事審核階段：派組資訊卡片（純顯示） + 重新指派（chairman/admin） */}
+                    {appDetail && appDetail.stage === 'board_review' && appDetail.status === '1' && loggedInUser && selectedAppId && (
+                        <>
+                            <BoardVoteCard applicationId={selectedAppId} refreshKey={boardRefreshKey} />
+                            <BoardSignaturePanel
+                                applicationId={selectedAppId}
+                                currentUserId={loggedInUser.id}
+                                refreshKey={boardRefreshKey}
+                                onChange={setSignatureStatus}
+                            />
+                            {isAdminOrChairman && (
+                                <div className="flex items-center gap-2 flex-wrap">
+                                    <button
+                                        type="button"
+                                        onClick={async () => {
+                                            setAssignMsg(null);
+                                            if (!showAssignDropdown) {
+                                                const res = await fetchActiveBoardGroups();
+                                                if (res.success && res.data) setActiveBoardGroups(res.data);
+                                            }
+                                            setShowAssignDropdown(v => !v);
+                                        }}
+                                        className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded-md hover:bg-purple-100 transition cursor-pointer"
+                                    >
+                                        指派 / 重新指派組別
+                                    </button>
+                                    {showAssignDropdown && (
+                                        <div className="inline-flex items-center gap-2">
+                                            <select
+                                                onChange={async (e) => {
+                                                    const gid = e.target.value;
+                                                    if (!gid) return;
+                                                    setAssignBusy(true);
+                                                    setAssignMsg(null);
+                                                    const res = await assignCaseToBoardGroup(selectedAppId, gid, loggedInUser.id, 'manual');
+                                                    setAssignBusy(false);
+                                                    if (!res.success) {
+                                                        setAssignMsg(res.error ?? '派案失敗');
+                                                        return;
+                                                    }
+                                                    setAssignMsg(res.data?.reassigned ? '重新指派成功' : '指派成功');
+                                                    setShowAssignDropdown(false);
+                                                    // Refresh group card + signature panel + applicant's own membership check
+                                                    setBoardRefreshKey(k => k + 1);
+                                                    await Promise.all([
+                                                        loadAppDetail(selectedAppId, true),
+                                                        loggedInUser ? isUserInAssignedGroupForCase(selectedAppId, loggedInUser.id).then(r => setIsAssignedGroupMember(!!r.data)) : Promise.resolve(),
+                                                    ]);
+                                                }}
+                                                defaultValue=""
+                                                disabled={assignBusy}
+                                                className="border border-slate-300 rounded-lg px-2 py-1 text-sm"
+                                            >
+                                                <option value="">── 選擇組別 ──</option>
+                                                {activeBoardGroups.map(g => (
+                                                    <option key={g.id} value={g.id}>
+                                                        {g.name}（目前 {g.openCaseCount} 件，優先序 {g.priority}）
+                                                    </option>
+                                                ))}
+                                            </select>
+                                        </div>
+                                    )}
+                                    {assignMsg && <span className="text-xs text-slate-600">{assignMsg}</span>}
+                                </div>
+                            )}
+                        </>
                     )}
 
                     <StageContainer stageKey={displayedStage}>
@@ -1163,7 +1444,13 @@ function App() {
                                     const isBoardReview  = stage === 'board_review';
                                     const isReimbursement = stage === 'reimbursement';
                                     const boardIncomplete = isBoardReview && (boardApproved === null || boardOpinion.length < 50);
-                                    const advanceDisabled = isCaseClosed || isViewingPastStep || boardIncomplete;
+                                    // 派組權限門檻（board_review 階段）：僅派組成員或 chairman/admin 可推進
+                                    const boardPermBlocked = isBoardReview && !canEditBoardReview;
+                                    // Dirty-state guard: 未儲存的編輯阻擋推進
+                                    const boardDirtyBlocked = isBoardReview && boardDirty;
+                                    // Signature completeness gate: 全員簽完且 hash 有效才能推進
+                                    const boardSignatureBlocked = isBoardReview && !signaturesComplete;
+                                    const advanceDisabled = isCaseClosed || isViewingPastStep || boardIncomplete || boardPermBlocked || boardDirtyBlocked || boardSignatureBlocked;
 
                                     // 按鈕文字
                                     const btnLabel =
@@ -1179,6 +1466,9 @@ function App() {
                                     const advanceTitle =
                                         isViewingPastStep ? '請先返回目前步驟再操作流程' :
                                         isCaseClosed ? '此案件已結案' :
+                                        boardPermBlocked ? '僅本案派組成員、chairman 或 admin 可操作' :
+                                        boardDirtyBlocked ? '有未儲存的編輯，請先按「儲存」' :
+                                        boardSignatureBlocked ? `尚有 ${signaturesMissing} 位組員未簽章（或簽章已因內容變動失效）` :
                                         boardIncomplete ? '請選擇審核結果並填寫至少 50 字審核意見' :
                                         isReimbursement ? '確認核銷完成並結案' :
                                         isBoardReview && boardApproved === false ? '確認董事審核未通過並結案' :
@@ -1277,8 +1567,95 @@ function App() {
                     onSent={() => {
                         setShowNotifModal(false);
                         loadNotifLogs(selectedAppId);
+                        loadReminderStatus(selectedAppId);
                     }}
                 />
+            )}
+
+            {/* Threshold-close confirmation modal */}
+            {/* Edit case basics modal */}
+            {showEditBasicsModal && selectedAppId && appDetail && loggedInUser && (
+                <EditCaseBasicsModal
+                    applicationId={selectedAppId}
+                    operatorUserId={loggedInUser.id}
+                    initial={{
+                        applicantName: appDetail.applicantName ?? '',
+                        applicationType: (appDetail.applicationType as 'A' | 'B' | 'C' | 'D') ?? 'A',
+                        applicationWay: appDetail.applicationWay ?? '1',
+                        referralUnitId: appDetail.referralUnitId ?? null,
+                    }}
+                    onClose={() => setShowEditBasicsModal(false)}
+                    onSaved={async () => {
+                        setShowEditBasicsModal(false);
+                        await loadAppDetail(selectedAppId, true);
+                    }}
+                />
+            )}
+
+            {showThresholdCloseModal && selectedAppId && reminderStatus && (
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
+                        <div className="flex items-start gap-3">
+                            <AlertTriangle className="w-6 h-6 text-red-600 shrink-0 mt-0.5" />
+                            <div>
+                                <h3 className="text-lg font-bold text-slate-900">確認以不通過結案</h3>
+                                <p className="text-sm text-slate-600 mt-1">
+                                    本案件已發送 {reminderStatus.count} 次未補件提醒。結案後此案件 status 將設為「審核未通過」（不可逆），請填寫結案原因。
+                                </p>
+                            </div>
+                        </div>
+                        <div>
+                            <label className="block text-sm font-medium text-slate-700 mb-1">結案原因（至少 5 字）</label>
+                            <textarea
+                                rows={4}
+                                value={thresholdCloseReason}
+                                onChange={e => { setThresholdCloseReason(e.target.value); setThresholdCloseError(null); }}
+                                placeholder="例如：已寄出 3 次催件信仍未補齊文件、申請人聯繫不上…"
+                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
+                            />
+                            {thresholdCloseError && <p className="text-xs text-red-600 mt-1">{thresholdCloseError}</p>}
+                        </div>
+                        <div className="flex justify-end gap-2 pt-2">
+                            <button
+                                type="button"
+                                onClick={() => setShowThresholdCloseModal(false)}
+                                disabled={thresholdClosing}
+                                className="px-4 py-2 text-sm text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 transition disabled:opacity-50"
+                            >
+                                取消
+                            </button>
+                            <button
+                                type="button"
+                                disabled={thresholdClosing}
+                                onClick={async () => {
+                                    if (thresholdCloseReason.trim().length < 5) {
+                                        setThresholdCloseError('結案原因至少需 5 字');
+                                        return;
+                                    }
+                                    setThresholdClosing(true);
+                                    const res = await closeCaseByPendingDocThreshold(
+                                        selectedAppId,
+                                        thresholdCloseReason,
+                                        loggedInUser?.id ?? null,
+                                        reminderStatus.count,
+                                        reminderStatus.lastReminderAt,
+                                    );
+                                    setThresholdClosing(false);
+                                    if (!res.success) {
+                                        setThresholdCloseError(res.error ?? '結案失敗');
+                                        return;
+                                    }
+                                    setShowThresholdCloseModal(false);
+                                    await loadAppDetail(selectedAppId, true);
+                                    if (loggedInUser) await loadPendingAlerts(loggedInUser.id);
+                                }}
+                                className="px-4 py-2 text-sm bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition disabled:opacity-50 cursor-pointer"
+                            >
+                                {thresholdClosing ? '處理中…' : '確認結案'}
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
         </div>
     );

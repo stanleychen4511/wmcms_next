@@ -152,6 +152,11 @@ export function NewApplicationPage({
     const [idNumber, setIdNumber] = useState('');
     const [applicationType, setApplicationType] = useState('');
     const [applyAmount, setApplyAmount] = useState<number | ''>('');
+    const [applicationWay, setApplicationWay] = useState<'1' | '2'>('1');
+    const [referralUnitId, setReferralUnitId] = useState<string | null>(null);
+    const [referralUnits, setReferralUnits] = useState<{ id: string; name: string }[]>([]);
+    const [referralUnitsLoaded, setReferralUnitsLoaded] = useState(false);
+    const [referralError, setReferralError] = useState('');
     const [applyAmountError, setApplyAmountError] = useState('');
     const [appTypeError, setAppTypeError] = useState('');
     const [nameError, setNameError] = useState('');
@@ -168,6 +173,18 @@ export function NewApplicationPage({
             m.fetchSetting('max_apply_amount', '350000').then(v => setMaxApplyAmount(Number(v) || 350000))
         );
     }, []);
+
+    // Lazy-load referral units only when user picks '轉介'
+    useEffect(() => {
+        if (applicationWay !== '2' || referralUnitsLoaded) return;
+        import('../app/actions/referralUnitActions').then(async m => {
+            const res = await m.fetchActiveReferralUnits();
+            if (res.success && res.data) {
+                setReferralUnits(res.data.map(u => ({ id: u.id, name: u.name })));
+            }
+            setReferralUnitsLoaded(true);
+        });
+    }, [applicationWay, referralUnitsLoaded]);
 
     // Reset query result whenever identity fields change
     const handleNameChange = (v: string) => {
@@ -213,6 +230,12 @@ export function NewApplicationPage({
             ok = false;
         } else {
             setApplyAmountError('');
+        }
+        if (applicationWay === '2') {
+            if (!referralUnitId) { setReferralError('請選擇轉介單位'); ok = false; }
+            else { setReferralError(''); }
+        } else {
+            setReferralError('');
         }
         return ok;
     };
@@ -271,7 +294,15 @@ export function NewApplicationPage({
         setIsSubmitting(true);
         try {
             const { createNewApplication } = await import('../app/actions/applicationActions');
-            const res = await createNewApplication(name.trim(), idNumber.trim(), userAccount, applicationType, applyAmount === '' ? null : Number(applyAmount));
+            const res = await createNewApplication(
+                name.trim(),
+                idNumber.trim(),
+                userAccount,
+                applicationType,
+                applyAmount === '' ? null : Number(applyAmount),
+                applicationWay,
+                applicationWay === '2' ? referralUnitId : null,
+            );
             if (res.success && res.caseId) {
                 onSubmitSuccess(res.caseId);
             } else {
@@ -392,6 +423,73 @@ export function NewApplicationPage({
                                 <XCircle className="w-3 h-3" />
                                 {appTypeError}
                             </p>
+                        )}
+                    </div>
+
+                    {/* 案件來源 */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            案件來源
+                            <span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <div className="flex items-center gap-4">
+                            <label className="inline-flex items-center gap-2 cursor-pointer">
+                                <input
+                                    type="radio"
+                                    name="application_way"
+                                    value="1"
+                                    checked={applicationWay === '1'}
+                                    onChange={() => { setApplicationWay('1'); setReferralUnitId(null); setReferralError(''); }}
+                                    className="w-4 h-4 accent-blue-600"
+                                />
+                                <span className="text-sm text-slate-700">自提</span>
+                            </label>
+                            <label className="inline-flex items-center gap-2 cursor-pointer">
+                                <input
+                                    type="radio"
+                                    name="application_way"
+                                    value="2"
+                                    checked={applicationWay === '2'}
+                                    onChange={() => setApplicationWay('2')}
+                                    className="w-4 h-4 accent-blue-600"
+                                />
+                                <span className="text-sm text-slate-700">轉介</span>
+                            </label>
+                        </div>
+
+                        {applicationWay === '2' && (
+                            <div className="mt-3">
+                                {referralUnitsLoaded && referralUnits.length === 0 ? (
+                                    <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
+                                        請先至後台建立轉介單位（管理員 → 轉介單位管理）
+                                    </div>
+                                ) : (
+                                    <>
+                                        <label className="block text-xs font-medium text-slate-600 mb-1">轉介單位</label>
+                                        <select
+                                            value={referralUnitId ?? ''}
+                                            onChange={e => { setReferralUnitId(e.target.value || null); setReferralError(''); }}
+                                            className={[
+                                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                                referralError
+                                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                                            ].join(' ')}
+                                        >
+                                            <option value="">{referralUnitsLoaded ? '請選擇轉介單位' : '載入中…'}</option>
+                                            {referralUnits.map(u => (
+                                                <option key={u.id} value={u.id}>{u.name}</option>
+                                            ))}
+                                        </select>
+                                        {referralError && (
+                                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                                <XCircle className="w-3 h-3" />
+                                                {referralError}
+                                            </p>
+                                        )}
+                                    </>
+                                )}
+                            </div>
                         )}
                     </div>
 

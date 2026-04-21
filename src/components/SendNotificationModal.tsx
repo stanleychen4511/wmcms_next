@@ -11,6 +11,7 @@ import {
     sendNotificationEmail,
 } from '../app/actions/notificationActions';
 import { applyPlaceholders } from '../lib/notificationUtils';
+import { isApplicationInPendingDocState } from '../app/actions/pendingDocAlertActions';
 
 // ─── Role display helpers ──────────────────────────────────────────────────────
 
@@ -96,6 +97,7 @@ export function SendNotificationModal({
     const [sending, setSending] = useState(false);
     const [result, setResult] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
     const [showRecipients, setShowRecipients] = useState(true);
+    const [isPendingDocReminder, setIsPendingDocReminder] = useState(false);
 
     const bodyRef = useRef<HTMLTextAreaElement>(null);
 
@@ -105,17 +107,20 @@ export function SendNotificationModal({
     ];
     const totalCount = allRecipients.length;
 
-    // Load templates + recipients on mount
+    // Load templates + recipients on mount.
+    // Also probe the pending-doc state to default the reminder checkbox.
     const loadInit = useCallback(async () => {
         setLoadingInit(true);
-        const [tRes, rRes, aRes] = await Promise.all([
+        const [tRes, rRes, aRes, pdRes] = await Promise.all([
             fetchActiveTemplates(),
             fetchEmailRecipients(),
             fetchApplicantRecipient(applicationId),
+            isApplicationInPendingDocState(applicationId),
         ]);
         if (tRes.success && tRes.data) setTemplates(tRes.data);
         if (rRes.success && rRes.data) setStaffRecipients(rRes.data);
         if (aRes.success && aRes.data) setApplicantRecipient(aRes.data);
+        if (pdRes.success) setIsPendingDocReminder(!!pdRes.data);
         setLoadingInit(false);
     }, [applicationId]);
 
@@ -201,6 +206,7 @@ export function SendNotificationModal({
             body,
             selectedTemplateId,
             senderUserId,
+            isPendingDocReminder,
         );
 
         setSending(false);
@@ -351,6 +357,22 @@ export function SendNotificationModal({
                                 </div>
                             )}
                         </div>
+
+                        {/* Pending-doc reminder flag */}
+                        <label className="flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={isPendingDocReminder}
+                                onChange={e => setIsPendingDocReminder(e.target.checked)}
+                                className="mt-0.5 w-4 h-4 accent-amber-600 shrink-0"
+                            />
+                            <span className="text-xs text-amber-900 leading-relaxed">
+                                <span className="font-semibold">此為未補件提醒</span>
+                                <span className="text-amber-700">
+                                    {' — 勾選後將計入該案件的提醒次數，達門檻時系統會建議以不通過結案。預設值依案件目前是否處於未補件狀態自動勾選。'}
+                                </span>
+                            </span>
+                        </label>
 
                         {/* Subject */}
                         <div>

@@ -202,7 +202,7 @@ export async function addTemplate(
     try {
         await client.query(
             `INSERT INTO notification_templates (name, channel, subject, body, description, sort_order, created_by)
-             VALUES ($1, $2, $3, $4, $5, $6, $7::uuid)`,
+             VALUES ($1, $2, $3, $4, $5, $6, $7::bigint)`,
             [name, channel, subject || null, body, description || null, sortOrder, createdBy]
         );
         return { success: true };
@@ -337,6 +337,7 @@ export async function sendNotificationEmail(
     body: string,
     templateId: number | null,
     senderUserId: string,
+    isPendingDocReminder: boolean = false,
 ): Promise<ActionResult> {
     // 1. Load SMTP config
     const cfgRes = await loadSmtpConfig();
@@ -377,8 +378,8 @@ export async function sendNotificationEmail(
     try {
         const logRes = await client.query(
             `INSERT INTO notification_logs
-                (application_id, channel, sender_id, recipients, subject, body, template_id, status, error_message)
-             VALUES ($1, 'email', $2::uuid, $3, $4, $5, $6, $7, $8)
+                (application_id, channel, sender_id, recipients, subject, body, template_id, status, error_message, is_pending_doc_reminder)
+             VALUES ($1, 'email', $2::bigint, $3, $4, $5, $6, $7, $8, $9)
              RETURNING id`,
             [
                 applicationId,
@@ -389,6 +390,7 @@ export async function sendNotificationEmail(
                 templateId,
                 sendError ? 'failed' : 'sent',
                 sendError,
+                isPendingDocReminder,
             ]
         );
 
@@ -404,6 +406,7 @@ export async function sendNotificationEmail(
                 recipients: recipients.map(r => r.email),
                 subject,
                 status: sendError ? 'failed' : 'sent',
+                pending_doc_reminder: isPendingDocReminder,
             },
         });
 
