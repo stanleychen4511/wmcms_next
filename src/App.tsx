@@ -13,6 +13,8 @@ import {
     Send,
 } from 'lucide-react';
 import { AppHeader } from './components/AppHeader';
+import { ReimbursementPrintPanel } from './components/ReimbursementPrintPanel';
+import { CaseStatisticsPage } from './components/CaseStatisticsPage';
 import { LoginPage } from './components/LoginPage';
 import { HomePage } from './components/HomePage';
 import { fetchPendingDocAlerts, fetchPendingDocThresholdAlerts, fetchPendingDocReminderStatus, PendingDocAlert, PendingDocThresholdAlert } from './app/actions/pendingDocAlertActions';
@@ -36,6 +38,7 @@ import { AdminPanel } from './components/AdminPanel';
 import { TemplateDownloadPage } from './components/TemplateDownloadPage';
 import { NotificationManager } from './components/NotificationManager';
 import { AnnouncementsPage } from './components/AnnouncementsPage';
+import { UserSettingsPage } from './components/UserSettingsPage';
 
 import {
     fetchApplicationDetail,
@@ -94,7 +97,7 @@ function App() {
     const [role, setRole] = useState<Role>('case_officer');
     const [loggedInUser, setLoggedInUser] = useState<{ username: string; roles: Role[]; account: string; id: string } | null>(null);
 
-    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager' | 'announcements'>('home');
+    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager' | 'announcements' | 'user_settings' | 'stats'>('home');
     const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
     const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
 
@@ -432,6 +435,8 @@ function App() {
                 onNewApplication={() => setView('new_application')}
                 onGoTemplates={() => setView('template_download')}
                 onGoNotifications={() => setView('notification_manager')}
+                onGoUserSettings={() => setView('user_settings')}
+                onGoStats={() => setView('stats')}
                 onLogout={handleLogout}
             />
         );
@@ -473,6 +478,28 @@ function App() {
                 userId={loggedInUser.id}
                 onBack={() => setView('home')}
                 username={loggedInUser.username}
+                onLogout={handleLogout}
+            />
+        );
+    }
+
+    if (view === 'user_settings') {
+        return (
+            <UserSettingsPage
+                userId={loggedInUser.id}
+                username={loggedInUser.username}
+                onBack={() => setView('home')}
+                onLogout={handleLogout}
+            />
+        );
+    }
+
+    if (view === 'stats') {
+        return (
+            <CaseStatisticsPage
+                operatorUserId={loggedInUser.id}
+                username={loggedInUser.username}
+                onGoHome={() => setView('home')}
                 onLogout={handleLogout}
             />
         );
@@ -537,9 +564,12 @@ function App() {
         return (
             <ApplicantHistoryPage
                 applicantName={personName}
+                applicantUserId={selectedPersonId}
                 records={dbHistory}
                 isLoading={historyLoading}
                 username={loggedInUser.username}
+                userRoles={loggedInUser.roles as string[]}
+                loggedInUserId={loggedInUser.id}
                 onSelectApplication={(record: ApplicationRecord) => {
                     setSelectedAppId(record.id);
                     // Reset viewed stage to the application's true stage
@@ -1101,6 +1131,13 @@ function App() {
                                 }
                             }}
                         />
+                        {/* 文件列印 — 僅 admin 與 accountant 可見 */}
+                        {loggedInUser && selectedAppId && (hasPermission('admin') || hasPermission('accountant')) && (
+                            <ReimbursementPrintPanel
+                                applicationId={selectedAppId}
+                                operatorUserId={loggedInUser.id}
+                            />
+                        )}
                     </div>
                 );
 

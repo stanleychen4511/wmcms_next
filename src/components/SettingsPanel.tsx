@@ -7,21 +7,70 @@ const SETTING_LABEL: Record<string, string> = {
     pending_doc_alert_days: '未補件天數警示門檻',
     pending_doc_notification_threshold: '未補件提醒次數門檻',
     board_auto_assign:      '董事審核自動派案',
+    line_official_account_id: 'LINE 官方帳號 ID',
     max_apply_amount:       '申請金額上限',
+    notification_dispatcher_enabled: '通知派送總開關',
+    org_full_name:          '基金會全名',
+    org_license_no:         '主管機關核准立案字號',
+    org_registration_no:    '法人登記證字號',
+    org_uniform_no:         '統一編號',
+    org_address:            '登記住址',
+    org_phone:              '聯絡電話',
+    org_fax:                '傳真',
+    org_line_qr_url:        'LINE 加入志工 QR 圖片路徑',
 };
 
 const SETTING_UNIT: Record<string, string> = {
     pending_doc_alert_days: '天',
     pending_doc_notification_threshold: '次',
     board_auto_assign:      '',
+    line_official_account_id: '',
     max_apply_amount:       '元',
+    notification_dispatcher_enabled: '',
+    org_full_name:          '',
+    org_license_no:         '',
+    org_registration_no:    '',
+    org_uniform_no:         '',
+    org_address:            '',
+    org_phone:              '',
+    org_fax:                '',
+    org_line_qr_url:        '',
+};
+
+// Input type per setting key — defaults to 'number' for legacy keys.
+// 'boolean' renders a toggle switch; the value is stored as 'true' / 'false' string in DB.
+const SETTING_INPUT_TYPE: Record<string, 'text' | 'number' | 'boolean'> = {
+    pending_doc_alert_days: 'number',
+    pending_doc_notification_threshold: 'number',
+    max_apply_amount: 'number',
+    board_auto_assign: 'boolean',        // stored as 'true' / 'false'
+    line_official_account_id: 'text',    // @xxxxxx
+    notification_dispatcher_enabled: 'boolean',
+    org_full_name:          'text',
+    org_license_no:         'text',
+    org_registration_no:    'text',
+    org_uniform_no:         'text',
+    org_address:            'text',
+    org_phone:              'text',
+    org_fax:                'text',
+    org_line_qr_url:        'text',
 };
 
 const SETTING_HINT: Record<string, string> = {
     pending_doc_alert_days: '【天數警示】收件後超過此天數且仍有必備文件未上傳的案件，將於首頁顯示未補件提示',
     pending_doc_notification_threshold: '【次數提醒】同案件累計發送幾次未補件提醒 Email 後，於首頁與案件詳情頁提示承辦人考慮以不通過結案',
     board_auto_assign:      '填 true 或 false。開啟後，案件進入 board_review 階段時自動派給當前案件最少、優先序最小的組別',
+    line_official_account_id: 'LINE bot 的 @id（例：@123abcde）；使用者個人設定頁的「加好友」連結會用此值組成 https://line.me/R/ti/p/{@id}',
     max_apply_amount:       '每筆申請案件的申請金額上限，超過此數值時系統將拒絕儲存',
+    notification_dispatcher_enabled: '全域通知派送總開關。關閉時所有事件觸發都不會推送，但事件仍會發生（不影響業務）。建議測試完所有事件 OK 後才開啟',
+    org_full_name:          '基金會全名（顯示於核銷階段列印的領款收據 header）',
+    org_license_no:         '主管機關核准立案字號（顯示於領款收據 header）',
+    org_registration_no:    '法人登記證字號（顯示於領款收據 header）',
+    org_uniform_no:         '統一編號（顯示於領款收據 header）',
+    org_address:            '登記住址（顯示於領款收據 header）',
+    org_phone:              '聯絡電話（顯示於領款收據 header）',
+    org_fax:                '傳真（顯示於領款收據 header）',
+    org_line_qr_url:        'LINE 加入志工 QR code 圖片路徑：可填相對路徑（如 /org-line-qr.png 對應 public/org-line-qr.png）或外部 URL；若檔案不存在領款收據會顯示空白方塊',
 };
 
 interface SettingsPanelProps {
@@ -91,6 +140,7 @@ export function SettingsPanel({ userId }: SettingsPanelProps) {
                         const label = SETTING_LABEL[setting.key] ?? setting.key;
                         const unit = SETTING_UNIT[setting.key] ?? '';
                         const hint = SETTING_HINT[setting.key] ?? setting.description ?? '';
+                        const inputType = SETTING_INPUT_TYPE[setting.key] ?? 'number';
                         const toast = toasts[setting.key];
                         const isSaving = saving[setting.key] ?? false;
                         const dirty = isDirty(setting.key, setting.value);
@@ -110,17 +160,48 @@ export function SettingsPanel({ userId }: SettingsPanelProps) {
                                 </div>
 
                                 <div className="flex items-center gap-3">
-                                    <div className="flex items-center gap-2 border border-slate-300 rounded-lg px-3 py-2 focus-within:ring-2 focus-within:ring-blue-500 bg-white">
-                                        <input
-                                            type="number"
-                                            min={1}
-                                            className="w-20 text-sm text-slate-800 outline-none"
-                                            value={editValues[setting.key] ?? setting.value}
-                                            onChange={e => setEditValues(prev => ({ ...prev, [setting.key]: e.target.value }))}
-                                            onKeyDown={e => e.key === 'Enter' && dirty && handleSave(setting.key)}
-                                        />
-                                        {unit && <span className="text-sm text-slate-500">{unit}</span>}
-                                    </div>
+                                    {inputType === 'boolean' ? (
+                                        // Toggle switch — stored as 'true' / 'false' string
+                                        (() => {
+                                            const currentVal = editValues[setting.key] ?? setting.value;
+                                            const isOn = currentVal === 'true';
+                                            return (
+                                                <button
+                                                    type="button"
+                                                    role="switch"
+                                                    aria-checked={isOn}
+                                                    onClick={() => setEditValues(prev => ({ ...prev, [setting.key]: isOn ? 'false' : 'true' }))}
+                                                    className={`relative inline-flex items-center h-7 w-12 rounded-full transition-colors ${
+                                                        isOn ? 'bg-blue-600' : 'bg-slate-300'
+                                                    }`}
+                                                >
+                                                    <span
+                                                        className={`inline-block w-5 h-5 transform rounded-full bg-white shadow transition-transform ${
+                                                            isOn ? 'translate-x-6' : 'translate-x-1'
+                                                        }`}
+                                                    />
+                                                </button>
+                                            );
+                                        })()
+                                    ) : (
+                                        <div className="flex items-center gap-2 border border-slate-300 rounded-lg px-3 py-2 focus-within:ring-2 focus-within:ring-blue-500 bg-white">
+                                            <input
+                                                type={inputType}
+                                                {...(inputType === 'number' ? { min: 1 } : {})}
+                                                className={inputType === 'number' ? 'w-20 text-sm text-slate-800 outline-none' : 'w-64 text-sm text-slate-800 outline-none'}
+                                                value={editValues[setting.key] ?? setting.value}
+                                                onChange={e => setEditValues(prev => ({ ...prev, [setting.key]: e.target.value }))}
+                                                onKeyDown={e => e.key === 'Enter' && dirty && handleSave(setting.key)}
+                                            />
+                                            {unit && <span className="text-sm text-slate-500">{unit}</span>}
+                                        </div>
+                                    )}
+
+                                    {inputType === 'boolean' && (
+                                        <span className="text-sm text-slate-600">
+                                            {(editValues[setting.key] ?? setting.value) === 'true' ? '已啟用' : '已停用'}
+                                        </span>
+                                    )}
 
                                     <button
                                         onClick={() => handleSave(setting.key)}
@@ -146,7 +227,11 @@ export function SettingsPanel({ userId }: SettingsPanelProps) {
                                 </div>
 
                                 <p className="text-xs text-slate-400">
-                                    目前值：<span className="font-semibold text-slate-600">{setting.value}{unit}</span>
+                                    目前值：<span className="font-semibold text-slate-600">
+                                        {inputType === 'boolean'
+                                            ? (setting.value === 'true' ? '已啟用' : '已停用')
+                                            : `${setting.value || '（未設定）'}${unit}`}
+                                    </span>
                                     {dirty && <span className="ml-2 text-amber-500">（未儲存）</span>}
                                 </p>
                             </div>

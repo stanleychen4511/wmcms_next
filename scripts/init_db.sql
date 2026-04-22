@@ -270,6 +270,13 @@ ALTER TABLE applications
 ALTER TABLE applications
     ADD COLUMN IF NOT EXISTS referral_unit_id  BIGINT;
 
+-- 6c. applications: 董事審核意見永久保存欄位（added 2026-04）
+--   application_workflow.comments 是 stage-scoped、推進 stage 會被覆寫；
+--   board_review_comments 是 case-scoped 永久保存，由 saveBoardReviewDraft 同步寫入，
+--   推進 stage 不會覆寫；retreat 退回 board_review 之前的 stage 才會清空。
+ALTER TABLE applications
+    ADD COLUMN IF NOT EXISTS board_review_comments TEXT;
+
 -- CHECK 約束（冪等）
 DO $$
 BEGIN
@@ -306,6 +313,51 @@ BEGIN
             ADD CONSTRAINT home_visit_app_date_uniq UNIQUE (application_id, visit_date);
     END IF;
 END$$;
+
+-- 2c. users: 通知接收偏好（Phase 3，added 2026-04）
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS notification_channels TEXT[] NOT NULL DEFAULT ARRAY['email'];
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='users_notification_channels_chk') THEN
+        ALTER TABLE users ADD CONSTRAINT users_notification_channels_chk
+            CHECK (array_length(notification_channels, 1) IS NOT NULL
+                   AND array_length(notification_channels, 1) >= 1);
+    END IF;
+END$$;
+
+-- 2a. users: LINE 帳號綁定欄位（Phase 2，added 2026-04）
+ALTER TABLE users
+    ADD COLUMN IF NOT EXISTS line_user_id TEXT;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname='users_line_user_id_key') THEN
+        ALTER TABLE users ADD CONSTRAINT users_line_user_id_key UNIQUE (line_user_id);
+    END IF;
+END$$;
+
+-- 2b. user_line_link_codes（綁定碼暫存，PK = user_id 一人一碼）
+CREATE TABLE IF NOT EXISTS user_line_link_codes (
+    user_id     BIGINT      PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    code        CHAR(6)     NOT NULL,
+    expires_at  TIMESTAMPTZ NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_user_line_link_codes_code ON user_line_link_codes (code);
+
+-- 2c. applicant_care_records（事後關懷紀錄；以申請人為單位，一對多）
+CREATE TABLE IF NOT EXISTS applicant_care_records (
+    id                 BIGSERIAL   PRIMARY KEY,
+    applicant_user_id  BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    care_user_id       BIGINT               REFERENCES users(id) ON DELETE SET NULL,
+    care_date          DATE        NOT NULL,
+    summary            TEXT        NOT NULL,
+    media_urls         TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[],
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_care_records_applicant_user_id
+    ON applicant_care_records (applicant_user_id);
 
 -- 14a. notification_logs: pending-doc reminder flag (added 2026-04)
 ALTER TABLE notification_logs
@@ -432,15 +484,52 @@ INSERT INTO system_settings (key, value, description) VALUES
     ('pending_doc_alert_days', '14',     '超過幾天未補件則觸發缺件警示'),
     ('pending_doc_notification_threshold', '3', '同案件累計發送幾次未補件提醒後，於 UI 提示承辦人考慮以不通過結案'),
     ('board_auto_assign',                  'false', '董事審核階段自動派案開關（true/false）：true 時案件進 board_review 自動派給當前案件最少、priority 最小的組別'),
-    ('announcement_new_days',  '7',      '公告發佈後幾天內顯示 NEW 標籤')
+    ('line_official_account_id',           '',      'LINE 官方帳號 ID（@xxxxxx 格式）；使用者個人設定頁的「加好友」連結會用此值組成 https://line.me/R/ti/p/{@id}'),
+    ('notification_dispatcher_enabled',    'false', '事件通知派送總開關（true/false）：開啟後事件觸發時才會發送 Email/LINE 通知；關閉時事件仍發生但不通知（不影響業務）'),
+    ('announcement_new_days',  '7',      '公告發佈後幾天內顯示 NEW 標籤'),
+    -- 組織基本資料（顯示於核銷階段列印的領款收據 header）
+    ('org_full_name',          '財團法人萬美基金會',                          '基金會全名（列印 header）'),
+    ('org_license_no',         '衛部醫字第 1121668099 號',                     '主管機關核准立案字號'),
+    ('org_registration_no',    '113 證他字第 000974 號',                        '法人登記證字號'),
+    ('org_uniform_no',         '93155400',                                     '統一編號'),
+    ('org_address',            '106005 台北市大安區金山南路二段 165 號 4 樓',  '登記住址'),
+    ('org_phone',              '(02) 2321-2777',                               '聯絡電話'),
+    ('org_fax',                '(02) 2321-3828',                               '傳真'),
+    ('org_line_qr_url',        '/org-line-qr.png',                             'LINE 加入志工 QR code 圖片路徑（相對於 public/，或外部 URL）')
 ON CONFLICT (key) DO NOTHING;
 
 -- ── 通知渠道 ──────────────────────────────────────────────────
 INSERT INTO notification_channels (channel, is_enabled, config) VALUES
     ('email', FALSE, '{}'),
-    ('line',  FALSE, '{}'),
+    ('line',  TRUE,  '{}'),
     ('sms',   FALSE, '{}')
 ON CONFLICT (channel) DO NOTHING;
+-- LINE 整合 Phase 1（added 2026-04）：將既有 line 渠道強制啟用，憑證從 .env 讀
+UPDATE notification_channels SET is_enabled = TRUE WHERE channel = 'line';
+
+-- ── 系統通知範本（Phase 3，事件驅動 dispatcher 用，added 2026-04） ──
+-- name 開頭為 line_/email_ + 事件代碼；屬保護範本，不可刪除（由 server action 守門）
+INSERT INTO notification_templates (name, channel, subject, body, description, status, sort_order)
+SELECT * FROM (VALUES
+    ('line_case_entered_board_review', 'line', '',
+     E'【萬美基金會】新案件待派組\n案號：{{案號}}\n申請人：{{申請人}}\n申請金額：NT$ {{申請金額}}\n\n本案已進入董事審選階段，請至系統儘速指派董事組。\n{{系統連結}}',
+     '系統範本：案件進入 board_review 時通知董事長（LINE）', 1, 100),
+    ('email_case_entered_board_review', 'email', '【萬美基金會】新案件待派組',
+     E'董事長 您好：\n\n以下案件已進入「董事審選」階段，請儘速於系統指派董事組進行審查：\n\n案號：{{案號}}\n申請人：{{申請人}}\n申請金額：NT$ {{申請金額}}\n\n系統連結：{{系統連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     '系統範本：案件進入 board_review 時通知董事長（Email）', 1, 101),
+    ('line_case_assigned_to_board_group', 'line', '',
+     E'【萬美基金會】您所屬組別有新案件待審\n組別：{{組別名稱}}\n案號：{{案號}}\n申請人：{{申請人}}\n\n請至系統完成審查與簽章。\n{{系統連結}}',
+     '系統範本：案件派組時通知該組成員（LINE）', 1, 102),
+    ('email_case_assigned_to_board_group', 'email', '【萬美基金會】您所屬組別有新案件待審',
+     E'董事 您好：\n\n您所屬的組別「{{組別名稱}}」已被指派一件新的審核案件：\n\n案號：{{案號}}\n申請人：{{申請人}}\n\n請至系統儘速完成審查與簽章：{{系統連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     '系統範本：案件派組時通知該組成員（Email）', 1, 103),
+    ('email_case_payment_receipt_to_applicant', 'email', '萬美基金會申請通過通知',
+     E'{{申請人}} 您好：\n\n您所申請的補助案件已通過董事審核，特此通知。\n\n案號：{{案號}}\n申請金額：NT$ {{申請金額}}\n核定金額：NT$ {{核定金額}}\n\n請列印附件之「領款收據」，填寫具領人資料、簽名後郵寄回基金會以辦理撥款。\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     '系統範本：案件推進到 reimbursement 時自動寄領款收據 PDF 給申請人', 1, 104)
+) AS v(name, channel, subject, body, description, status, sort_order)
+WHERE NOT EXISTS (
+    SELECT 1 FROM notification_templates t WHERE t.name = v.name
+);
 
 -- ── 檔案儲存位置 ──────────────────────────────────────────────
 -- 先插入無 parent 的根節點，再插入子節點
@@ -514,6 +603,7 @@ COMMENT ON TABLE application_documents    IS '案件文件與審核狀態（複�
 COMMENT ON TABLE document_type_config     IS '文件類型設定：phase（apply/board/reimbursement）、is_required（必備）、allow_supplement（可延後補件）';
 COMMENT ON TABLE file_storage_location    IS '檔案實體儲存位置樹狀結構（parent_id 自參考），用於記錄紙本或影印本的實體櫃位';
 COMMENT ON TABLE home_visit               IS '家訪紀錄：每個案件最多一筆，記錄家庭狀況、訪視心得、訪視人員';
+COMMENT ON TABLE applicant_care_records   IS '事後關懷紀錄（以申請人為主體）：social_worker / volunteer 追蹤關懷；同一申請人可多筆，每筆含摘要與媒體 URL 陣列';
 COMMENT ON TABLE system_settings          IS '系統參數（key-value）：max_apply_amount、pending_doc_alert_days、pending_doc_notification_threshold、announcement_new_days 等';
 COMMENT ON TABLE audit_logs               IS '稽核日誌：所有敏感操作（登入、建案、審核、權限異動、通知發送、結案、設定變更等）的紀錄。detail 為 JSONB';
 COMMENT ON TABLE notification_channels    IS '通知渠道設定（email/line/sms）：config 為 JSONB，email 含 SMTP host/port/user/password_enc/password_iv 等';
@@ -530,6 +620,7 @@ COMMENT ON TABLE board_groups             IS '董事組別主檔：由董事長(
 COMMENT ON TABLE board_group_members      IS '董事組別成員：多對多但 UNIQUE(user_id) 限制一位董事僅屬於一組';
 COMMENT ON TABLE board_review_assignments IS '案件派組紀錄：每案一列，記錄當前派到哪個董事組別、派案者、手動/自動';
 COMMENT ON TABLE board_review_signatures  IS '董事審核電子簽章：每位派組成員一列，含簽章 base64 + 當時案件內容 SHA-256 hash + 時間/IP/UA；推進前守門驗證全員簽完且 hash 有效';
+COMMENT ON TABLE user_line_link_codes     IS '使用者 LINE 綁定碼暫存表：PK = user_id 強制一人一碼，產新覆寫舊；過期 30 分鐘自動失效（webhook 查詢時加 expires_at > NOW() 過濾）';
 
 -- ─────────────────────────────────────────────────────────────
 -- 欄位註解（COMMENT ON COLUMN）
@@ -553,6 +644,8 @@ COMMENT ON COLUMN users.id_number_enc  IS '身分證號 AES-256-CBC 加密後密
 COMMENT ON COLUMN users.id_number_iv   IS '身分證號 AES 加密的 IV（16 bytes BYTEA）';
 COMMENT ON COLUMN users.id_number_bidx IS '身分證號 HMAC 盲索引（blind index）';
 COMMENT ON COLUMN users.email          IS 'Email 地址（明文儲存，用於系統通知）';
+COMMENT ON COLUMN users.line_user_id   IS 'LINE 帳號綁定後寫入；UNIQUE 確保一個 LINE 帳號僅對應一個系統使用者；NULL = 未綁定';
+COMMENT ON COLUMN users.notification_channels IS '使用者通知接收偏好陣列（值域 email/line）；至少 1 個（CHECK 強制）；DEFAULT 為 {email}';
 COMMENT ON COLUMN users.is_active      IS '帳號啟用狀態：TRUE=啟用 FALSE=停用';
 COMMENT ON COLUMN users.created_at     IS '帳號建立時間';
 
@@ -602,6 +695,7 @@ COMMENT ON COLUMN applications.underage_children_count IS '未成年子女人數
 COMMENT ON COLUMN applications.adult_children_count    IS '成年子女人數';
 COMMENT ON COLUMN applications.application_way         IS '案件來源：1=自提 2=轉介（CHECK 約束）';
 COMMENT ON COLUMN applications.referral_unit_id        IS '轉介單位 ID，FK 至 referral_units.id（ON DELETE SET NULL）；僅當 application_way=2 時有意義';
+COMMENT ON COLUMN applications.board_review_comments   IS '董事審核意見（case-scoped 永久保存）；由 saveBoardReviewDraft 同步寫入，獨立於 stage-scoped 的 application_workflow.comments，不受 stage 推進覆寫影響';
 
 -- board_groups
 COMMENT ON COLUMN board_groups.id         IS '主鍵，自動遞增（BIGINT）';
@@ -630,6 +724,12 @@ COMMENT ON COLUMN board_review_signatures.content_hash       IS 'SHA-256 hex；v
 COMMENT ON COLUMN board_review_signatures.signed_at          IS '簽章時間';
 COMMENT ON COLUMN board_review_signatures.user_agent         IS '簽章當下的 User-Agent（稽核佐證用）';
 COMMENT ON COLUMN board_review_signatures.ip_address         IS '簽章當下的 IP（稽核佐證用）';
+
+-- user_line_link_codes
+COMMENT ON COLUMN user_line_link_codes.user_id    IS '系統使用者 ID（PK）';
+COMMENT ON COLUMN user_line_link_codes.code       IS '6 位數字綁定碼（使用者於 LINE app 傳給 bot）';
+COMMENT ON COLUMN user_line_link_codes.expires_at IS '失效時間（產生時設 NOW() + 30 minutes）';
+COMMENT ON COLUMN user_line_link_codes.created_at IS '產生時間';
 
 -- referral_units
 COMMENT ON COLUMN referral_units.id           IS '主鍵，自動遞增（BIGINT）';
@@ -681,6 +781,16 @@ COMMENT ON COLUMN home_visit.subsidy_need_reason           IS '萬美基金會�
 COMMENT ON COLUMN home_visit.visitor_recommendations       IS '訪視者建議事項：1=有補助需求 2=轉介資源 3=其他';
 COMMENT ON COLUMN home_visit.visitor_recommendations_other IS '訪視者建議事項-其他說明（當 visitor_recommendations=3 時使用）';
 COMMENT ON COLUMN home_visit.updated_at                    IS '最後更新時間';
+
+-- applicant_care_records
+COMMENT ON COLUMN applicant_care_records.id                IS '主鍵，自動遞增';
+COMMENT ON COLUMN applicant_care_records.applicant_user_id IS '被關懷的申請人 ID，FK 至 users.id（applicant 角色）';
+COMMENT ON COLUMN applicant_care_records.care_user_id      IS '執行關懷者 ID（volunteer / social_worker），FK 至 users.id；原使用者刪除時設 NULL 保留歷史';
+COMMENT ON COLUMN applicant_care_records.care_date         IS '關懷執行日期';
+COMMENT ON COLUMN applicant_care_records.summary           IS '關懷摘要（明文，自由文字）';
+COMMENT ON COLUMN applicant_care_records.media_urls        IS '媒體雲端連結陣列（圖片/影片 URL），預設空陣列';
+COMMENT ON COLUMN applicant_care_records.created_at        IS '紀錄建立時間';
+COMMENT ON COLUMN applicant_care_records.updated_at        IS '紀錄最後更新時間';
 
 -- audit_logs
 COMMENT ON COLUMN audit_logs.id          IS '主鍵，自動遞增';

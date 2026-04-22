@@ -451,6 +451,13 @@ export async function assignCaseToBoardGroup(
             targetId: applicationId,
             detail: { group_id: groupId, mode },
         });
+
+        // Phase 3: 觸發 case_assigned_to_board_group 事件通知（fire-and-forget）
+        // Reassignment 使用新 groupId，舊組成員不會被通知
+        const { notifyEvent } = await import('./notificationDispatcher');
+        void notifyEvent('case_assigned_to_board_group', { applicationId, groupId })
+            .catch(err => console.error('[notify] case_assigned_to_board_group failed:', err));
+
         return { success: true, data: { reassigned } };
     } catch (err: any) {
         try { await client.query('ROLLBACK'); } catch { /* ignore */ }
@@ -683,12 +690,25 @@ export async function saveBoardReviewDraft(
             return { success: true, data: { changedFields: [] } };
         }
 
-        // 5. UPDATE applications (if approvedAmount changed)
-        if (changedFields.includes('approvedAmount')) {
+        // 5. UPDATE applications (if approvedAmount or comments changed)
+        //    - approved_amount: 既有
+        //    - board_review_comments: 永久保存欄位（case-scoped），與 application_workflow.comments 同步
+        if (changedFields.includes('approvedAmount') || changedFields.includes('comments')) {
+            const sets: string[] = [];
+            const params: unknown[] = [];
+            if (changedFields.includes('approvedAmount')) {
+                params.push(nextAmount);
+                sets.push(`approved_amount = $${params.length}`);
+            }
+            if (changedFields.includes('comments')) {
+                params.push(nextComments);
+                sets.push(`board_review_comments = $${params.length}`);
+            }
+            params.push(applicationId);
             await client.query(
-                `UPDATE applications SET approved_amount = $1, updated_at = NOW()
-                 WHERE id = $2::bigint`,
-                [nextAmount, applicationId]
+                `UPDATE applications SET ${sets.join(', ')}, updated_at = NOW()
+                 WHERE id = $${params.length}::bigint`,
+                params
             );
         }
 

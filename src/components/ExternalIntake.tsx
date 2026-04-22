@@ -250,7 +250,15 @@ export function ExternalIntake() {
     if (step === 'query') {
         const handleQuery = async (e: React.FormEvent) => {
             e.preventDefault();
-            if (!email.trim()) return;
+            const trimmedEmail = email.trim();
+            if (!trimmedEmail) {
+                setErrorMsg('請填寫 Email');
+                return;
+            }
+            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+                setErrorMsg('請填寫有效的 Email 地址');
+                return;
+            }
             const idErr = twIdError(idNumber.trim());
             if (idErr) { setErrorMsg(idErr); return; }
             setErrorMsg('');
@@ -292,15 +300,19 @@ export function ExternalIntake() {
                     <p className="text-sm text-gray-500 mb-6">請輸入您的電子郵件及身分證字號以確認申請資格。</p>
                     <form onSubmit={handleQuery} className="space-y-4">
                         <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">電子郵件</label>
+                            <label className="block text-sm font-medium text-gray-700 mb-1">
+                                電子郵件 <span className="text-red-500">*</span>
+                            </label>
                             <input
                                 type="email"
                                 value={email}
                                 onChange={e => setEmail(e.target.value)}
                                 required
                                 placeholder="your@email.com"
+                                title="請填寫 Email — 案件通過後會將領款收據寄至此信箱"
                                 className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                             />
+                            <p className="text-[11px] text-gray-500 mt-1">案件通過後會將領款收據寄至此信箱，請務必填寫正確</p>
                         </div>
                         <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">身分證字號</label>

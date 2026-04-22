@@ -23,9 +23,19 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const envPath = path.resolve(__dirname, '../.env.local');
 if (fs.existsSync(envPath)) {
     const lines = fs.readFileSync(envPath, 'utf-8').split('\n');
-    for (const line of lines) {
-        const m = line.match(/^([A-Z0-9_]+)="?([^"]*)"?\s*$/);
-        if (m) process.env[m[1]] ??= m[2];
+    for (const rawLine of lines) {
+        const line = rawLine.trim();
+        if (!line || line.startsWith('#')) continue;
+        // KEY=VALUE，VALUE 可選擇用雙引號或單引號包裹
+        const m = line.match(/^([A-Z0-9_]+)=(.*)$/);
+        if (!m) continue;
+        let val = m[2].trim();
+        // 去除成對的前後引號（雙或單）
+        if ((val.startsWith('"') && val.endsWith('"')) ||
+            (val.startsWith("'") && val.endsWith("'"))) {
+            val = val.slice(1, -1);
+        }
+        process.env[m[1]] ??= val;
     }
 }
 

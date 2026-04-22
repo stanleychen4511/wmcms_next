@@ -13,6 +13,8 @@ import {
     Inbox,
     AlertTriangle,
     X,
+    UserCog,
+    BarChart3,
 } from 'lucide-react';
 import { PendingDocAlert, PendingDocThresholdAlert } from '../app/actions/pendingDocAlertActions';
 import { fetchActiveBanners, Banner } from '../app/actions/bannerActions';
@@ -41,6 +43,8 @@ interface HomePageProps {
     onNewApplication: () => void;
     onGoTemplates: () => void;
     onGoNotifications: () => void;
+    onGoUserSettings?: () => void;
+    onGoStats?: () => void;
     onLogout: () => void;
 }
 
@@ -89,7 +93,23 @@ const QUICK_LINKS = [
         color: 'bg-teal-50 text-teal-600 border-teal-100',
         action: 'external_intake',
     },
+    {
+        icon: <UserCog className="w-4 h-4" />,
+        label: '個人設定',
+        desc: 'LINE 綁定等個人化設定',
+        color: 'bg-emerald-50 text-emerald-600 border-emerald-100',
+        action: 'user_settings',
+    },
+    {
+        icon: <BarChart3 className="w-4 h-4" />,
+        label: '案件統計',
+        desc: '日期區間內通過/不通過案件分布',
+        color: 'bg-purple-50 text-purple-600 border-purple-100',
+        action: 'stats',
+    },
 ];
+
+const STATS_ROLES: Role[] = ['admin', 'supervisor', 'chairman' as Role, 'board_member'];
 
 // ─── Banner Carousel ───────────────────────────────────────────────────────────
 
@@ -200,8 +220,9 @@ function BannerCarousel({ banners }: { banners: Banner[] }) {
 
 const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
 
-export function HomePage({ username, userRoles, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onLogout, onSelectCase }: HomePageProps) {
+export function HomePage({ username, userRoles, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onLogout, onSelectCase }: HomePageProps) {
     const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
+    const canViewStats = userRoles.some(r => STATS_ROLES.includes(r));
     const [selectedAnn, setSelectedAnn] = useState<Announcement | null>(null);
 
     function isNew(publishDate: string, days: number) {
@@ -299,6 +320,7 @@ export function HomePage({ username, userRoles, pendingAlerts = [], thresholdAle
                                 const hasAccess =
                                     link.action === 'new_application' ? (userRoles.includes('case_officer') || userRoles.includes('admin')) :
                                     link.action === 'admin' ? (userRoles.includes('admin') || userRoles.includes('chairman' as Role)) :
+                                    link.action === 'stats' ? canViewStats :
                                     true;
 
                                 if (!hasAccess) return null;
@@ -311,6 +333,8 @@ export function HomePage({ username, userRoles, pendingAlerts = [], thresholdAle
                                     link.action === 'notifications' ? onGoNotifications :
                                     link.action === 'announcements' ? onGoAnnouncements :
                                     link.action === 'external_intake' ? () => window.open('/apply', '_blank') :
+                                    link.action === 'user_settings' ? onGoUserSettings :
+                                    link.action === 'stats' ? onGoStats :
                                     undefined;
 
                                 return (

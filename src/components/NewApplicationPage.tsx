@@ -150,6 +150,8 @@ export function NewApplicationPage({
 }: NewApplicationPageProps) {
     const [name, setName] = useState('');
     const [idNumber, setIdNumber] = useState('');
+    const [email, setEmail] = useState('');
+    const [emailError, setEmailError] = useState('');
     const [applicationType, setApplicationType] = useState('');
     const [applyAmount, setApplyAmount] = useState<number | ''>('');
     const [applicationWay, setApplicationWay] = useState<'1' | '2'>('1');
@@ -220,6 +222,16 @@ export function NewApplicationPage({
             ok = false;
         } else {
             setNameError('');
+        }
+        const trimmedEmail = email.trim();
+        if (!trimmedEmail) {
+            setEmailError('請填寫 Email');
+            ok = false;
+        } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+            setEmailError('請填寫有效的 Email 地址');
+            ok = false;
+        } else {
+            setEmailError('');
         }
         const amtNum = applyAmount === '' ? 0 : Number(applyAmount);
         if (amtNum <= 0) {
@@ -302,6 +314,7 @@ export function NewApplicationPage({
                 applyAmount === '' ? null : Number(applyAmount),
                 applicationWay,
                 applicationWay === '2' ? referralUnitId : null,
+                email.trim(),
             );
             if (res.success && res.caseId) {
                 onSubmitSuccess(res.caseId);
@@ -394,6 +407,33 @@ export function NewApplicationPage({
                             </p>
                         )}
                         <p className="text-xs text-slate-400 mt-1">格式：1 個大寫英文字母 + 9 位數字，共 10 碼</p>
+                    </div>
+
+                    {/* Email */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            申請人 Email
+                            <span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <input
+                            type="email"
+                            value={email}
+                            onChange={e => { setEmail(e.target.value); setEmailError(''); }}
+                            placeholder="applicant@example.com"
+                            className={[
+                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                emailError
+                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                            ].join(' ')}
+                        />
+                        {emailError && (
+                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                <XCircle className="w-3 h-3" />
+                                {emailError}
+                            </p>
+                        )}
+                        <p className="text-xs text-slate-400 mt-1">核銷階段將寄送領款收據至此信箱</p>
                     </div>
 
                     {/* 申請類別 */}

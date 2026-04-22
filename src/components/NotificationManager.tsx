@@ -14,12 +14,14 @@ import {
     fetchTemplates, addTemplate, updateTemplate, toggleTemplateStatus,
     fetchSchedules, saveSchedule, deleteSchedule, toggleScheduleActive, executeSchedule, NotificationSchedule,
 } from '../app/actions/notificationActions';
+import { fetchLineCredentialStatus, sendLineMessage } from '../app/actions/lineActions';
+import { SYSTEM_TEMPLATE_NAMES } from '../lib/systemTemplates';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
 const CHANNEL_META: Record<string, { label: string; icon: React.ReactNode; color: string; future?: boolean }> = {
     email: { label: 'Email', icon: <Mail className="w-5 h-5" />, color: 'text-blue-600 bg-blue-50' },
-    line:  { label: 'LINE',  icon: <MessageSquare className="w-5 h-5" />, color: 'text-green-600 bg-green-50', future: true },
+    line:  { label: 'LINE',  icon: <MessageSquare className="w-5 h-5" />, color: 'text-green-600 bg-green-50' },
     sms:   { label: '簡訊 (SMS)', icon: <Smartphone className="w-5 h-5" />, color: 'text-purple-600 bg-purple-50', future: true },
 };
 
@@ -131,6 +133,7 @@ interface TplModalProps {
 }
 
 function TemplateModal({ mode, tpl, userId, onClose, onSaved }: TplModalProps) {
+    const isSystem = mode === 'edit' && !!tpl && SYSTEM_TEMPLATE_NAMES.has(tpl.name);
     const [name, setName] = useState(tpl?.name ?? '');
     const [channel, setChannel] = useState(tpl?.channel ?? 'email');
     const [subject, setSubject] = useState(tpl?.subject ?? '');
@@ -163,8 +166,11 @@ function TemplateModal({ mode, tpl, userId, onClose, onSaved }: TplModalProps) {
                     <div className="grid grid-cols-2 gap-3">
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">範本名稱 <span className="text-red-500">*</span></label>
-                            <input className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                value={name} onChange={e => setName(e.target.value)} maxLength={255} />
+                            <input className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
+                                value={name} onChange={e => setName(e.target.value)} maxLength={255}
+                                disabled={isSystem}
+                                title={isSystem ? '系統範本不可改名（body/subject 仍可編輯）' : undefined} />
+                            {isSystem && <p className="text-[10px] text-amber-600 mt-1">系統範本：名稱鎖定，但 subject/內文可編輯</p>}
                         </div>
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">渠道</label>
@@ -334,7 +340,7 @@ function ScheduleFormModal({ schedule, templates, onClose, onSaved }: ScheduleFo
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-type Tab = 'channels' | 'templates' | 'schedules';
+type Tab = 'channels' | 'templates' | 'schedules' | 'line_test';
 
 interface NotificationManagerProps {
     userId: string;
@@ -368,8 +374,8 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
     useEffect(() => { loadData(); }, [loadData]);
 
     const handleToggleChannel = async (ch: NotificationChannel) => {
-        if ((ch.channel === 'line' || ch.channel === 'sms') && !ch.is_enabled) {
-            alert('此渠道尚未開通，請等待後續整合。');
+        if (ch.channel === 'sms' && !ch.is_enabled) {
+            alert('SMS 渠道尚未開通，請等待後續整合。');
             return;
         }
         setActionError('');
@@ -437,6 +443,7 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                         { key: 'channels', label: '渠道設定' },
                         { key: 'templates', label: '通知範本' },
                         { key: 'schedules', label: '批次發送排程' },
+                        { key: 'line_test', label: 'LINE 測試推送' },
                     ] as { key: Tab; label: string }[]).map(tab => (
                         <button key={tab.key}
                             onClick={() => setActiveTab(tab.key)}
@@ -535,12 +542,22 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        {templates.map(tpl => (
+                                        {templates.map(tpl => {
+                                            const isSystem = SYSTEM_TEMPLATE_NAMES.has(tpl.name);
+                                            return (
                                             <tr key={tpl.id} className={clsx(
                                                 'border-b border-slate-100 hover:bg-slate-50 transition-colors',
                                                 tpl.status === 0 && 'opacity-50'
                                             )}>
-                                                <td className="py-3 px-4 text-sm font-medium text-slate-800">{tpl.name}</td>
+                                                <td className="py-3 px-4 text-sm font-medium text-slate-800">
+                                                    {tpl.name}
+                                                    {isSystem && (
+                                                        <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700"
+                                                            title="系統範本：可編輯內容（subject/body），但不可改名或停用">
+                                                            系統
+                                                        </span>
+                                                    )}
+                                                </td>
                                                 <td className="py-3 px-4 text-xs text-slate-500">{CHANNEL_META[tpl.channel]?.label ?? tpl.channel}</td>
                                                 <td className="py-3 px-4 text-xs text-slate-500 max-w-[200px] truncate">{tpl.subject ?? '—'}</td>
                                                 <td className="py-3 px-4 text-xs text-slate-500">{tpl.sort_order}</td>
@@ -557,16 +574,22 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                                                     </button>
                                                 </td>
                                                 <td className="py-3 px-4">
-                                                    <button onClick={() => handleToggleTemplate(tpl)}
+                                                    <button
+                                                        onClick={() => handleToggleTemplate(tpl)}
+                                                        disabled={isSystem && tpl.status === 1}
+                                                        title={isSystem && tpl.status === 1 ? '系統範本不可停用' : undefined}
                                                         className={clsx('p-1.5 rounded-lg transition',
-                                                            tpl.status === 1
-                                                                ? 'text-slate-500 hover:bg-amber-50 hover:text-amber-600'
-                                                                : 'text-slate-400 hover:bg-green-50 hover:text-green-600')}>
+                                                            isSystem && tpl.status === 1
+                                                                ? 'text-slate-300 cursor-not-allowed'
+                                                                : tpl.status === 1
+                                                                    ? 'text-slate-500 hover:bg-amber-50 hover:text-amber-600'
+                                                                    : 'text-slate-400 hover:bg-green-50 hover:text-green-600')}>
                                                         {tpl.status === 1 ? <ToggleRight className="w-6 h-6" /> : <ToggleLeft className="w-6 h-6" />}
                                                     </button>
                                                 </td>
                                             </tr>
-                                        ))}
+                                            );
+                                        })}
                                     </tbody>
                                 </table>
                             </div>
@@ -667,6 +690,11 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                         )}
                     </section>
                 )}
+
+                {/* ── LINE test push ── */}
+                {activeTab === 'line_test' && (
+                    <LineTestPanel operatorUserId={userId} />
+                )}
             </main>
 
             {tplModal && (
@@ -688,5 +716,110 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                 />
             )}
         </div>
+    );
+}
+
+// ─── LINE Test Push Panel ─────────────────────────────────────────────────────
+
+function LineTestPanel({ operatorUserId }: { operatorUserId: string }) {
+    const [creds, setCreds] = useState<{ hasSecret: boolean; hasToken: boolean; tokenPreview: string | null } | null>(null);
+    const [lineUserId, setLineUserId] = useState('');
+    const [text, setText] = useState('');
+    const [busy, setBusy] = useState(false);
+    const [msg, setMsg] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+
+    useEffect(() => {
+        void fetchLineCredentialStatus().then(setCreds);
+    }, []);
+
+    const credsReady = !!creds && creds.hasSecret && creds.hasToken;
+
+    return (
+        <section className="space-y-4">
+            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+                <h3 className="flex items-center gap-2 text-base font-bold text-slate-800">
+                    <MessageSquare className="w-5 h-5 text-green-600" />
+                    LINE 憑證狀態
+                </h3>
+                {creds === null ? (
+                    <p className="text-sm text-slate-400">檢查中…</p>
+                ) : credsReady ? (
+                    <div className="text-sm space-y-1">
+                        <p className="flex items-center gap-2">
+                            <span className="inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">已設定</span>
+                            <span className="text-slate-600">Channel Secret + Access Token 皆從環境變數讀取</span>
+                        </p>
+                        <p className="text-xs text-slate-500">Token 前綴：<code className="px-1 py-0.5 bg-slate-100 rounded">{creds.tokenPreview}</code></p>
+                    </div>
+                ) : (
+                    <div className="text-sm text-amber-800 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2 flex items-start gap-2">
+                        <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
+                        <div>
+                            <p className="font-medium">LINE 憑證: 未設定</p>
+                            <p className="text-xs text-amber-700 mt-1">
+                                請於 <code className="px-1 bg-white rounded">.env.local</code> 設定 <code className="px-1 bg-white rounded">LINE_CHANNEL_SECRET</code> 與 <code className="px-1 bg-white rounded">LINE_CHANNEL_ACCESS_TOKEN</code>，並重新啟動 dev server。
+                            </p>
+                        </div>
+                    </div>
+                )}
+            </div>
+
+            <div className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
+                <h3 className="text-base font-bold text-slate-800">手動測試推送</h3>
+                <p className="text-xs text-slate-500">僅供管理員測試 LINE 通路是否暢通；每次送出皆寫入 audit_logs（action=line.test_push）。</p>
+
+                <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">LINE userId <span className="text-red-500">*</span></label>
+                    <input
+                        value={lineUserId}
+                        onChange={e => setLineUserId(e.target.value.trim())}
+                        placeholder="U + 32 位 hex（例：U1234567890abcdef1234567890abcdef）"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm font-mono focus:outline-none focus:ring-2 focus:ring-green-500"
+                    />
+                    <p className="text-[10px] text-slate-400 mt-1">先用 LINE 加 bot 為好友，audit_logs 中 action=line.webhook_received 的列即可看到自己的 line_user_id</p>
+                </div>
+
+                <div>
+                    <label className="block text-sm font-medium text-slate-700 mb-1">訊息內容 <span className="text-red-500">*</span></label>
+                    <textarea
+                        rows={3}
+                        value={text}
+                        onChange={e => setText(e.target.value)}
+                        placeholder="輸入要推送的純文字訊息"
+                        className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-green-500 resize-none"
+                    />
+                </div>
+
+                {msg && (
+                    <div className={clsx(
+                        'text-sm rounded-lg px-3 py-2 border',
+                        msg.kind === 'success'
+                            ? 'bg-emerald-50 border-emerald-200 text-emerald-800'
+                            : 'bg-red-50 border-red-200 text-red-700'
+                    )}>
+                        {msg.text}
+                    </div>
+                )}
+
+                <button
+                    type="button"
+                    disabled={!credsReady || busy || !lineUserId || !text.trim()}
+                    onClick={async () => {
+                        setBusy(true);
+                        setMsg(null);
+                        const res = await sendLineMessage(lineUserId, text, operatorUserId);
+                        setBusy(false);
+                        if (res.success) {
+                            setMsg({ kind: 'success', text: '✅ 已送出，請至該 LINE userId 對應的手機確認收到訊息' });
+                        } else {
+                            setMsg({ kind: 'error', text: `❌ ${res.error ?? '推送失敗'}` });
+                        }
+                    }}
+                    className="px-4 py-2 bg-green-600 text-white text-sm font-medium rounded-lg hover:bg-green-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
+                >
+                    {busy ? '送出中…' : '發送測試'}
+                </button>
+            </div>
+        </section>
     );
 }

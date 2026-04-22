@@ -125,7 +125,13 @@ export async function createNewApplication(
     applyAmount?: number | null,
     applicationWay: '1' | '2' = '1',
     referralUnitId: number | string | null = null,
+    email: string = '',
 ): Promise<{ success: boolean; caseId?: string; error?: string }> {
+    // Email 必填驗證（核銷階段需自動寄領款收據至此信箱）
+    const trimmedEmail = (email ?? '').trim();
+    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+        return { success: false, error: '請填寫有效的 Email 地址' };
+    }
     // 案件來源與轉介單位驗證：way='1' 時一律寫 NULL；way='2' 時必須給有效且啟用中的單位
     const way: '1' | '2' = applicationWay === '2' ? '2' : '1';
     let effectiveUnitId: string | null = null;
@@ -177,6 +183,14 @@ export async function createNewApplication(
             }
         }
 
+        if (applicantId) {
+            // Existing applicant — refresh email (they may be re-applying with updated contact)
+            await client.query(
+                `UPDATE users SET email = $1 WHERE id = $2::bigint`,
+                [trimmedEmail, applicantId]
+            );
+        }
+
         if (!applicantId) {
             // Applicant doesn't exist. Create them!
             const { encryptAES, generateSalt, hashPassword, generateBlindIndex } = await import('../../lib/crypto');
@@ -201,8 +215,8 @@ export async function createNewApplication(
                     account, password, search_salt,
                     name_enc, name_iv, name_bidx,
                     id_number_enc, id_number_iv, id_number_bidx,
-                    is_active
-                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
+                    email, is_active
+                ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
                 ON CONFLICT (account) DO UPDATE SET
                     name_enc         = EXCLUDED.name_enc,
                     name_iv          = EXCLUDED.name_iv,
@@ -212,6 +226,7 @@ export async function createNewApplication(
                     id_number_bidx   = EXCLUDED.id_number_bidx,
                     search_salt      = EXCLUDED.search_salt,
                     password         = EXCLUDED.password,
+                    email            = EXCLUDED.email,
                     is_active        = TRUE
                 RETURNING id;
             `;
@@ -219,7 +234,8 @@ export async function createNewApplication(
             const newU = await client.query(insertUserQuery, [
                 generatedAccount, passHash, saltBuffer,
                 nameEnc, nameIv, nameBidx,
-                idEnc, idIv, idBidx
+                idEnc, idIv, idBidx,
+                trimmedEmail,
             ]);
             applicantId = newU.rows[0].id;
             

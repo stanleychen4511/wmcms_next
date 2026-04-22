@@ -393,3 +393,87 @@ export async function reassignOfficer(
         client.release();
     }
 }
+
+// ─── Notification channel preferences (Phase 3) ──────────────────────────────
+
+const VALID_NOTIFICATION_CHANNELS = ['email', 'line'] as const;
+type NotificationChannel = typeof VALID_NOTIFICATION_CHANNELS[number];
+
+export async function fetchUserNotificationChannels(
+    operatorUserId: string,
+): Promise<{ success: boolean; data?: { channels: NotificationChannel[]; lineLinked: boolean; email: string | null }; error?: string }> {
+    if (!/^\d+$/.test(operatorUserId)) return { success: false, error: '無效的使用者 ID' };
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT notification_channels, line_user_id, email FROM users WHERE id = $1::bigint LIMIT 1`,
+            [operatorUserId]
+        );
+        if (res.rowCount === 0) return { success: false, error: '使用者不存在' };
+        const row = res.rows[0];
+        return {
+            success: true,
+            data: {
+                channels: (row.notification_channels ?? ['email']).filter((c: string) =>
+                    VALID_NOTIFICATION_CHANNELS.includes(c as NotificationChannel)
+                ) as NotificationChannel[],
+                lineLinked: !!row.line_user_id,
+                email: row.email ?? null,
+            },
+        };
+    } catch (err: any) {
+        console.error('fetchUserNotificationChannels error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function updateUserNotificationChannels(
+    operatorUserId: string,
+    channels: string[],
+): Promise<{ success: boolean; error?: string }> {
+    if (!/^\d+$/.test(operatorUserId)) return { success: false, error: '無效的使用者 ID' };
+    if (!Array.isArray(channels) || channels.length < 1) {
+        return { success: false, error: '請至少選擇一個通知方式' };
+    }
+    const dedup = Array.from(new Set(channels));
+    for (const c of dedup) {
+        if (!VALID_NOTIFICATION_CHANNELS.includes(c as NotificationChannel)) {
+            return { success: false, error: `不支援的通知方式：${c}` };
+        }
+    }
+
+    const client = await pool.connect();
+    try {
+        if (dedup.includes('line')) {
+            const res = await client.query(
+                `SELECT line_user_id FROM users WHERE id = $1::bigint LIMIT 1`,
+                [operatorUserId]
+            );
+            if (res.rowCount === 0) return { success: false, error: '使用者不存在' };
+            if (!res.rows[0].line_user_id) {
+                return { success: false, error: '尚未綁定 LINE 帳號，請先完成綁定' };
+            }
+        }
+
+        await client.query(
+            `UPDATE users SET notification_channels = $1::text[] WHERE id = $2::bigint`,
+            [dedup, operatorUserId]
+        );
+
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'user.notification_channels_updated',
+            targetType: 'user',
+            targetId: operatorUserId,
+            detail: { channels: dedup },
+        });
+        return { success: true };
+    } catch (err: any) {
+        console.error('updateUserNotificationChannels error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}

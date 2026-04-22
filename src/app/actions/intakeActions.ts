@@ -150,12 +150,17 @@ export async function submitExternalApplication(
     const underageCount  = formData.get('underage_children_count') ? Number(formData.get('underage_children_count')) : null;
     const adultCount     = formData.get('adult_children_count') ? Number(formData.get('adult_children_count')) : null;
     const applyAmount    = formData.get('apply_amount') ? Number(formData.get('apply_amount')) : null;
+    const email          = ((formData.get('email') as string | null) ?? '').trim();
 
     if (!name || !idNumber) {
         return { success: false, error: '請填寫完整姓名與身分證字號' };
     }
     if (name.length > 50) {
         return { success: false, error: '申請人姓名不可超過 50 個字' };
+    }
+    // Email 必填驗證（核銷階段需自動寄領款收據至此信箱）
+    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+        return { success: false, error: '請填寫有效的 Email 地址' };
     }
 
     // Validate apply_amount against system setting
@@ -188,6 +193,11 @@ export async function submitExternalApplication(
             const computedIdBidx = generateBlindIndex(idNumber, row.search_salt);
             if (computedNameBidx === row.name_bidx && computedIdBidx === row.id_number_bidx) {
                 applicantId = row.id;
+                // Refresh email for existing applicant (they may be reapplying with new contact)
+                await client.query(
+                    `UPDATE users SET email = $1 WHERE id = $2::bigint`,
+                    [email, applicantId]
+                );
                 break;
             }
         }
@@ -221,10 +231,10 @@ export async function submitExternalApplication(
                      (account, password, search_salt,
                       name_enc, name_iv, name_bidx,
                       id_number_enc, id_number_iv, id_number_bidx,
-                      is_active)
-                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,true)
+                      email, is_active)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
                  RETURNING id`,
-                [account, passHash, searchSalt, nameEnc, nameIv, nameBidx, idEnc, idIv, idBidx]
+                [account, passHash, searchSalt, nameEnc, nameIv, nameBidx, idEnc, idIv, idBidx, email]
             );
             applicantId = newU.rows[0].id;
 

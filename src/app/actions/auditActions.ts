@@ -58,7 +58,19 @@ export type AuditAction =
     | 'board_review.reassign'
     | 'board_review.draft_save'
     | 'board_review.signature_added'
-    | 'board_review.signatures_invalidated';
+    | 'board_review.signatures_invalidated'
+    | 'line.test_push'
+    | 'line.webhook_received'
+    | 'line.link_code_generated'
+    | 'line.account_linked'
+    | 'line.account_unlinked'
+    | 'notification.event_dispatched'
+    | 'notification.payment_receipt_sent'
+    | 'user.notification_channels_updated'
+    | 'care_record.created'
+    | 'care_record.updated'
+    | 'care_record.deleted'
+    | 'case_statistics.viewed';
 
 export type AuditTargetType =
     | 'application'
@@ -75,7 +87,9 @@ export type AuditTargetType =
     | 'banner'
     | 'referral_unit'
     | 'board_group'
-    | 'board_assignment';
+    | 'board_assignment'
+    | 'event'
+    | 'care_record';
 
 export interface WriteAuditLogParams {
     userId: string | null;

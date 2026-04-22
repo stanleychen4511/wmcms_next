@@ -33,7 +33,18 @@ export async function ensureDefaultSettings(): Promise<void> {
         { key: 'pending_doc_alert_days', value: '7',      description: '收件後超過此天數且仍有必備文件未上傳的案件，將於首頁顯示未補件提示' },
         { key: 'pending_doc_notification_threshold', value: '3', description: '同案件累計發送幾次未補件提醒後，於 UI 提示承辦人考慮以不通過結案' },
         { key: 'board_auto_assign',      value: 'false',  description: '董事審核階段自動派案開關（true/false）：true 時案件進 board_review 自動派給當前案件最少、priority 最小的組別' },
+        { key: 'line_official_account_id', value: '',     description: 'LINE 官方帳號 ID（@xxxxxx 格式）；使用者個人設定頁的「加好友」連結會用此值組成 https://line.me/R/ti/p/{@id}' },
+        { key: 'notification_dispatcher_enabled', value: 'false', description: '事件通知派送總開關（true/false）：開啟後事件觸發時才會發送 Email/LINE 通知；關閉時事件仍發生但不通知（不影響業務）' },
         { key: 'max_apply_amount',       value: '350000', description: '每筆申請案件的申請金額上限（元）' },
+        // 組織基本資料（核銷階段列印的領款收據 header）
+        { key: 'org_full_name',       value: '財團法人萬美基金會',                          description: '基金會全名（列印 header）' },
+        { key: 'org_license_no',      value: '衛部醫字第 1121668099 號',                     description: '主管機關核准立案字號' },
+        { key: 'org_registration_no', value: '113 證他字第 000974 號',                        description: '法人登記證字號' },
+        { key: 'org_uniform_no',      value: '93155400',                                     description: '統一編號' },
+        { key: 'org_address',         value: '106005 台北市大安區金山南路二段 165 號 4 樓',  description: '登記住址' },
+        { key: 'org_phone',           value: '(02) 2321-2777',                               description: '聯絡電話' },
+        { key: 'org_fax',             value: '(02) 2321-3828',                               description: '傳真' },
+        { key: 'org_line_qr_url',     value: '/org-line-qr.png',                             description: 'LINE 加入志工 QR code 圖片路徑（相對於 public/，或外部 URL）' },
     ];
     const client = await pool.connect();
     try {

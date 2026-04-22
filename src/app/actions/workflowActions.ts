@@ -9,6 +9,7 @@ import {
     STATUS_LABEL,
 } from '../../lib/stageMaps';
 import { writeAuditLog } from './auditActions';
+import { fetchSetting } from './settingsActions';
 
 export interface ApplicationDetail {
     id: string;
@@ -275,6 +276,24 @@ export async function advanceWorkflowStage(
         if (toStage === 'board_review') {
             const { maybeAutoAssignOnBoardReviewEntry } = await import('./boardGroupActions');
             void maybeAutoAssignOnBoardReviewEntry(applicationId);
+
+            // Phase 3: 觸發 case_entered_board_review 事件通知（fire-and-forget）
+            // 自動派組模式下，董事長不需手動派組，故略過此通知；改由事件 B
+            // (case_assigned_to_board_group) 直接通知組員。
+            const autoAssign = await fetchSetting('board_auto_assign', 'false');
+            if (autoAssign !== 'true') {
+                const { notifyEvent } = await import('./notificationDispatcher');
+                void notifyEvent('case_entered_board_review', { applicationId })
+                    .catch(err => console.error('[notify] case_entered_board_review failed:', err));
+            }
+        }
+
+        // 從 board_review 推進到 reimbursement 時，自動寄領款收據 PDF 給申請人
+        // fire-and-forget；失敗只 log，不影響業務推進
+        if (fromStage === 'board_review' && toStage === 'reimbursement') {
+            const { notifyEvent } = await import('./notificationDispatcher');
+            void notifyEvent('case_payment_receipt_to_applicant', { applicationId })
+                .catch(err => console.error('[notify] case_payment_receipt_to_applicant failed:', err));
         }
 
         return { success: true };
@@ -396,6 +415,35 @@ export async function retreatWorkflowStage(
                     (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
                 VALUES ($1, $2, $3, false, $4, NOW())
             `, [applicationId, dbStage, reviewerUserId, comments ?? `退回至${stageLabel}`]);
+        }
+
+        // 退回至 board_review 之前的階段時，清除既有的董事組派案 + 簽章 + 永久審核意見。
+        // 否則再推進回 board_review 時 maybeAutoAssign 會走 reassign 路徑而非首次派組，
+        // 通知事件 B 的觸發語意也會混亂；並且舊的審核意見會殘留在永久欄位中誤導列印。
+        if (dbStage === 'admin_review' || dbStage === 'home_visit') {
+            const delAssign = await client.query(
+                `DELETE FROM board_review_assignments
+                 WHERE application_id = $1::bigint
+                 RETURNING group_id::text AS gid`,
+                [applicationId]
+            );
+            if ((delAssign.rowCount ?? 0) > 0) {
+                const { clearStaleSignatures } = await import('./boardSignatureActions');
+                await clearStaleSignatures(client, applicationId, 'reassigned');
+                void writeAuditLog({
+                    userId: reviewerUserId,
+                    action: 'board_review.reassign',
+                    targetType: 'board_assignment',
+                    targetId: applicationId,
+                    detail: { cleared_on_retreat: true, previous_group_id: delAssign.rows[0]?.gid ?? null, to_stage: dbStage },
+                });
+            }
+            // 同步清空永久審核意見欄位（與派組/簽章一致：重新進 board_review = 全新一張白紙）
+            await client.query(
+                `UPDATE applications SET board_review_comments = NULL
+                 WHERE id = $1::bigint`,
+                [applicationId]
+            );
         }
 
         await client.query('COMMIT');

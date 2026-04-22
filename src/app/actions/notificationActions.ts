@@ -2,6 +2,7 @@
 import { pool } from '../../lib/db';
 import { encryptAES, decryptAES } from '../../lib/crypto';
 import { writeAuditLog } from './auditActions';
+import { SYSTEM_TEMPLATE_NAMES } from '../../lib/systemTemplates';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -220,6 +221,12 @@ export async function updateTemplate(
 ): Promise<ActionResult> {
     const client = await pool.connect();
     try {
+        // Guard: system templates cannot be renamed (dispatcher looks up by name)
+        const curRes = await client.query(`SELECT name FROM notification_templates WHERE id=$1 LIMIT 1`, [id]);
+        const curName = curRes.rows[0]?.name;
+        if (curName && SYSTEM_TEMPLATE_NAMES.has(curName) && curName !== name) {
+            return { success: false, error: '系統範本不可改名（body/subject 仍可編輯）' };
+        }
         await client.query(
             `UPDATE notification_templates
              SET name=$1, channel=$2, subject=$3, body=$4, description=$5, sort_order=$6
@@ -238,6 +245,14 @@ export async function updateTemplate(
 export async function toggleTemplateStatus(id: number, status: 0 | 1): Promise<ActionResult> {
     const client = await pool.connect();
     try {
+        // Guard: disabling a system template would break the dispatcher
+        if (status === 0) {
+            const nameRes = await client.query(`SELECT name FROM notification_templates WHERE id=$1 LIMIT 1`, [id]);
+            const name = nameRes.rows[0]?.name;
+            if (name && SYSTEM_TEMPLATE_NAMES.has(name)) {
+                return { success: false, error: '系統範本不可停用' };
+            }
+        }
         await client.query(`UPDATE notification_templates SET status=$1 WHERE id=$2`, [status, id]);
         return { success: true };
     } catch (err: any) {
@@ -330,6 +345,12 @@ export async function fetchApplicantRecipient(
 
 // ─── Send Email ───────────────────────────────────────────────────────────────
 
+export interface EmailAttachment {
+    filename: string;
+    content: Buffer;
+    contentType: string;
+}
+
 export async function sendNotificationEmail(
     applicationId: string,
     recipients: NotificationRecipient[],
@@ -338,6 +359,7 @@ export async function sendNotificationEmail(
     templateId: number | null,
     senderUserId: string,
     isPendingDocReminder: boolean = false,
+    attachments?: EmailAttachment[],
 ): Promise<ActionResult> {
     // 1. Load SMTP config
     const cfgRes = await loadSmtpConfig();
@@ -367,6 +389,7 @@ export async function sendNotificationEmail(
             subject,
             text: body,
             html: body.replace(/\n/g, '<br>'),
+            ...(attachments && attachments.length > 0 ? { attachments } : {}),
         });
     } catch (err: any) {
         console.error('sendNotificationEmail SMTP error:', err);
@@ -407,6 +430,8 @@ export async function sendNotificationEmail(
                 subject,
                 status: sendError ? 'failed' : 'sent',
                 pending_doc_reminder: isPendingDocReminder,
+                attachments_count: attachments?.length ?? 0,
+                attachment_filenames: attachments?.map(a => a.filename) ?? [],
             },
         });
 
