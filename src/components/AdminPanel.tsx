@@ -27,7 +27,7 @@ import { AnnouncementManager } from './AnnouncementManager';
 import { ReferralUnitManager } from './ReferralUnitManager';
 import { BoardGroupManager } from './BoardGroupManager';
 import { clsx } from 'clsx';
-import { getUsers, createUser, updateUserRoles, resetUserPassword, deleteUserAccount, fetchRoles, toggleUserActive, reassignOfficer, fetchCaseOfficersWithId, AdminUserView, RoleOption } from '../app/actions/userActions';
+import { getUsers, createUser, updateUserRoles, resetUserPassword, updateUserEmail, deleteUserAccount, fetchRoles, toggleUserActive, reassignOfficer, fetchCaseOfficersWithId, AdminUserView, RoleOption } from '../app/actions/userActions';
 import { twIdError } from '../lib/validateTwId';
 import { AppHeader } from './AppHeader';
 
@@ -73,7 +73,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
     // Form fields
     const [newAccountName, setNewAccountName] = useState(''); // account e.g. a001
     const [newRealName, setNewRealName] = useState(''); // encrypted name
-    const [newIdNumber, setNewIdNumber] = useState(''); // encrypted ID
+    const [newEmail, setNewEmail] = useState('');
     const [newPassword, setNewPassword] = useState('');
     const [newRoles, setNewRoles] = useState<Role[]>(['case_officer']);
 
@@ -111,29 +111,44 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
             alert('請填寫完整資料並至少選擇一個角色');
             return;
         }
-        const idErr = twIdError(newIdNumber.trim());
-        if (idErr) { alert(idErr); return; }
+        const trimmedEmail = newEmail.trim();
+        if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+            alert('Email 格式不正確');
+            return;
+        }
         setIsLoading(true);
         const res = await createUser({
             account: newAccountName,
             plainName: newRealName,
-            plainId: newIdNumber,
+            // 後台帳號不需身分證；申請人帳號透過收件流程建立、會自帶身分證
             plainPass: newPassword,
-            roles: newRoles
+            roles: newRoles,
+            email: trimmedEmail || undefined,
         });
-        
+
         setIsLoading(false);
-        
+
         if (res.success) {
             setNewAccountName('');
             setNewRealName('');
-            setNewIdNumber('');
+            setNewEmail('');
             setNewPassword('');
             setNewRoles(['case_officer']);
             setShowAddForm(false);
             fetchAccounts(true);
         } else {
             alert('新增失敗: ' + res.error);
+        }
+    };
+
+    const handleEditEmail = async (id: string, currentEmail: string | null, username: string) => {
+        const next = window.prompt(`請輸入 ${username} 的 Email（留空可清除）：`, currentEmail ?? '');
+        if (next === null) return;   // 取消
+        const res = await updateUserEmail(id, next);
+        if (res.success) {
+            await fetchAccounts(true);
+        } else {
+            alert('更新失敗：' + res.error);
         }
     };
 
@@ -403,7 +418,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                                 <div className="flex items-center justify-between">
                                     <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
                                         <Users className="w-6 h-6 text-blue-600" />
-                                        帳號權限管理 (資料庫連線中)
+                                        帳號權限管理
                                     </h2>
                                     {isAdmin && (
                                         <button 
@@ -443,8 +458,8 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                                             </div>
                                             <div>
                                                 <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">真實姓名 (加密儲存)</label>
-                                                <input 
-                                                    type="text" 
+                                                <input
+                                                    type="text"
                                                     value={newRealName}
                                                     onChange={(e) => setNewRealName(e.target.value)}
                                                     className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
@@ -453,14 +468,13 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                                                 />
                                             </div>
                                             <div>
-                                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">身分證字號 (加密儲存)</label>
-                                                <input 
-                                                    type="text" 
-                                                    value={newIdNumber}
-                                                    onChange={(e) => setNewIdNumber(e.target.value)}
+                                                <label className="block text-xs font-bold text-slate-500 uppercase tracking-wider mb-1.5">Email（系統通知用）</label>
+                                                <input
+                                                    type="email"
+                                                    value={newEmail}
+                                                    onChange={(e) => setNewEmail(e.target.value)}
                                                     className="w-full bg-white border border-slate-200 rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none"
-                                                    placeholder="輸入身份證..."
-                                                    required
+                                                    placeholder="user@example.com（可留空）"
                                                 />
                                             </div>
                                         </div>
@@ -536,7 +550,25 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                                                             <div>
                                                                 <span className="font-bold text-slate-800 text-base">{acc.username}</span>
                                                                 <span className="ml-2 text-xs text-slate-500">(@{acc.account})</span>
-                                                                <p className="text-xs text-slate-400 mt-0.5">建立日期: {acc.created_at}</p>
+                                                                <p className="text-xs text-slate-400 mt-0.5">
+                                                                    建立日期: {acc.created_at}
+                                                                </p>
+                                                                <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
+                                                                    <span className="text-slate-400">Email:</span>
+                                                                    <span className={acc.email ? 'text-slate-700' : 'text-slate-300 italic'}>
+                                                                        {acc.email ?? '（未設定）'}
+                                                                    </span>
+                                                                    {isAdmin && (
+                                                                        <button
+                                                                            type="button"
+                                                                            onClick={() => handleEditEmail(acc.id, acc.email, acc.username)}
+                                                                            className="text-blue-600 hover:text-blue-800 text-[10px] underline ml-1"
+                                                                            title="修改 Email"
+                                                                        >
+                                                                            修改
+                                                                        </button>
+                                                                    )}
+                                                                </p>
                                                             </div>
                                                         </div>
                                                     </td>

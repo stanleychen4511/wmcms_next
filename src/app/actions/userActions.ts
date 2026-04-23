@@ -10,7 +10,8 @@ export interface AdminUserView {
     id: string;
     account: string;
     username: string; // Decrypted name
-    id_number: string; // Decrypted ID
+    id_number: string; // Decrypted ID（後台帳號可能無，回傳 'N/A'）
+    email: string | null;
     roles: Role[];
     is_active: boolean;
     created_at: string;
@@ -38,25 +39,26 @@ export async function getUsers(): Promise<AdminUserView[]> {
     const client = await pool.connect();
     try {
         const query = `
-            SELECT 
-                u.id, 
-                u.account, 
-                u.name_enc, u.name_iv, 
+            SELECT
+                u.id,
+                u.account,
+                u.name_enc, u.name_iv,
                 u.id_number_enc, u.id_number_iv,
-                u.is_active, 
+                u.email,
+                u.is_active,
                 u.created_at,
                 COALESCE(
-                    json_agg(r.code) FILTER (WHERE r.code IS NOT NULL), 
+                    json_agg(r.code) FILTER (WHERE r.code IS NOT NULL),
                     '[]'
                 ) as roles
             FROM users u
             LEFT JOIN user_roles ur ON u.id = ur.user_id
             LEFT JOIN roles r ON ur.role_id = r.id
-            GROUP BY u.id, u.account, u.name_enc, u.name_iv, u.id_number_enc, u.id_number_iv, u.is_active, u.created_at
+            GROUP BY u.id, u.account, u.name_enc, u.name_iv, u.id_number_enc, u.id_number_iv, u.email, u.is_active, u.created_at
             ORDER BY u.created_at DESC;
         `;
         const res = await client.query(query);
-        
+
         return res.rows.map(row => {
             // Decrypt the name and id_number on the server before sending to client UI
             const name = decryptAES(row.name_enc, row.name_iv) || 'Unknown';
@@ -70,6 +72,7 @@ export async function getUsers(): Promise<AdminUserView[]> {
                 account: row.account,
                 username: name,
                 id_number: idNum,
+                email: row.email ?? null,
                 roles: row.roles,
                 is_active: row.is_active,
                 created_at: row.created_at.toISOString().split('T')[0],
@@ -80,20 +83,36 @@ export async function getUsers(): Promise<AdminUserView[]> {
     }
 }
 
-export async function createUser(data: { account: string; plainName: string; plainId: string; plainPass: string; roles: Role[] }): Promise<{ success: boolean; error?: string }> {
+export async function createUser(data: {
+    account: string;
+    plainName: string;
+    plainId?: string;          // 後台帳號可選；申請人帳號才必填
+    plainPass: string;
+    roles: Role[];
+    email?: string;
+}): Promise<{ success: boolean; error?: string }> {
+    // Email 若有提供則驗證格式
+    const trimmedEmail = (data.email ?? '').trim();
+    if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+        return { success: false, error: '請填寫有效的 Email 地址' };
+    }
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
-        
+
         // 1. Prepare secure data
         const searchSalt = generateSalt();
         const passHash = hashPassword(data.plainPass, searchSalt);
-        
+
         const { enc: nameEnc, iv: nameIv } = encryptAES(data.plainName);
         const nameBidx = generateBlindIndex(data.plainName, searchSalt);
-        
-        const { enc: idEnc, iv: idIv } = encryptAES(data.plainId);
-        const idBidx = generateBlindIndex(data.plainId, searchSalt);
+
+        // ID 為可選；空字串時三欄一律存 NULL
+        const plainId = (data.plainId ?? '').trim();
+        const hasId = plainId.length > 0;
+        const { enc: idEnc, iv: idIv } = hasId ? encryptAES(plainId) : { enc: null, iv: null };
+        const idBidx = hasId ? generateBlindIndex(plainId, searchSalt) : null;
 
         // 2. Insert into users
         const insertUserQuery = `
@@ -101,15 +120,16 @@ export async function createUser(data: { account: string; plainName: string; pla
                 account, password, search_salt,
                 name_enc, name_iv, name_bidx,
                 id_number_enc, id_number_iv, id_number_bidx,
-                is_active
-            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, true)
+                email, is_active
+            ) VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, true)
             RETURNING id;
         `;
-        
+
         const res = await client.query(insertUserQuery, [
             data.account, passHash, searchSalt,
             nameEnc, nameIv, nameBidx,
-            idEnc, idIv, idBidx
+            idEnc, idIv, idBidx,
+            trimmedEmail || null,
         ]);
         
         const userId = res.rows[0].id;
@@ -163,6 +183,32 @@ export async function resetUserPassword(userId: string, newPass: string): Promis
     }
 }
 
+export async function updateUserEmail(userId: string, email: string): Promise<{ success: boolean; error?: string }> {
+    const trimmed = (email ?? '').trim();
+    // 允許清空（傳 null）或填入有效 email；其他格式拒絕
+    if (trimmed && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmed)) {
+        return { success: false, error: '請填寫有效的 Email 地址' };
+    }
+    try {
+        const res = await pool.query(
+            `UPDATE users SET email = $1 WHERE id = $2::bigint RETURNING id`,
+            [trimmed || null, userId]
+        );
+        if (res.rowCount === 0) return { success: false, error: '帳號不存在' };
+        void writeAuditLog({
+            userId: null,
+            action: 'user.update',
+            targetType: 'user',
+            targetId: userId,
+            detail: { field: 'email', new_value: trimmed || null },
+        });
+        return { success: true };
+    } catch (err: any) {
+        console.error('updateUserEmail error', err);
+        return { success: false, error: err.message ?? '更新失敗' };
+    }
+}
+
 export async function deleteUserAccount(userId: string): Promise<{ success: boolean; error?: string }> {
      // User Roles cascade on delete based on our DB schema
     try {
@@ -212,10 +258,11 @@ export async function loginAction(account: string, pass: string): Promise<{ succ
     const client = await pool.connect();
     try {
         const query = `
-            SELECT 
+            SELECT
                 u.id, u.account, u.search_salt, u.password,
-                u.name_enc, u.name_iv, 
+                u.name_enc, u.name_iv,
                 u.id_number_enc, u.id_number_iv,
+                u.email,
                 u.is_active, u.created_at,
                 COALESCE(
                     json_agg(r.code ORDER BY r.id) FILTER (WHERE r.code IS NOT NULL),
@@ -225,7 +272,7 @@ export async function loginAction(account: string, pass: string): Promise<{ succ
             LEFT JOIN user_roles ur ON u.id = ur.user_id
             LEFT JOIN roles r ON ur.role_id = r.id
             WHERE u.account = $1
-            GROUP BY u.id, u.account, u.search_salt, u.password, u.name_enc, u.name_iv, u.id_number_enc, u.id_number_iv, u.is_active, u.created_at
+            GROUP BY u.id, u.account, u.search_salt, u.password, u.name_enc, u.name_iv, u.id_number_enc, u.id_number_iv, u.email, u.is_active, u.created_at
         `;
         const res = await client.query(query, [account]);
         if (res.rows.length === 0) return { success: false, error: '帳號或密碼錯誤' };
@@ -251,6 +298,7 @@ export async function loginAction(account: string, pass: string): Promise<{ succ
             account: row.account,
             username: name,
             id_number: idNum,
+            email: row.email ?? null,
             roles: row.roles,
             is_active: row.is_active,
             created_at: row.created_at.toISOString().split('T')[0],
