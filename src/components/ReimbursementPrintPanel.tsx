@@ -9,6 +9,33 @@ interface Props {
     operatorUserId: string;
 }
 
+/** 從 URL 推測副檔名（小寫不含點） */
+function getFileExt(url: string): string {
+    try {
+        const u = new URL(url, window.location.origin);
+        const path = u.pathname;
+        const m = path.match(/\.([a-zA-Z0-9]+)$/);
+        return m ? m[1].toLowerCase() : '';
+    } catch {
+        const m = url.match(/\.([a-zA-Z0-9]+)(?:\?|$)/);
+        return m ? m[1].toLowerCase() : '';
+    }
+}
+
+/**
+ * 醫療收據列印 URL：
+ * - PDF / 圖片 → 直接 iframe 載入原檔（瀏覽器原生渲染後可印）
+ * - DOCX / DOC → 走 /print/docx 用 docx-preview 渲染成 HTML 再印
+ * - 其他（不認得的副檔名）→ 直接開原檔（瀏覽器自行決定要顯示或下載）
+ */
+function buildMedicalReceiptPrintUrl(fileUrl: string): string {
+    const ext = getFileExt(fileUrl);
+    if (ext === 'docx' || ext === 'doc') {
+        return `/print/docx?fileUrl=${encodeURIComponent(fileUrl)}&autoPrint=1`;
+    }
+    return fileUrl;
+}
+
 /**
  * 將 URL 載入隱藏 iframe，等載完後自動觸發瀏覽器列印對話框。
  * autoPrint=1 query param 由列印頁的 PrintButton 元件偵測並呼叫 window.print()。
@@ -73,7 +100,7 @@ export function ReimbursementPrintPanel({ applicationId, operatorUserId }: Props
                 return;
             }
             for (const f of files) {
-                await printInHiddenIframe(f.fileUrl);
+                await printInHiddenIframe(buildMedicalReceiptPrintUrl(f.fileUrl));
             }
         } finally {
             setBusy(null);
@@ -98,7 +125,7 @@ export function ReimbursementPrintPanel({ applicationId, operatorUserId }: Props
             const res = await fetchMedicalReceipts(applicationId, operatorUserId);
             if (res.success && res.data.length > 0) {
                 for (const f of res.data) {
-                    await printInHiddenIframe(f.fileUrl);
+                    await printInHiddenIframe(buildMedicalReceiptPrintUrl(f.fileUrl));
                 }
             }
             // 若未上傳，靜默跳過（依需求）
