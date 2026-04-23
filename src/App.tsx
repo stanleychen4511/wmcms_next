@@ -15,6 +15,7 @@ import {
 import { AppHeader } from './components/AppHeader';
 import { ReimbursementPrintPanel } from './components/ReimbursementPrintPanel';
 import { CaseStatisticsPage } from './components/CaseStatisticsPage';
+import { SecureFilePreviewModal } from './components/SecureFilePreviewModal';
 import { LoginPage } from './components/LoginPage';
 import { HomePage } from './components/HomePage';
 import { fetchPendingDocAlerts, fetchPendingDocThresholdAlerts, fetchPendingDocReminderStatus, PendingDocAlert, PendingDocThresholdAlert } from './app/actions/pendingDocAlertActions';
@@ -1097,10 +1098,21 @@ function App() {
                                 <CreditCard className="w-5 h-5 text-emerald-600" />
                                 核銷撥款
                             </h3>
-                            <div className="flex items-center justify-between p-4 bg-emerald-50 rounded-lg text-emerald-900 mb-2">
-                                <span className="font-medium">撥款狀態</span>
-                                <span className="bg-emerald-200 text-emerald-800 px-3 py-1 rounded-full text-sm font-bold">待撥款</span>
-                            </div>
+                            {(() => {
+                                const isPaid = appDetail?.status === '4';
+                                return (
+                                    <div className={`flex items-center justify-between p-4 rounded-lg mb-2 ${
+                                        isPaid ? 'bg-green-50 text-green-900' : 'bg-amber-50 text-amber-900'
+                                    }`}>
+                                        <span className="font-medium">撥款狀態</span>
+                                        <span className={`px-3 py-1 rounded-full text-sm font-bold ${
+                                            isPaid ? 'bg-green-200 text-green-800' : 'bg-amber-200 text-amber-800'
+                                        }`}>
+                                            {isPaid ? '已撥款' : '待撥款'}
+                                        </span>
+                                    </div>
+                                );
+                            })()}
                             {appDetail?.applicantId && (
                                 <button
                                     onClick={async () => {
@@ -1566,22 +1578,13 @@ function App() {
                             ))}
                         </div>
                     </div>
-                    {/* Inline preview overlay */}
+                    {/* 安全預覽（浮水印 + 縮放 + 防列印 + 防下載）— 與行政初審階段同一套機制 */}
                     {receiptsPreviewUrl && (
-                        <div className="fixed inset-0 bg-black/80 z-60 flex items-center justify-center p-4" onClick={() => setReceiptsPreviewUrl(null)}>
-                            <div className="relative max-w-4xl w-full max-h-full" onClick={e => e.stopPropagation()}>
-                                <button
-                                    onClick={() => setReceiptsPreviewUrl(null)}
-                                    className="absolute -top-10 right-0 text-white text-2xl leading-none hover:text-gray-300"
-                                >✕</button>
-                                {receiptsPreviewUrl.match(/\.(jpg|jpeg|png|gif|webp)$/i) ? (
-                                    // eslint-disable-next-line @next/next/no-img-element
-                                    <img src={receiptsPreviewUrl} alt="收據預覽" className="max-w-full max-h-[80vh] object-contain mx-auto rounded-lg shadow-2xl" />
-                                ) : (
-                                    <iframe src={receiptsPreviewUrl} className="w-full h-[80vh] rounded-lg shadow-2xl" title="收據預覽" />
-                                )}
-                            </div>
-                        </div>
+                        <SecureFilePreviewModal
+                            url={receiptsPreviewUrl}
+                            label="歷史收據"
+                            onClose={() => setReceiptsPreviewUrl(null)}
+                        />
                     )}
                 </div>
             )}
