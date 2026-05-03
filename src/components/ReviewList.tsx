@@ -250,21 +250,11 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
     // Reset zoom when a new file is opened
     useEffect(() => { if (preview) setZoom(100); }, [preview?.url]);
 
-    // Close preview on ESC
-    useEffect(() => {
-        if (!preview) return;
-        const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') setPreview(null); };
-        window.addEventListener('keydown', handler);
-        return () => window.removeEventListener('keydown', handler);
-    }, [preview]);
-
-    // 鎖背景捲動 — preview modal 開啟期間禁止 body 捲動，避免滾輪縮放時頁面跟著動
-    useEffect(() => {
-        if (!preview) return;
-        const prev = document.body.style.overflow;
-        document.body.style.overflow = 'hidden';
-        return () => { document.body.style.overflow = prev; };
-    }, [preview]);
+    // 註：ESC 關閉 + 鎖背景捲動已由 preview modal 內的 useModalDismiss(onClose) 統一接管，
+    //     此處不再重複實作。早期重複實作會踩到 prev value 污染：
+    //     modal mount 時把 body.overflow='' 改成 'hidden'，這個 effect 此時才執行
+    //     就會把 'hidden' 當成 prev 記下；modal 關閉時 modal 還原 ''，這個 effect 接著
+    //     把 'hidden' 寫回 → 主畫面 scrollbar 消失。
 
     const loadDocs = useCallback(async (silent = false) => {
         if (!silent) setLoading(true);
