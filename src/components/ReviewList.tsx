@@ -13,7 +13,8 @@ const PdfViewer = dynamic(
         </div>
     )}
 );
-import { DocumentEntry, uploadApplicationDocument, updateDocumentStatus, fetchApplicationDocuments } from '../app/actions/documentActions';
+import { DocumentEntry, linkApplicationDocumentByUrl, updateDocumentStatus, fetchApplicationDocuments } from '../app/actions/documentActions';
+import { uploadFileToBlob } from '../lib/uploadClient';
 import { writeAuditLog } from '../app/actions/auditActions';
 import { ModalEscapeListener } from '../hooks/useModalDismiss';
 
@@ -289,13 +290,25 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
 
         setUploading(prev => ({ ...prev, [activeUploadId]: true }));
         try {
-            const fd = new FormData();
-            fd.append('file', file);
-            // Pass doc label and case number so the server can generate the correct filename
             const docLabel = docs.find(d => d.id === activeUploadId)?.label ?? activeUploadId;
-            await uploadApplicationDocument(applicationId, activeUploadId, docLabel, caseNumber, fd);
+            // 1. Browser 直接上傳到 Vercel Blob（避開 Vercel function 4.5 MB payload 上限）
+            const uploaded = await uploadFileToBlob(file, {
+                pathPrefix: `uploads/${applicationId}`,
+            });
+            // 2. Server 收到 URL → scope/role 守門 → 寫 application_documents
+            await linkApplicationDocumentByUrl(
+                applicationId,
+                activeUploadId,
+                docLabel,
+                uploaded.url,
+                uploaded.originalName,
+                uploaded.mimeType,
+            );
+            void caseNumber; // caseNumber 已不需要傳給 server（檔名由 client 上傳路徑決定）
             await loadDocs(true);
             onRefresh?.();
+        } catch (err) {
+            console.error('upload failed', err);
         } finally {
             setUploading(prev => ({ ...prev, [activeUploadId]: false }));
             setActiveUploadId(null);

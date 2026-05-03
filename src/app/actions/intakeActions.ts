@@ -2,9 +2,10 @@
 
 import { pool } from '../../lib/db';
 import { generateBlindIndex, encryptAES, generateSalt, hashPassword } from '../../lib/crypto';
-import path from 'path';
 import { writeAuditLog } from './auditActions';
-import { uploadFile } from '../../lib/storage';
+// 註：檔案不再經 server function 上傳；client 直接 PUT 到 Vercel Blob，
+//     submitExternalApplication 只接收 documents JSON（URL list）。
+//     uploadFile / sanitizeForFilename / formatTimestamp 在新流程下已不需要。
 
 export interface EligibilityResult {
     eligible: boolean;
@@ -44,30 +45,8 @@ export async function queryApplicantEligibility(idNumber: string): Promise<Eligi
             }
         }
 
-        // DEBUG: if still no match, try to find why by querying the specific user
         if (!matchedUserId) {
-            const debugRes = await client.query(
-                `SELECT id, account, search_salt, id_number_bidx FROM users WHERE account = $1`,
-                [`app_${normalizedId}`]
-            );
-            if (debugRes.rows.length > 0) {
-                const dr = debugRes.rows[0];
-                const recomputed = generateBlindIndex(normalizedId, dr.search_salt);
-                console.error('[EligibilityDebug] account found but blind index mismatch', {
-                    account: dr.account,
-                    saltLength: dr.search_salt?.length,
-                    bidxLength: dr.id_number_bidx?.length,
-                    bidxStored: dr.id_number_bidx?.slice(0, 16),
-                    bidxComputed: recomputed?.slice(0, 16),
-                    match: recomputed === dr.id_number_bidx,
-                });
-            } else {
-                console.error('[EligibilityDebug] no account found for', `app_${normalizedId}`);
-            }
-        }
-
-        if (!matchedUserId) {
-            // First-time applicant
+            // First-time applicant — 沒有比中任何已存在的 user，視為新申請人，可繼續填表
             return { eligible: true };
         }
 
@@ -118,23 +97,6 @@ export async function queryApplicantEligibility(idNumber: string): Promise<Eligi
 function generateTempPassword(): string {
     return Math.random().toString(36).substring(2, 12);
 }
-
-function sanitizeForFilename(str: string): string {
-    return str.replace(/[/\\:*?"<>|\s]+/g, '_');
-}
-
-function formatTimestamp(date: Date): string {
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return [
-        date.getFullYear(),
-        pad(date.getMonth() + 1),
-        pad(date.getDate()),
-        pad(date.getHours()),
-        pad(date.getMinutes()),
-        pad(date.getSeconds()),
-    ].join('');
-}
-
 
 export async function submitExternalApplication(
     formData: FormData
@@ -338,56 +300,61 @@ export async function submitExternalApplication(
         client.release();
     }
 
-    // ── 5. Upload documents (outside transaction — partial failure OK) ───────
-    // Dynamically resolve doc fields from FormData keys (doc_1, doc_2, …)
-    // and look up their labels from document_type_config.
-    const docClient = await pool.connect();
-    let docLabelMap: Map<string, string> = new Map();
+    // ── 5. 連結 client 已上傳的文件 URL ──────────────────────────────────────
+    // 客戶端已用 @vercel/blob/client `upload()` 把檔案直接 PUT 到 Blob，
+    // 表單只送 documents JSON：[{ docId, url, originalName, mimeType, size }]
+    // server 此處只負責驗證 URL 並寫入 application_documents。
+    interface IntakeDocPayload {
+        docId: string;
+        url: string;
+        originalName?: string;
+        mimeType?: string;
+        size?: number;
+    }
+    let intakeDocs: IntakeDocPayload[] = [];
     try {
-        const dtRes = await docClient.query(
-            `SELECT id::text, label FROM document_type_config WHERE phase = 'apply' AND is_active = true`
-        );
-        for (const r of dtRes.rows) docLabelMap.set(r.id, r.label);
-    } catch { /* non-fatal */ } finally {
-        docClient.release();
-    }
-
-    // Collect all doc_* entries present in the FormData
-    const intakeDocs: { field: string; docId: string; label: string }[] = [];
-    for (const key of (formData as any).keys()) {
-        const m = (key as string).match(/^doc_(\d+)$/);
-        if (m) {
-            const docId = m[1];
-            intakeDocs.push({ field: key, docId, label: docLabelMap.get(docId) ?? `文件${docId}` });
+        const raw = (formData.get('documents') as string | null) ?? '';
+        if (raw) {
+            const parsed = JSON.parse(raw);
+            if (Array.isArray(parsed)) {
+                intakeDocs = parsed.filter(d =>
+                    d && typeof d.docId === 'string' && typeof d.url === 'string'
+                );
+            }
         }
+    } catch (err) {
+        console.error('parse documents JSON error:', err);
     }
 
-    // 並行上傳所有文件 — 避免 Vercel function timeout（Hobby 10s / Pro 60s）
-    // 循序上傳 N 份檔案 + cold start 容易超時造成「提交中」永久 hang
-    await Promise.all(intakeDocs.map(async ({ field, docId, label }) => {
-        const file = formData.get(field) as File | null;
-        if (!file || file.size === 0) return;
+    // 安全：只接受我們發出的 URL：production = Blob、本地 dev = /uploads/ 相對路徑
+    const isValidUrl = (u: string): boolean => {
+        if (u.startsWith('/uploads/')) return true;  // 本地 dev fallback
         try {
-            const ext = path.extname(file.name).toLowerCase();
-            const safeLabel = sanitizeForFilename(label);
-            const timestamp = formatTimestamp(new Date());
-            const fileName = `${caseNumber}_${safeLabel}_${timestamp}${ext}`;
-            const localRelPath = `/uploads/${applicationId!}/${fileName}`;
-            const blobKey = `uploads/${applicationId!}/${fileName}`;
+            const url = new URL(u);
+            return url.protocol === 'https:'
+                && (url.hostname.endsWith('.public.blob.vercel-storage.com')
+                    || url.hostname.endsWith('.blob.vercel-storage.com'));
+        } catch {
+            return false;
+        }
+    };
 
-            const bytes = await file.arrayBuffer();
-            const publicUrl = await uploadFile(Buffer.from(bytes), blobKey, localRelPath);
-
+    await Promise.all(intakeDocs.map(async ({ docId, url }) => {
+        if (!/^\d+$/.test(docId)) return;
+        if (!isValidUrl(url)) {
+            console.warn('[intake] reject invalid URL:', url.slice(0, 50));
+            return;
+        }
+        try {
             await pool.query(
                 `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at)
                  VALUES ($1, $2, $3, '0', NOW())
                  ON CONFLICT (application_id, id) WHERE disbursement_id IS NULL
                  DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW()`,
-                [applicationId, docId, publicUrl]
+                [applicationId, docId, url]
             );
         } catch (err) {
-            console.error(`Document upload error for ${field}:`, err);
-            // Non-fatal: application is already created
+            console.error(`Document link error for doc_${docId}:`, err);
         }
     }));
 

@@ -42,7 +42,8 @@ import {
 } from '../app/actions/paymentDisbursementActions';
 import { InfoSheetModal, type InfoSection } from './InfoSheetModal';
 import { REVIEW_STAGE_LABEL, type ReviewStage } from '../lib/paymentDisbursementConstants';
-import { uploadApplicationDocument } from '../app/actions/documentActions';
+import { linkApplicationDocumentByUrl } from '../app/actions/documentActions';
+import { uploadFileToBlob } from '../lib/uploadClient';
 import { Role } from '../types';
 import { useToast } from './FloatingToast';
 import { useModalDismiss } from '../hooks/useModalDismiss';
@@ -596,21 +597,25 @@ function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId
         if (fileInputRef.current) fileInputRef.current.value = '';
     };
 
-    /** 真正把 pendingFile POST 到 server（依 stage 自動判斷上傳到 id=17 或 id=18） */
+    /** 真正把 pendingFile 上傳：browser → Vercel Blob → server 連結 URL */
     const uploadPendingFile = async (): Promise<{ success: boolean; error?: string }> => {
         if (!pendingFile) return { success: false, error: '尚未選擇檔案' };
         setUploading(true);
         try {
-            const fd = new FormData();
-            fd.append('file', pendingFile);
             const docTypeId = (d.reviewStage === '3' && isAccountant) ? '17' : '18';
-            const upRes = await uploadApplicationDocument(
+            const docLabel = `${docTypeId === '17' ? '醫療收據' : '領款收據'}_${d.receiptNumber}`;
+            // 1. browser 直接上傳到 Blob（避開 Vercel function 4.5 MB 上限）
+            const uploaded = await uploadFileToBlob(pendingFile, {
+                pathPrefix: `uploads/${applicationId}/disb${d.id}`,
+            });
+            // 2. server 連結 URL → scope/role 守門 → 寫 application_documents
+            const upRes = await linkApplicationDocumentByUrl(
                 applicationId,
                 docTypeId,
-                `${docTypeId === '17' ? '醫療收據' : '領款收據'}_${d.receiptNumber}`,
-                '',
-                fd,
-                undefined,
+                docLabel,
+                uploaded.url,
+                uploaded.originalName,
+                uploaded.mimeType,
                 { disbursementId: d.id, operatorUserId },
             );
             return upRes.success

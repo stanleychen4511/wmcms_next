@@ -18,11 +18,8 @@ const SETTING_LABEL: Record<string, string> = {
     org_phone:              '聯絡電話',
     org_fax:                '傳真',
     org_line_qr_url:        'LINE 加入志工 QR 圖片路徑',
-    elig_age_min:                  '【115 辦法】年齡下限',
-    elig_age_max:                  '【115 辦法】年齡上限',
-    elig_real_estate_max:          '【115 辦法】不動產上限（戶籍內直系合計）',
-    elig_econ_deposit_max:         '【115 辦法-經濟弱勢】存款上限（夫妻取平均）',
-    elig_econ_monthly_income_max:  '【115 辦法-經濟弱勢】月收入上限（夫妻取平均）',
+    // 註：elig_* 系列（115 辦法相關）已搬到「申請規則設定」面板統一管理，
+    //     不在此處顯示以避免兩個入口造成混淆。資料來源仍是 system_settings 同一筆。
 };
 
 const SETTING_UNIT: Record<string, string> = {
@@ -40,11 +37,6 @@ const SETTING_UNIT: Record<string, string> = {
     org_phone:              '',
     org_fax:                '',
     org_line_qr_url:        '',
-    elig_age_min:                  '歲',
-    elig_age_max:                  '歲',
-    elig_real_estate_max:          '萬',
-    elig_econ_deposit_max:         '萬',
-    elig_econ_monthly_income_max:  '萬',
 };
 
 // Input type per setting key — defaults to 'number' for legacy keys.
@@ -64,11 +56,6 @@ const SETTING_INPUT_TYPE: Record<string, 'text' | 'number' | 'boolean'> = {
     org_phone:              'text',
     org_fax:                'text',
     org_line_qr_url:        'text',
-    elig_age_min:                  'number',
-    elig_age_max:                  'number',
-    elig_real_estate_max:          'number',
-    elig_econ_deposit_max:         'number',
-    elig_econ_monthly_income_max:  'number',
 };
 
 const SETTING_HINT: Record<string, string> = {
@@ -86,11 +73,6 @@ const SETTING_HINT: Record<string, string> = {
     org_phone:              '聯絡電話（顯示於領款收據 header）',
     org_fax:                '傳真（顯示於領款收據 header）',
     org_line_qr_url:        'LINE 加入志工 QR code 圖片路徑：可填相對路徑（如 /org-line-qr.png 對應 public/org-line-qr.png）或外部 URL；若檔案不存在領款收據會顯示空白方塊',
-    elig_age_min:                  '【115 辦法第四條】申請人年齡下限',
-    elig_age_max:                  '【115 辦法第四條】申請人年齡上限',
-    elig_real_estate_max:          '【115 辦法】戶籍內直系親屬之土地公告現值＋房屋評定價合計上限',
-    elig_econ_deposit_max:         '【115 辦法-經濟弱勢】存款上限（有配偶取夫妻平均）',
-    elig_econ_monthly_income_max:  '【115 辦法-經濟弱勢】每月收入上限（有配偶取夫妻平均）',
 };
 
 interface SettingsPanelProps {
@@ -109,9 +91,11 @@ export function SettingsPanel({ userId }: SettingsPanelProps) {
         await ensureDefaultSettings();
         const res = await fetchAllSettings();
         if (res.success && res.data) {
-            setSettings(res.data);
+            // 隱藏 elig_* 系列（115 辦法）— 改由「申請規則設定」面板統一編輯
+            const filtered = res.data.filter(s => !s.key.startsWith('elig_'));
+            setSettings(filtered);
             const init: Record<string, string> = {};
-            res.data.forEach(s => { init[s.key] = s.value; });
+            filtered.forEach(s => { init[s.key] = s.value; });
             setEditValues(init);
         }
         setLoading(false);

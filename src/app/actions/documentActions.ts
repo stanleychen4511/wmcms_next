@@ -325,6 +325,124 @@ export async function uploadApplicationDocument(
     }
 }
 
+/**
+ * 連結 client 已直接上傳到 Vercel Blob 的檔案（不再經過 server function 上傳）。
+ *
+ * 用途：避開 Vercel function payload 4.5 MB 上限。Browser 用
+ *       `@vercel/blob/client` `upload()` 直接 PUT 到 Blob 拿到 URL，
+ *       再呼叫此 action 寫入 application_documents。
+ *
+ * 守門：
+ *   - URL 必須是 vercel-storage.com domain（防偽）
+ *   - 套用既有的 scope + 角色 + review_stage 守門
+ *   - 寫 audit log
+ *
+ * 不做：page count（client 直接上傳沒 buffer；如需可 server fetch URL 但耗資源）
+ *      → 後續報表若需頁數可 lazy-compute
+ */
+export async function linkApplicationDocumentByUrl(
+    applicationId: string,
+    documentId: string,
+    documentLabel: string,
+    blobUrl: string,
+    originalName: string,
+    mimeType: string,
+    options?: {
+        disbursementId?: string | null;
+        operatorUserId?: string | null;
+    }
+): Promise<{ success: boolean; filePath?: string; error?: string }> {
+    // URL 防偽：
+    //   - production：必須是 Vercel Blob 公開 URL（https://*.public.blob.vercel-storage.com/...）
+    //   - 本地 dev：允許 /uploads/... 相對路徑（由 /api/local-upload 寫到 public/）
+    const isValidUrl = (u: string): boolean => {
+        if (u.startsWith('/uploads/')) return true;  // local dev
+        try {
+            const url = new URL(u);
+            return url.protocol === 'https:'
+                && (url.hostname.endsWith('.public.blob.vercel-storage.com')
+                    || url.hostname.endsWith('.blob.vercel-storage.com'));
+        } catch {
+            return false;
+        }
+    };
+    if (!isValidUrl(blobUrl)) {
+        return { success: false, error: '無效的檔案 URL' };
+    }
+
+    // 副檔名 + MIME 白名單（同 uploadApplicationDocument）
+    const ALLOWED_EXTS = ['.pdf', '.doc', '.docx', '.jpg', '.jpeg', '.png', '.webp'];
+    const ALLOWED_MIME = [
+        'application/pdf',
+        'application/msword',
+        'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+        'image/jpeg',
+        'image/png',
+        'image/webp',
+    ];
+    const ext = path.extname(originalName).toLowerCase();
+    if (!ALLOWED_EXTS.includes(ext) || !ALLOWED_MIME.includes(mimeType)) {
+        return { success: false, error: '僅接受 PDF、Word 或圖片檔案（.pdf、.doc、.docx、.jpg、.png）' };
+    }
+    if (isDisbursementReceiptType(documentId) && !DISBURSEMENT_DOC_EXTS.includes(ext)) {
+        return { success: false, error: '醫療收據／領款收據僅接受 PDF 或圖片（不支援 .doc / .docx，請先轉檔）' };
+    }
+
+    const disbursementId = options?.disbursementId ?? null;
+    const operatorUserId = options?.operatorUserId ?? null;
+
+    try {
+        // scope + 角色 + review_stage 守門
+        if (/^\d+$/.test(applicationId)) {
+            const client = await pool.connect();
+            try {
+                const check = await checkDocumentScopeAndRole(
+                    client, documentId, disbursementId, operatorUserId
+                );
+                if (!check.ok) return { success: false, error: check.error };
+            } finally {
+                client.release();
+            }
+
+            // 寫入 application_documents（pages 設 NULL；client 上傳路徑不算頁數）
+            const writeClient = await pool.connect();
+            try {
+                if (disbursementId) {
+                    await writeClient.query(
+                        `INSERT INTO application_documents (application_id, id, disbursement_id, file_path, status, uploaded_at, pages)
+                         VALUES ($1, $2, $3, $4, '0', NOW(), NULL)
+                         ON CONFLICT (application_id, id, disbursement_id) WHERE disbursement_id IS NOT NULL
+                         DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW(), pages = NULL`,
+                        [applicationId, documentId, disbursementId, blobUrl]
+                    );
+                } else {
+                    await writeClient.query(
+                        `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at, pages)
+                         VALUES ($1, $2, $3, '0', NOW(), NULL)
+                         ON CONFLICT (application_id, id) WHERE disbursement_id IS NULL
+                         DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW(), pages = NULL`,
+                        [applicationId, documentId, blobUrl]
+                    );
+                }
+            } finally {
+                writeClient.release();
+            }
+        }
+
+        void writeAuditLog({
+            userId: operatorUserId ?? null,
+            action: 'document.upload',
+            targetType: 'document',
+            targetId: documentId,
+            detail: { applicationId, documentLabel, filePath: blobUrl, disbursementId: disbursementId ?? undefined, viaClientUpload: true },
+        });
+        return { success: true, filePath: blobUrl };
+    } catch (err: any) {
+        console.error('linkApplicationDocumentByUrl error', err);
+        return { success: false, error: '檔案連結失敗' };
+    }
+}
+
 export async function updateDocumentStatus(
     applicationId: string,
     documentId: string,
