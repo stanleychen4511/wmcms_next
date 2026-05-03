@@ -1180,6 +1180,35 @@ export async function sendDisbursementPaymentReceiptEmail(
         // 以 disbursementId 作為 context，dispatcher 會用 disbursement.amount 渲染金額
         // 同時 sendNotificationEmail 會將 disbursement_id 寫入 notification_logs
         await notifyEvent('case_payment_receipt_to_applicant', { applicationId, disbursementId });
+
+        // notifyEvent 是 fire-and-forget（SMTP 失敗也不 throw），所以不能光看 await 通過就回成功；
+        // 改抓最近一筆對應 disbursement 的 notification_logs 確認 status='sent' 才算真的寄出。
+        const checkClient = await pool.connect();
+        let actualStatus: string | null = null;
+        let actualError: string | null = null;
+        try {
+            const r = await checkClient.query(
+                `SELECT status, error_message FROM notification_logs
+                 WHERE disbursement_id = $1::bigint
+                   AND template_id IN (SELECT id FROM notification_templates WHERE name = 'email_case_payment_receipt_to_applicant')
+                 ORDER BY sent_at DESC LIMIT 1`,
+                [disbursementId]
+            );
+            actualStatus = r.rows[0]?.status ?? null;
+            actualError = r.rows[0]?.error_message ?? null;
+        } finally {
+            checkClient.release();
+        }
+
+        if (actualStatus !== 'sent') {
+            return {
+                success: false,
+                error: actualStatus === 'failed'
+                    ? `Email 寄送失敗：${actualError ?? '未知錯誤'}`
+                    : '寄送結果未確認；請檢查 SMTP 設定或申請人 email 是否填寫',
+            };
+        }
+
         void writeAuditLog({
             userId: operatorUserId,
             action: 'payment_disbursement.receipt_email_sent',
