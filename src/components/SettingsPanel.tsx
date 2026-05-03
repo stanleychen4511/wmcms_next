@@ -7,8 +7,8 @@ const SETTING_LABEL: Record<string, string> = {
     pending_doc_alert_days: '未補件天數警示門檻',
     pending_doc_notification_threshold: '未補件提醒次數門檻',
     board_auto_assign:      '董事審核自動派案',
+    board_opinion_min_chars: '【董事審核】審核意見最少字數',
     line_official_account_id: 'LINE 官方帳號 ID',
-    max_apply_amount:       '申請金額上限',
     notification_dispatcher_enabled: '通知派送總開關',
     org_full_name:          '基金會全名',
     org_license_no:         '主管機關核准立案字號',
@@ -18,14 +18,19 @@ const SETTING_LABEL: Record<string, string> = {
     org_phone:              '聯絡電話',
     org_fax:                '傳真',
     org_line_qr_url:        'LINE 加入志工 QR 圖片路徑',
+    elig_age_min:                  '【115 辦法】年齡下限',
+    elig_age_max:                  '【115 辦法】年齡上限',
+    elig_real_estate_max:          '【115 辦法】不動產上限（戶籍內直系合計）',
+    elig_econ_deposit_max:         '【115 辦法-經濟弱勢】存款上限（夫妻取平均）',
+    elig_econ_monthly_income_max:  '【115 辦法-經濟弱勢】月收入上限（夫妻取平均）',
 };
 
 const SETTING_UNIT: Record<string, string> = {
     pending_doc_alert_days: '天',
     pending_doc_notification_threshold: '次',
     board_auto_assign:      '',
+    board_opinion_min_chars: '字',
     line_official_account_id: '',
-    max_apply_amount:       '元',
     notification_dispatcher_enabled: '',
     org_full_name:          '',
     org_license_no:         '',
@@ -35,6 +40,11 @@ const SETTING_UNIT: Record<string, string> = {
     org_phone:              '',
     org_fax:                '',
     org_line_qr_url:        '',
+    elig_age_min:                  '歲',
+    elig_age_max:                  '歲',
+    elig_real_estate_max:          '萬',
+    elig_econ_deposit_max:         '萬',
+    elig_econ_monthly_income_max:  '萬',
 };
 
 // Input type per setting key — defaults to 'number' for legacy keys.
@@ -42,8 +52,8 @@ const SETTING_UNIT: Record<string, string> = {
 const SETTING_INPUT_TYPE: Record<string, 'text' | 'number' | 'boolean'> = {
     pending_doc_alert_days: 'number',
     pending_doc_notification_threshold: 'number',
-    max_apply_amount: 'number',
     board_auto_assign: 'boolean',        // stored as 'true' / 'false'
+    board_opinion_min_chars: 'number',
     line_official_account_id: 'text',    // @xxxxxx
     notification_dispatcher_enabled: 'boolean',
     org_full_name:          'text',
@@ -54,14 +64,19 @@ const SETTING_INPUT_TYPE: Record<string, 'text' | 'number' | 'boolean'> = {
     org_phone:              'text',
     org_fax:                'text',
     org_line_qr_url:        'text',
+    elig_age_min:                  'number',
+    elig_age_max:                  'number',
+    elig_real_estate_max:          'number',
+    elig_econ_deposit_max:         'number',
+    elig_econ_monthly_income_max:  'number',
 };
 
 const SETTING_HINT: Record<string, string> = {
     pending_doc_alert_days: '【天數警示】收件後超過此天數且仍有必備文件未上傳的案件，將於首頁顯示未補件提示',
     pending_doc_notification_threshold: '【次數提醒】同案件累計發送幾次未補件提醒 Email 後，於首頁與案件詳情頁提示承辦人考慮以不通過結案',
     board_auto_assign:      '填 true 或 false。開啟後，案件進入 board_review 階段時自動派給當前案件最少、優先序最小的組別',
+    board_opinion_min_chars: '董事審核意見的最少字數限制；0 = 不限制（推進按鈕不再依字數鎖死、UI 不顯示字數提示）',
     line_official_account_id: 'LINE bot 的 @id（例：@123abcde）；使用者個人設定頁的「加好友」連結會用此值組成 https://line.me/R/ti/p/{@id}',
-    max_apply_amount:       '每筆申請案件的申請金額上限，超過此數值時系統將拒絕儲存',
     notification_dispatcher_enabled: '全域通知派送總開關。關閉時所有事件觸發都不會推送，但事件仍會發生（不影響業務）。建議測試完所有事件 OK 後才開啟',
     org_full_name:          '基金會全名（顯示於核銷階段列印的領款收據 header）',
     org_license_no:         '主管機關核准立案字號（顯示於領款收據 header）',
@@ -71,6 +86,11 @@ const SETTING_HINT: Record<string, string> = {
     org_phone:              '聯絡電話（顯示於領款收據 header）',
     org_fax:                '傳真（顯示於領款收據 header）',
     org_line_qr_url:        'LINE 加入志工 QR code 圖片路徑：可填相對路徑（如 /org-line-qr.png 對應 public/org-line-qr.png）或外部 URL；若檔案不存在領款收據會顯示空白方塊',
+    elig_age_min:                  '【115 辦法第四條】申請人年齡下限',
+    elig_age_max:                  '【115 辦法第四條】申請人年齡上限',
+    elig_real_estate_max:          '【115 辦法】戶籍內直系親屬之土地公告現值＋房屋評定價合計上限',
+    elig_econ_deposit_max:         '【115 辦法-經濟弱勢】存款上限（有配偶取夫妻平均）',
+    elig_econ_monthly_income_max:  '【115 辦法-經濟弱勢】每月收入上限（有配偶取夫妻平均）',
 };
 
 interface SettingsPanelProps {

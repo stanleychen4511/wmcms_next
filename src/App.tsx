@@ -11,19 +11,28 @@ import {
     Eye,
     Save,
     Send,
+    Heart,
 } from 'lucide-react';
 import { AppHeader } from './components/AppHeader';
-import { ReimbursementPrintPanel } from './components/ReimbursementPrintPanel';
 import { CaseStatisticsPage } from './components/CaseStatisticsPage';
+import { ReportsPage } from './components/ReportsPage';
 import { SecureFilePreviewModal } from './components/SecureFilePreviewModal';
+import { DisbursementPanel } from './components/DisbursementPanel';
 import { LoginPage } from './components/LoginPage';
 import { HomePage } from './components/HomePage';
 import { fetchPendingDocAlerts, fetchPendingDocThresholdAlerts, fetchPendingDocReminderStatus, PendingDocAlert, PendingDocThresholdAlert } from './app/actions/pendingDocAlertActions';
 import { CaseListPage } from './components/CaseListPage';
 import { ApplicantHistoryPage } from './components/ApplicantHistoryPage';
+import { ApplicationCareRecordsModal } from './components/ApplicationCareRecordsModal';
+import { ModalEscapeListener } from './hooks/useModalDismiss';
+import { CloseCaseModal } from './components/CloseCaseModal';
+import type { CloseReasonCode } from './lib/closeReasonConstants';
 import { NewApplicationPage } from './components/NewApplicationPage';
 import { ReviewList } from './components/ReviewList';
 import { HomeVisitForm } from './components/HomeVisitForm';
+import { ContactRecordsQuickView } from './components/ContactRecordsQuickView';
+import { HomeVisitAssigneePanel } from './components/HomeVisitAssigneePanel';
+import { OfficerCaseSummaryPanel } from './components/OfficerCaseSummaryPanel';
 import { SendNotificationModal, ChecklistDoc } from './components/SendNotificationModal';
 import { EditCaseBasicsModal } from './components/EditCaseBasicsModal';
 import { BoardVoteCard } from './components/BoardVoteCard';
@@ -40,6 +49,7 @@ import { TemplateDownloadPage } from './components/TemplateDownloadPage';
 import { NotificationManager } from './components/NotificationManager';
 import { AnnouncementsPage } from './components/AnnouncementsPage';
 import { UserSettingsPage } from './components/UserSettingsPage';
+import { useToast } from './components/FloatingToast';
 
 import {
     fetchApplicationDetail,
@@ -49,11 +59,10 @@ import {
     saveBoardReviewData,
     closeCaseRejected,
     closeCase,
-    closeCaseByPendingDocThreshold,
     ApplicationDetail,
 } from './app/actions/workflowActions';
 
-import { fetchApplicationDocuments, DocumentEntry, fetchHistoricalReceipts, HistoricalReceipt, fetchLastApplicationDocs, copyDocumentToApplication } from './app/actions/documentActions';
+import { fetchApplicationDocuments, DocumentEntry, fetchLastApplicationDocs, copyDocumentToApplication } from './app/actions/documentActions';
 
 import {
     fetchCaseSummaries,
@@ -81,7 +90,7 @@ const STAGES: WorkflowStage[] = ['admin_review', 'visit', 'board_review', 'reimb
 const STAGE_LABEL_MAP: Record<WorkflowStage, string> = {
     admin_review: '行政初審',
     visit: '家庭訪視',
-    board_review: '董事審選',
+    board_review: '董事審核',
     reimbursement: '核銷撥款',
 };
 
@@ -95,10 +104,11 @@ const STAGE_ICON_MAP: Record<WorkflowStage, React.ReactNode> = {
 // ── App ───────────────────────────────────────────────────────────────────────
 
 function App() {
+    const { push: pushToast } = useToast();
     const [role, setRole] = useState<Role>('case_officer');
     const [loggedInUser, setLoggedInUser] = useState<{ username: string; roles: Role[]; account: string; id: string } | null>(null);
 
-    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager' | 'announcements' | 'user_settings' | 'stats'>('home');
+    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager' | 'announcements' | 'user_settings' | 'stats' | 'reports'>('home');
     const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
     const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
 
@@ -135,16 +145,18 @@ function App() {
     const [boardApproved, setBoardApproved] = useState<boolean | null>(null); // null = 未選擇
     const [boardApprovedAmount, setBoardApprovedAmount] = useState<number>(0);
     const [boardOpinion, setBoardOpinion] = useState('');
-    const [eligibilityCheck, setEligibilityCheck] = useState<{ checked: boolean; eligible: boolean; reasons: string[] }>({
-        checked: false, eligible: false, reasons: [],
+    const [eligibilityCheck, setEligibilityCheck] = useState<{ checked: boolean; eligible: boolean; reasons: string[]; reasonCodes: Array<{ code: string; value?: string }> }>({
+        checked: false, eligible: false, reasons: [], reasonCodes: [],
     });
     // Tracks the latest values from the ApplicationForm for use in eligibility check
     const [liveApplicantValues, setLiveApplicantValues] = useState<any>(null);
     const [isSavingQualification, setIsSavingQualification] = useState(false);
-    const [saveQualToast, setSaveQualToast] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
     const [applyAmount, setApplyAmount] = useState<number>(0);
-    const [maxApplyAmount, setMaxApplyAmount] = useState<number>(350000);
+    /** 各子類型補助上限（依 subsidy_amount_limits 表）；'1'=經濟弱勢、'2'=小康家庭。 */
+    const [subtypeMaxAmounts, setSubtypeMaxAmounts] = useState<Record<'1' | '2', number>>({ '1': 0, '2': 0 });
     const [pendingThresholdDays, setPendingThresholdDays] = useState<number>(7);
+    /** 董事審核意見最少字數（0=不限制） */
+    const [boardOpinionMinChars, setBoardOpinionMinChars] = useState<number>(50);
     const [applyAmountError, setApplyAmountError] = useState('');
 
     // Last docs state (for "使用上次檔案" feature)
@@ -153,12 +165,14 @@ function App() {
 
     // Notification state
     const [showNotifModal, setShowNotifModal] = useState(false);
+    const [showCareRecordsModal, setShowCareRecordsModal] = useState(false);
+    /** 通用「不通過結案」modal —— stage 觸發時為當下 stage；threshold 觸發時 prefill 為 '98' + 文字 */
+    const [closeCaseModalProps, setCloseCaseModalProps] = useState<null | {
+        prefillCodes?: Array<{ code: CloseReasonCode; value?: string }>;
+        prefillNote?: string;
+        titleSuffix?: string;
+    }>(null);
     const [notifLogs, setNotifLogs] = useState<NotificationLog[]>([]);
-
-    // Historical receipts modal state
-    const [showReceiptsModal, setShowReceiptsModal] = useState(false);
-    const [historicalReceipts, setHistoricalReceipts] = useState<HistoricalReceipt[]>([]);
-    const [receiptsPreviewUrl, setReceiptsPreviewUrl] = useState<string | null>(null);
 
     const loadNotifLogs = useCallback(async (appId: string) => {
         const res = await fetchNotificationLogs(appId);
@@ -169,6 +183,13 @@ function App() {
     const [appDetail, setAppDetail] = useState<ApplicationDetail | null>(null);
     const [detailLoading, setDetailLoading] = useState(false);
     const [dbDocs, setDbDocs] = useState<DocumentEntry[]>([]);
+
+    /** 當前案件適用的上限：依 appDetail.subsidySubtype 對應；未指定子類型時取兩者較大值。 */
+    const maxApplyAmount = (() => {
+        const st = appDetail?.subsidySubtype;
+        if (st === '1' || st === '2') return subtypeMaxAmounts[st];
+        return Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2']);
+    })();
 
     const loadAppDetail = useCallback(async (id: string, silent = false) => {
         if (!silent) setDetailLoading(true);
@@ -212,10 +233,7 @@ function App() {
 
     // Per-application pending-doc reminder counter (for detail-view banner)
     const [reminderStatus, setReminderStatus] = useState<{ count: number; threshold: number; lastReminderAt: string | null } | null>(null);
-    const [showThresholdCloseModal, setShowThresholdCloseModal] = useState(false);
-    const [thresholdCloseReason, setThresholdCloseReason] = useState('');
-    const [thresholdCloseError, setThresholdCloseError] = useState<string | null>(null);
-    const [thresholdClosing, setThresholdClosing] = useState(false);
+    // (threshold-close modal 已合併到 CloseCaseModal；此處狀態整批移除)
 
     const loadReminderStatus = useCallback(async (appId: string) => {
         const res = await fetchPendingDocReminderStatus(appId);
@@ -230,7 +248,6 @@ function App() {
     const [showAssignDropdown, setShowAssignDropdown] = useState(false);
     const [activeBoardGroups, setActiveBoardGroups] = useState<BoardGroup[]>([]);
     const [assignBusy, setAssignBusy] = useState(false);
-    const [assignMsg, setAssignMsg] = useState<string | null>(null);
 
     // Board review collaborative edit: is the logged-in user a current member of this case's assigned group?
     const [isAssignedGroupMember, setIsAssignedGroupMember] = useState(false);
@@ -242,19 +259,72 @@ function App() {
 
     // Signature completeness (from BoardSignaturePanel callback) — feeds advance-button gating
     const [signatureStatus, setSignatureStatus] = useState<BoardReviewSignatureStatus | null>(null);
+    // 核銷階段：撥款是否已全部回收（DisbursementPanel callback 設定），決定能否結案
+    const [canCloseCase, setCanCloseCase] = useState(false);
     // Bump this after reassign / save / anything that invalidates board card caches
     const [boardRefreshKey, setBoardRefreshKey] = useState(0);
+    /** 董事審核：當前作用中的 member tab（signer_user_id 字串）；null = 尚未決定 */
+    const [activeMemberTab, setActiveMemberTab] = useState<string | null>(null);
     const signaturesComplete = !!signatureStatus
         && signatureStatus.memberCount > 0
         && signatureStatus.memberCount === signatureStatus.signedCount;
+
+    // 找出當前使用者自己在 signatureStatus 中的 row（per-member 編輯 UI 用）
+    const myMemberRow = signatureStatus?.members?.find(
+        m => loggedInUser && m.signerUserId === loggedInUser.id
+    ) ?? null;
+
+    // 當 signatureStatus 更新且當前 user 是組員 → 用個人 member row 覆寫 board form 狀態
+    // （只在 board_review 階段；案件結案後維持顯示 applications.approved_amount 等彙總值）
+    useEffect(() => {
+        if (appDetail?.stage !== 'board_review' || appDetail?.status !== '1') return;
+        if (!myMemberRow) return;
+        setBoardApproved(myMemberRow.memberApproved);
+        setBoardApprovedAmount(myMemberRow.memberAmount ?? 0);
+        setBoardOpinion(myMemberRow.memberComments ?? '');
+        setInitialBoardValues({
+            approved: myMemberRow.memberApproved,
+            amount: myMemberRow.memberAmount ?? 0,
+            opinion: myMemberRow.memberComments ?? '',
+        });
+    }, [myMemberRow?.memberApproved, myMemberRow?.memberAmount, myMemberRow?.memberComments, appDetail?.stage, appDetail?.status]);
     const signaturesMissing = signatureStatus
         ? Math.max(0, signatureStatus.memberCount - signatureStatus.signedCount)
         : 0;
+
+    // 董事審核 tab：可見成員清單 + 預設選自己（若有），否則第一位
+    //   - 自己是組員 → 只看自己
+    //   - supervisor / admin → 看全部
+    //   - 其他角色 → 空清單（顯示「您不在派組成員中」）
+    const userRolesListForTabs = (loggedInUser?.roles ?? []) as Role[];
+    const canViewAllMemberTabs = userRolesListForTabs.includes('supervisor') || userRolesListForTabs.includes('admin');
+    const visibleBoardMembers = (() => {
+        const all = signatureStatus?.members ?? [];
+        if (canViewAllMemberTabs) return all;
+        return all.filter(m => loggedInUser && m.signerUserId === loggedInUser.id);
+    })();
+    useEffect(() => {
+        if (visibleBoardMembers.length === 0) {
+            if (activeMemberTab !== null) setActiveMemberTab(null);
+            return;
+        }
+        // 若當前 tab 不在 visible 清單裡 → 重設為自己（若可見），否則第一位
+        const inList = visibleBoardMembers.some(m => m.signerUserId === activeMemberTab);
+        if (!inList) {
+            const self = visibleBoardMembers.find(m => loggedInUser && m.signerUserId === loggedInUser.id);
+            setActiveMemberTab(self?.signerUserId ?? visibleBoardMembers[0].signerUserId);
+        }
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [signatureStatus, loggedInUser?.id, canViewAllMemberTabs]);
 
     // Permission: can edit the board_review section?
     const userRolesList = (loggedInUser?.roles ?? []) as Role[];
     const isAdminOrChairman = userRolesList.includes('admin') || userRolesList.includes('chairman' as Role);
     const canEditBoardReview = isAssignedGroupMember || isAdminOrChairman;
+    // Permission: can press the advance-to-reimbursement button after all signatures done?
+    // 由「主管」推動行政流程；admin 為系統管理保留入口
+    const canAdvanceFromBoardReview =
+        userRolesList.includes('supervisor') || userRolesList.includes('admin');
 
     // Dirty state: current values differ from the loaded snapshot
     const boardDirty = !!initialBoardValues && (
@@ -281,8 +351,15 @@ function App() {
     }, [view, selectedAppId, appDetail?.stage, loggedInUser]);
 
     useEffect(() => {
-        fetchSetting('max_apply_amount', '350000').then(v => setMaxApplyAmount(Number(v) || 350000));
+        // 載入兩個子類型的補助上限（取代舊 max_apply_amount 設定）
+        import('./app/actions/eligibilityRulesActions').then(m => m.fetchSubsidyAmountLimitsMap())
+            .then(setSubtypeMaxAmounts)
+            .catch(err => console.error('fetchSubsidyAmountLimitsMap error:', err));
         fetchSetting('pending_doc_alert_days', '7').then(v => setPendingThresholdDays(Number(v) || 7));
+        fetchSetting('board_opinion_min_chars', '50').then(v => {
+            const n = Number(v);
+            setBoardOpinionMinChars(Number.isFinite(n) && n >= 0 ? n : 50);
+        });
     }, []);
 
     // Banners for HomePage carousel
@@ -303,9 +380,10 @@ function App() {
 
     useEffect(() => {
         if (appDetail?.applicantId && appDetail?.stage === 'admin_review') {
-            fetchLastApplicationDocs(appDetail.applicantId).then(setLastDocs);
+            // 排除當前案件 — 只回此申請人「過去其他案件」的文件
+            fetchLastApplicationDocs(appDetail.applicantId, selectedAppId ?? undefined).then(setLastDocs);
         }
-    }, [appDetail?.applicantId, appDetail?.stage]);
+    }, [appDetail?.applicantId, appDetail?.stage, selectedAppId]);
 
     // Pending doc alerts (recalculated every time user returns to home)
     const [pendingAlerts, setPendingAlerts] = useState<PendingDocAlert[]>([]);
@@ -357,7 +435,13 @@ function App() {
     const refreshCaseSummaries = useCallback(async () => {
         setListLoading(true);
         try {
-            const data = await fetchCaseSummaries();
+            // 志工視野過濾（#11）：當前操作角色為 volunteer 時，只看家訪指派為自己的案件
+            // 注意：判定的是「目前正在操作的 role」而非「使用者被授權的所有角色」，
+            // 這樣多角色帳號（例：volunteer + case_officer）切到 volunteer 視野時也會生效。
+            const isActingAsVolunteer = role === 'volunteer';
+            const data = await fetchCaseSummaries(
+                isActingAsVolunteer && loggedInUser ? { volunteerOnlyFilterUserId: loggedInUser.id } : undefined
+            );
             setDbCases(data);
             
             // Also fetch officer list for filtering and assignment
@@ -370,7 +454,7 @@ function App() {
         } finally {
             setListLoading(false);
         }
-    }, []);
+    }, [role, loggedInUser]);
 
     useEffect(() => {
         if (view === 'list') {
@@ -421,7 +505,9 @@ function App() {
         return (
             <HomePage
                 username={loggedInUser.username}
+                userId={loggedInUser.id}
                 userRoles={loggedInUser.roles as Role[]}
+                activeRole={role}
                 pendingAlerts={pendingAlerts}
                 thresholdAlerts={thresholdAlerts}
                 unassignedCount={unassignedCount}
@@ -438,6 +524,7 @@ function App() {
                 onGoNotifications={() => setView('notification_manager')}
                 onGoUserSettings={() => setView('user_settings')}
                 onGoStats={() => setView('stats')}
+                onGoReports={() => setView('reports')}
                 onLogout={handleLogout}
             />
         );
@@ -506,6 +593,18 @@ function App() {
         );
     }
 
+    if (view === 'reports') {
+        return (
+            <ReportsPage
+                operatorUserId={loggedInUser.id}
+                username={loggedInUser.username}
+                onBack={() => setView('home')}
+                onGoHome={() => setView('home')}
+                onLogout={handleLogout}
+            />
+        );
+    }
+
     if (view === 'template_download') {
         return (
             <TemplateDownloadPage
@@ -540,7 +639,7 @@ function App() {
                 isLoading={listLoading}
                 pendingAlertIds={new Set(pendingAlerts.map(a => a.applicationId))}
                 thresholdReminderCounts={new Map(thresholdAlerts.map(a => [a.applicationId, a.reminderCount]))}
-                maxApplyAmount={maxApplyAmount}
+                subtypeMaxAmounts={subtypeMaxAmounts}
                 onMount={refreshCaseSummaries}
                 onAssign={async (applicationIds, officerUserId) => {
                     const res = await assignOfficerBatch(applicationIds, officerUserId);
@@ -599,13 +698,19 @@ function App() {
     const stage: WorkflowStage = (appDetail?.stage as WorkflowStage) ?? 'admin_review';
 
     // Build qualification form initial values: DB data takes priority
+    //
+    // marital_status 編碼（115 年辦法）：
+    //   '1'=已婚、'2'=單親、'3'=單身（與 mid_class_eligibility_matrix 對齊）
     const qualificationInitialValues = appDetail && (
         appDetail.age != null ||
         appDetail.moveableProperty != null ||
         appDetail.immoveableProperty != null ||
         appDetail.annualIncome != null
     ) ? {
-        type: appDetail.maritalStatus === '2' ? 'married' as const : 'single' as const,
+        subsidyType: (appDetail.subsidySubtype ?? undefined) as '1' | '2' | undefined,
+        type: ((appDetail.maritalStatus === '1' || appDetail.maritalStatus === '2' || appDetail.maritalStatus === '3')
+            ? appDetail.maritalStatus
+            : '3') as '1' | '2' | '3',
         age: appDetail.age ?? 0,
         hasChildren: appDetail.hasChildren ?? false,
         underageChildrenCount: appDetail.underageChildrenCount ?? undefined,
@@ -613,8 +718,11 @@ function App() {
         annualIncome: appDetail.annualIncome ?? 0,
         movableAssets: appDetail.moveableProperty ?? 0,
         realEstateValue: appDetail.immoveableProperty ?? 0,
+        econDeposit:       appDetail.econDeposit ?? undefined,
+        econMonthlyIncome: appDetail.econMonthlyIncome ?? undefined,
     } : {
-        type: 'single' as const,
+        subsidyType: undefined,
+        type: '3' as const,
         age: 0,
         hasChildren: false,
         underageChildrenCount: undefined,
@@ -622,6 +730,8 @@ function App() {
         annualIncome: 0,
         movableAssets: 0,
         realEstateValue: 0,
+        econDeposit: undefined,
+        econMonthlyIncome: undefined,
     };
     const currentStageIndex = STAGES.indexOf(stage);
 
@@ -633,49 +743,85 @@ function App() {
     // Use DB applicant name if available
     const personName = appDetail?.applicantName ?? '';
 
-    const checkEligibilityAction = () => {
+    const checkEligibilityAction = async () => {
         // Use liveApplicantValues (from form) if available, fallback to DB-loaded values
         const dataToCheck = liveApplicantValues ?? qualificationInitialValues;
         if (!dataToCheck) return;
-        const result = checkEligibility(dataToCheck);
-        setEligibilityCheck({ checked: true, eligible: result.isEligible, reasons: result.reasons });
+
+        // 載入 115 辦法資格規則 snapshot（無 hardcode 預設）
+        const { fetchEligibilityRules } = await import('./app/actions/eligibilityRulesActions');
+        const rules = await fetchEligibilityRules();
+
+        // 婚姻狀態：form.type 已經是 '1'/'2'/'3'（與 DB / matrix 一致）
+        const maritalStatus = (dataToCheck.type ?? '3') as '1' | '2' | '3';
+
+        // 子女狀態由 hasChildren + underageChildrenCount 推導：
+        //   無子女 → '3'；有未成年 → '1'；其餘 → '2' 已成年
+        const hasUnderage = Number(dataToCheck.underageChildrenCount ?? 0) > 0;
+        const childrenStatus = !dataToCheck.hasChildren
+            ? '3'
+            : hasUnderage ? '1' : '2';
+
+        // 子類型：form 上的 subsidyType > 案件 DB 上的 subsidy_subtype > 預設 '2' 小康家庭
+        const subsidyType = (
+            dataToCheck.subsidyType
+            ?? appDetail?.subsidySubtype
+            ?? '2'
+        ) as '1' | '2';
+
+        const result = checkEligibility({
+            subsidyType,
+            age: Number(dataToCheck.age ?? 0),
+            realEstateValue: Number(dataToCheck.realEstateValue ?? 0),
+            maritalStatus,
+            childrenStatus,
+            annualIncome: Number(dataToCheck.annualIncome ?? 0),
+            movableAssets: Number(dataToCheck.movableAssets ?? 0),
+            deposit:       dataToCheck.econDeposit       != null ? Number(dataToCheck.econDeposit)       : undefined,
+            monthlyIncome: dataToCheck.econMonthlyIncome != null ? Number(dataToCheck.econMonthlyIncome) : undefined,
+        }, rules);
+
+        setEligibilityCheck({ checked: true, eligible: result.isEligible, reasons: result.reasons, reasonCodes: result.reasonCodes });
     };
 
     const handleSaveQualification = async () => {
         if (!selectedAppId) return;
         if (applyAmount > maxApplyAmount) {
-            setSaveQualToast({ type: 'error', msg: `申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元` });
+            pushToast({ type: 'error', msg: `申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元` });
             return;
         }
         setIsSavingQualification(true);
-        setSaveQualToast(null);
         try {
             // Use liveApplicantValues if available, otherwise fall back to DB-loaded values
             const v = liveApplicantValues ?? qualificationInitialValues;
+            const maritalNew: '1' | '2' | '3' | null =
+                (v?.type === '1' || v?.type === '2' || v?.type === '3') ? v.type : null;
             const result = await saveQualificationData(selectedAppId, {
                 age:                    v?.age != null ? Number(v.age) : null,
                 moveable_property:      v?.movableAssets != null ? Number(v.movableAssets) : null,
                 immoveable_property:    v?.realEstateValue != null ? Number(v.realEstateValue) : null,
                 annual_income:          v?.annualIncome != null ? Number(v.annualIncome) : null,
-                marital_status:         v?.type === 'married' ? '2' : v?.type === 'single' ? '1' : null,
+                marital_status:         maritalNew,
                 has_children:           v?.hasChildren ?? null,
                 underage_children_count: v?.hasChildren && v?.underageChildrenCount != null
                                             ? Number(v.underageChildrenCount) : null,
                 adult_children_count:   v?.hasChildren && v?.adultChildrenCount != null
                                             ? Number(v.adultChildrenCount) : null,
                 apply_amount:           applyAmount != null ? Number(applyAmount) : null,
+                subsidy_subtype:        (v?.subsidyType === '1' || v?.subsidyType === '2') ? v.subsidyType : null,
+                econ_deposit:           v?.econDeposit       != null ? Number(v.econDeposit)       : null,
+                econ_monthly_income:    v?.econMonthlyIncome != null ? Number(v.econMonthlyIncome) : null,
             });
             if (result.success) {
-                setSaveQualToast({ type: 'success', msg: '資格預審資料已儲存' });
+                pushToast({ type: 'success', msg: '資格預審資料已儲存' });
                 await loadAppDetail(selectedAppId, true);
             } else {
-                setSaveQualToast({ type: 'error', msg: result.error ?? '儲存失敗，請稍後再試' });
+                pushToast({ type: 'error', msg: result.error ?? '儲存失敗，請稍後再試' });
             }
         } catch {
-            setSaveQualToast({ type: 'error', msg: '儲存失敗，請稍後再試' });
+            pushToast({ type: 'error', msg: '儲存失敗，請稍後再試' });
         } finally {
             setIsSavingQualification(false);
-            setTimeout(() => setSaveQualToast(null), 3000);
         }
     };
 
@@ -703,13 +849,16 @@ function App() {
                     moveable_property:      v.movableAssets != null ? Number(v.movableAssets) : null,
                     immoveable_property:    v.realEstateValue != null ? Number(v.realEstateValue) : null,
                     annual_income:          v.annualIncome != null ? Number(v.annualIncome) : null,
-                    marital_status:         v.type === 'married' ? '2' : v.type === 'single' ? '1' : null,
+                    marital_status:         (v.type === '1' || v.type === '2' || v.type === '3') ? v.type : null,
                     has_children:           v.hasChildren ?? null,
                     underage_children_count: v.hasChildren && v.underageChildrenCount != null
                                                 ? Number(v.underageChildrenCount) : null,
                     adult_children_count:   v.hasChildren && v.adultChildrenCount != null
                                                 ? Number(v.adultChildrenCount) : null,
                     apply_amount:           applyAmount != null ? Number(applyAmount) : null,
+                    subsidy_subtype:        (v.subsidyType === '1' || v.subsidyType === '2') ? v.subsidyType : null,
+                    econ_deposit:           v.econDeposit       != null ? Number(v.econDeposit)       : null,
+                    econ_monthly_income:    v.econMonthlyIncome != null ? Number(v.econMonthlyIncome) : null,
                 });
             }
 
@@ -724,12 +873,18 @@ function App() {
                 await saveBoardReviewData(selectedAppId, boardApprovedAmount, boardOpinion);
             }
 
-            await advanceWorkflowStage(
+            const advanceRes = await advanceWorkflowStage(
                 selectedAppId,
                 stage,
                 next,
                 loggedInUser?.id ?? null,
             );
+            if (!advanceRes.success) {
+                // 推進失敗（例：簽章已失效、權限不足等）— 不切視野、刷一次資料、跳出錯誤 toast
+                pushToast({ type: 'error', msg: advanceRes.error ?? '推進階段失敗' });
+                await loadAppDetail(selectedAppId, true);
+                return;
+            }
             await loadAppDetail(selectedAppId, true);
             setViewedStage(next);
         }
@@ -811,7 +966,7 @@ function App() {
                                     setLiveApplicantValues(values);
                                     // Clear eligibility result when form fields are changed
                                     setEligibilityCheck(prev =>
-                                        prev.checked ? { checked: false, eligible: false, reasons: [] } : prev
+                                        prev.checked ? { checked: false, eligible: false, reasons: [], reasonCodes: [] } : prev
                                     );
                                 }}
                             />
@@ -836,19 +991,11 @@ function App() {
                                         )}
                                         儲存
                                     </button>
-                                    {saveQualToast && (
-                                        <span className={clsx(
-                                            'text-sm font-medium px-3 py-1.5 rounded-md',
-                                            saveQualToast.type === 'success'
-                                                ? 'bg-green-50 text-green-700 border border-green-200'
-                                                : 'bg-red-50 text-red-700 border border-red-200'
-                                        )}>
-                                            {saveQualToast.type === 'success' ? '✓ ' : '✗ '}{saveQualToast.msg}
-                                        </span>
-                                    )}
                                 </div>
                             )}
-                            {!eligibilityCheck.checked && (
+                            {/* 「未執行資格判定」提示只在案件實際還在行政初審且未結案時顯示；
+                                已推進到後續階段或結案的案件，資格判定必已通過，再提示反而誤導 */}
+                            {!eligibilityCheck.checked && stage === 'admin_review' && !isCaseClosed && (
                                 <p className="mt-4 text-sm text-amber-600 flex items-center gap-1.5">
                                     <AlertTriangle className="w-4 h-4 shrink-0" />
                                     未執行資格判定
@@ -894,8 +1041,8 @@ function App() {
                             pendingThresholdDays={pendingThresholdDays}
                             userId={loggedInUser?.id}
                             caseClosed={!!isCaseClosed}
-                            canReview={!isCaseClosed && (hasPermission('case_officer') || hasPermission('admin'))}
-                            readOnly={contentReadOnly || (!hasPermission('case_officer') && !hasPermission('admin'))}
+                            canReview={!isCaseClosed && (hasPermission('case_officer') || hasPermission('admin') || hasPermission('supervisor'))}
+                            readOnly={contentReadOnly || (!hasPermission('case_officer') && !hasPermission('admin') && !hasPermission('supervisor'))}
                             onRefresh={() => {
                                 if (selectedAppId) {
                                     fetchApplicationDocuments(selectedAppId).then(setDbDocs);
@@ -905,21 +1052,93 @@ function App() {
                     </div>
                 );
 
-            case 'visit':
+            case 'visit': {
+                const missingAssignee = !appDetail?.homeVisitAssigneeId;
+                const missingForm     = !appDetail?.homeVisitSaved;
+                const missingSummary  = !(appDetail?.officerCaseSummary && appDetail.officerCaseSummary.trim());
+                const visitChecklist: string[] = [];
+                if (missingAssignee) visitChecklist.push('指派家訪人員');
+                if (missingForm)     visitChecklist.push('完成家訪關懷紀錄表（所有欄位必填）');
+                if (missingSummary)  visitChecklist.push('填寫個管師案件說明');
+                // 家訪指派只在「案件目前實際處於 visit 階段」且未結案時開放；
+                // 一旦案件推進到 board_review 或之後，指派功能鎖死（純檢視）
+                const visitStageActive = stage === 'visit' && !isCaseClosed;
                 return (
                     <div className="space-y-6 relative">
+                        {/* 家訪指派區塊 — case_officer / supervisor / admin 可指派；
+                            只在 visit 階段為當前階段時可改，離開階段後變唯讀 */}
+                        {selectedAppId && visitStageActive && (hasPermission('case_officer') || hasPermission('supervisor') || hasPermission('admin')) && (
+                            <HomeVisitAssigneePanel
+                                applicationId={selectedAppId}
+                                operatorUserId={loggedInUser?.id ?? ''}
+                                currentAssigneeId={appDetail?.homeVisitAssigneeId ?? null}
+                                currentAssigneeName={appDetail?.homeVisitAssigneeName ?? null}
+                                onChanged={() => loadAppDetail(selectedAppId, true)}
+                            />
+                        )}
+                        {/* 已離開家訪階段（或非可指派角色）時，只顯示指派結果 */}
+                        {selectedAppId && (!visitStageActive || (!hasPermission('case_officer') && !hasPermission('supervisor') && !hasPermission('admin'))) && appDetail?.homeVisitAssigneeName && (
+                            <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
+                                <span className="font-semibold">家訪指派人員：</span>{appDetail.homeVisitAssigneeName}
+                                {!visitStageActive && (
+                                    <span className="text-xs text-blue-500 ml-2">（已離開家訪階段，無法重新指派）</span>
+                                )}
+                            </div>
+                        )}
+                        {/* 聯絡紀錄速查（讓家訪人員可看到該申請人歷次來電/關懷） */}
+                        {appDetail?.applicantId && loggedInUser && (
+                            <ContactRecordsQuickView
+                                applicantUserId={appDetail.applicantId}
+                                applicantName={appDetail.applicantName ?? ''}
+                                operatorUserId={loggedInUser.id}
+                                onChanged={() => loadAppDetail(selectedAppId!, true)}
+                            />
+                        )}
                         <HomeVisitForm
                             applicationId={selectedAppId!}
                             visitorUserId={loggedInUser?.id}
-                            readOnly={contentReadOnly || (!hasPermission('social_worker') && !hasPermission('case_officer') && !hasPermission('admin'))}
+                            readOnly={contentReadOnly || (!hasPermission('volunteer') && !hasPermission('case_officer') && !hasPermission('admin'))}
                         />
+                        {/* #17 個管師案件說明：家訪階段可由 case_officer/supervisor/admin 編輯 */}
+                        {selectedAppId && loggedInUser && (
+                            <OfficerCaseSummaryPanel
+                                applicationId={selectedAppId}
+                                operatorUserId={loggedInUser.id}
+                                initialValue={appDetail?.officerCaseSummary ?? null}
+                                editable={!contentReadOnly && (hasPermission('case_officer') || hasPermission('supervisor') || hasPermission('admin'))}
+                                onSaved={() => loadAppDetail(selectedAppId, true)}
+                            />
+                        )}
+                        {/* 家庭訪視階段必填提醒 — 移到案件說明下方 */}
+                        {!isCaseClosed && visitChecklist.length > 0 && (
+                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
+                                <p className="font-semibold mb-1">本階段尚需完成以下項目才能進入下一階段：</p>
+                                <ul className="list-disc list-inside text-xs space-y-0.5">
+                                    {visitChecklist.map(item => <li key={item}>{item}</li>)}
+                                </ul>
+                            </div>
+                        )}
+                        {!isCaseClosed && visitChecklist.length === 0 && (
+                            <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-700">
+                                <p className="font-semibold">本階段所有必填項目已完成，可進入下一階段。</p>
+                            </div>
+                        )}
                     </div>
                 );
+            }
 
             case 'board_review': {
                 // 共筆模式權限：僅派組成員 OR chairman OR admin 可編輯（取代原本僅看角色的判斷）
                 const boardReadOnly = contentReadOnly || !canEditBoardReview;
                 const dbApplyAmount = appDetail?.applyAmount ?? null;
+                const activeMember = visibleBoardMembers.find(m => m.signerUserId === activeMemberTab);
+                const isOwnTab = !!(activeMember && loggedInUser && activeMember.signerUserId === loggedInUser.id);
+                // 唯讀條件：自己 tab 沿用 boardReadOnly；非自己 tab 全部 disable
+                const formReadOnly = boardReadOnly || !isOwnTab;
+                // 顯示值：自己 tab 用 App state；非自己用該成員 persisted 值
+                const displayApproved = isOwnTab ? boardApproved : (activeMember?.memberApproved ?? null);
+                const displayAmount   = isOwnTab ? boardApprovedAmount : (activeMember?.memberAmount ?? 0);
+                const displayOpinion  = isOwnTab ? boardOpinion : (activeMember?.memberComments ?? '');
                 return (
                     <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative space-y-6">
                         <h3 className="text-lg font-bold flex items-center gap-2">
@@ -927,34 +1146,76 @@ function App() {
                             董事審核
                         </h3>
 
-                        {/* 1. 審核結果 toggle */}
-                        <div>
+                        {/* Member Tab strip */}
+                        {visibleBoardMembers.length === 0 ? (
+                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700">
+                                您不在本案派組成員中，無法檢視個別審核意見。
+                            </div>
+                        ) : (
+                            <>
+                                <div className="border-b border-slate-200 -mb-px">
+                                    <div className="flex flex-wrap gap-1">
+                                        {visibleBoardMembers.map(m => {
+                                            const isActive = m.signerUserId === activeMemberTab;
+                                            const isSelf = !!(loggedInUser && m.signerUserId === loggedInUser.id);
+                                            const sigBadge =
+                                                m.status === 'signed'  ? <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">已簽</span> :
+                                                m.status === 'invalid' ? <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-red-100 text-red-700">已失效</span> :
+                                                                          <span className="ml-1.5 text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">未簽</span>;
+                                            return (
+                                                <button
+                                                    key={m.signerUserId}
+                                                    type="button"
+                                                    onClick={() => setActiveMemberTab(m.signerUserId)}
+                                                    className={clsx(
+                                                        'px-4 py-2 text-sm font-medium border-b-2 transition',
+                                                        isActive
+                                                            ? 'border-purple-600 text-purple-700'
+                                                            : 'border-transparent text-slate-500 hover:text-slate-700 hover:border-slate-300'
+                                                    )}
+                                                >
+                                                    {m.name}
+                                                    {isSelf && <span className="ml-1 text-xs text-blue-600">（您）</span>}
+                                                    {sigBadge}
+                                                </button>
+                                            );
+                                        })}
+                                    </div>
+                                </div>
+                            </>
+                        )}
+
+                        {/* 不論自己/他人 tab 都用同一份表單樣式；非自己 tab 全部 disable */}
+                        {activeMember && (<>
+
+                        {/* 1. 審核結果 toggle（pt-2 上方留白避免 label 緊貼 tab） */}
+                        <div className="pt-2">
                             <label className="block text-sm font-medium text-gray-700 mb-2">審核結果</label>
                             <div className="inline-flex rounded-lg border border-gray-200 overflow-hidden">
                                 <button
                                     type="button"
-                                    disabled={boardReadOnly}
+                                    disabled={formReadOnly}
                                     onClick={() => { setBoardApproved(true); }}
                                     className={clsx(
                                         'px-5 py-2 text-sm font-medium transition',
-                                        boardApproved === true
+                                        displayApproved === true
                                             ? 'bg-green-600 text-white'
                                             : 'bg-white text-gray-600 hover:bg-gray-50',
-                                        boardReadOnly && 'cursor-not-allowed opacity-60'
+                                        formReadOnly && 'cursor-not-allowed opacity-60'
                                     )}
                                 >
                                     審核通過
                                 </button>
                                 <button
                                     type="button"
-                                    disabled={boardReadOnly}
+                                    disabled={formReadOnly}
                                     onClick={() => { setBoardApproved(false); setBoardApprovedAmount(0); }}
                                     className={clsx(
                                         'px-5 py-2 text-sm font-medium border-l border-gray-200 transition',
-                                        boardApproved === false
+                                        displayApproved === false
                                             ? 'bg-red-600 text-white'
                                             : 'bg-white text-gray-600 hover:bg-gray-50',
-                                        boardReadOnly && 'cursor-not-allowed opacity-60'
+                                        formReadOnly && 'cursor-not-allowed opacity-60'
                                     )}
                                 >
                                     審核未通過
@@ -967,7 +1228,7 @@ function App() {
                             <label className="block text-sm font-medium text-gray-700 mb-1">申請金額</label>
                             <div className={clsx(
                                 'w-full max-w-xs border rounded-md px-3 py-2 text-sm',
-                                boardReadOnly
+                                formReadOnly
                                     ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
                                     : 'bg-gray-50 text-gray-700 border-gray-200'
                             )}>
@@ -987,91 +1248,87 @@ function App() {
                                     inputMode="numeric"
                                     pattern="[0-9]*"
                                     maxLength={String(maxApplyAmount).length}
-                                    value={boardApproved ? (boardApprovedAmount || '') : ''}
+                                    value={displayApproved ? (displayAmount || '') : ''}
                                     onChange={(e) => {
                                         const raw = e.target.value.replace(/\D/g, '');
                                         const v = Number(raw);
                                         setBoardApprovedAmount(v);
                                         setApplyAmountError(v > maxApplyAmount ? `通過金額不可超過 ${maxApplyAmount.toLocaleString()} 元` : '');
                                     }}
-                                    disabled={boardReadOnly || !boardApproved}
+                                    disabled={formReadOnly || !displayApproved}
                                     className={clsx(
                                         'w-full border rounded-md pl-10 pr-3 py-2 text-sm',
-                                        (applyAmountError && boardApproved)
+                                        (applyAmountError && isOwnTab && displayApproved)
                                             ? 'border-red-400 focus:ring-red-300'
-                                            : (!boardApproved || boardReadOnly)
+                                            : (!displayApproved || formReadOnly)
                                                 ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed'
                                                 : 'border-gray-300 focus:ring-2 focus:ring-purple-500 focus:border-transparent'
                                     )}
                                 />
                             </div>
-                            {applyAmountError && boardApproved && (
+                            {applyAmountError && isOwnTab && displayApproved && (
                                 <p className="text-xs text-red-500 mt-1">{applyAmountError}</p>
                             )}
                         </div>
 
-                        {/* 4. 審核意見 */}
+                        {/* 4. 審核意見（最少字數依 system_settings.board_opinion_min_chars；0 = 不限制） */}
                         <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">
-                                審核意見 <span className="text-gray-400 font-normal">(至少 50 字)</span>
+                                審核意見
+                                {boardOpinionMinChars > 0 && (
+                                    <span className="text-gray-400 font-normal ml-1">(至少 {boardOpinionMinChars} 字)</span>
+                                )}
                             </label>
                             <textarea
                                 className="w-full h-32 p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
                                 placeholder="請輸入審核意見..."
-                                value={boardOpinion}
+                                value={displayOpinion}
                                 onChange={(e) => setBoardOpinion(e.target.value)}
-                                disabled={boardReadOnly}
+                                disabled={formReadOnly}
                             />
-                            <div className="text-right text-xs text-gray-500 mt-1">
-                                {boardOpinion.length} / 50 字
-                            </div>
+                            {boardOpinionMinChars > 0 && isOwnTab && (
+                                <div className="text-right text-xs text-gray-500 mt-1">
+                                    {displayOpinion.length} / {boardOpinionMinChars} 字
+                                </div>
+                            )}
                         </div>
 
-                        {boardApproved === null && !boardReadOnly && (
+                        {boardApproved === null && !boardReadOnly && isOwnTab && (
                             <p className="text-xs text-amber-600">請先選擇審核結果</p>
                         )}
 
-                        {/* 共筆儲存按鈕 — 任一派組成員可儲存當前編輯讓組員共享，同時解除 dirty 狀態以允許推進 */}
-                        {!boardReadOnly && (
+                        {/* 共筆儲存按鈕 — 僅在自己 tab 顯示 */}
+                        {isOwnTab && !boardReadOnly && (
                             <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
                                 <button
                                     type="button"
                                     disabled={savingBoardDraft || !boardDirty}
                                     onClick={async () => {
                                         if (!selectedAppId || !loggedInUser) return;
-                                        // Warn if existing signatures will be invalidated
-                                        const existingSigs = signatureStatus
-                                            ? signatureStatus.members.filter(m => m.status === 'signed' || m.status === 'invalid').length
-                                            : 0;
-                                        if (existingSigs > 0) {
-                                            const ok = window.confirm(`修改會使 ${existingSigs} 個已簽名失效，確認繼續？`);
+                                        // 個人簽章若已存在會因 hash 改變而失效（per-member 模式只影響自己）
+                                        if (myMemberRow?.status === 'signed') {
+                                            const ok = window.confirm('修改會使您先前的簽章失效，確認繼續？');
                                             if (!ok) return;
                                         }
                                         setSavingBoardDraft(true);
                                         setBoardDraftMsg(null);
-                                        const res = await saveBoardReviewDraft(
+                                        const { saveMemberReviewOpinion } = await import('./app/actions/boardSignatureActions');
+                                        const res = await saveMemberReviewOpinion(
                                             selectedAppId,
-                                            {
-                                                approvedAmount: boardApproved ? (boardApprovedAmount || 0) : 0,
-                                                comments: boardOpinion,
-                                                isApproved: boardApproved,
-                                            },
                                             loggedInUser.id,
+                                            {
+                                                approved: boardApproved,
+                                                amount: boardApproved ? (boardApprovedAmount || 0) : null,
+                                                comments: boardOpinion || null,
+                                            },
                                         );
                                         setSavingBoardDraft(false);
                                         if (!res.success) {
                                             setBoardDraftMsg(res.error ?? '儲存失敗');
                                             return;
                                         }
-                                        setBoardDraftMsg(res.data && res.data.changedFields.length > 0
-                                            ? `已儲存（變動欄位：${res.data.changedFields.join(', ')}）`
-                                            : '沒有變動，未建立稽核紀錄');
-                                        // Reload detail → initialBoardValues reset → dirty cleared automatically
-                                        // Also refresh signature panel since save may have invalidated signatures (hash change)
-                                        if (res.data && res.data.changedFields.length > 0) {
-                                            setBoardRefreshKey(k => k + 1);
-                                        }
-                                        await loadAppDetail(selectedAppId, true);
+                                        setBoardDraftMsg('已儲存個人審核意見');
+                                        setBoardRefreshKey(k => k + 1);
                                     }}
                                     className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
                                     title={boardDirty ? '儲存當前編輯，讓同組成員看見' : '沒有變動'}
@@ -1086,6 +1343,8 @@ function App() {
                                 )}
                             </div>
                         )}
+
+                        </>)}
                     </div>
                 );
             }
@@ -1093,40 +1352,21 @@ function App() {
             case 'reimbursement':
                 return (
                     <div className="space-y-6">
-                        <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200">
-                            <h3 className="text-lg font-bold mb-4 flex items-center gap-2">
-                                <CreditCard className="w-5 h-5 text-emerald-600" />
-                                核銷撥款
-                            </h3>
-                            {(() => {
-                                const isPaid = appDetail?.status === '4';
-                                return (
-                                    <div className={`flex items-center justify-between p-4 rounded-lg mb-2 ${
-                                        isPaid ? 'bg-green-50 text-green-900' : 'bg-amber-50 text-amber-900'
-                                    }`}>
-                                        <span className="font-medium">撥款狀態</span>
-                                        <span className={`px-3 py-1 rounded-full text-sm font-bold ${
-                                            isPaid ? 'bg-green-200 text-green-800' : 'bg-amber-200 text-amber-800'
-                                        }`}>
-                                            {isPaid ? '已撥款' : '待撥款'}
-                                        </span>
-                                    </div>
-                                );
-                            })()}
-                            {appDetail?.applicantId && (
-                                <button
-                                    onClick={async () => {
-                                        const receipts = await fetchHistoricalReceipts(appDetail.applicantId!);
-                                        setHistoricalReceipts(receipts);
-                                        setShowReceiptsModal(true);
-                                    }}
-                                    className="mt-2 flex items-center gap-2 bg-slate-100 hover:bg-slate-200 text-slate-700 px-4 py-2 rounded-lg text-sm font-medium transition"
-                                >
-                                    查看歷史收據
-                                </button>
-                            )}
-                        </div>
-                        {/* 核銷類文件上傳 */}
+                        {/* 多層審核撥款 — admin / case_officer / supervisor / accountant / executive / chairman 皆可見
+                            （結案後仍顯示供查閱簽核歷程；唯讀控制由 DisbursementPanel 內部依角色與 stage 自管） */}
+                        {loggedInUser && selectedAppId && (
+                            hasPermission('admin') || hasPermission('case_officer') || hasPermission('supervisor')
+                            || hasPermission('accountant') || hasPermission('executive') || hasPermission('chairman' as Role)
+                        ) && (
+                            <DisbursementPanel
+                                applicationId={selectedAppId}
+                                applicantId={appDetail?.applicantId ?? undefined}
+                                operatorUserId={loggedInUser.id}
+                                operatorRoles={loggedInUser.roles as Role[]}
+                                onCanCloseChange={setCanCloseCase}
+                            />
+                        )}
+                        {/* 應備文件（核銷階段）— 移到撥款流程下方 */}
                         <ReviewList
                             applicationId={selectedAppId!}
                             caseNumber={appDetail?.caseNumber ?? ''}
@@ -1135,21 +1375,14 @@ function App() {
                             pendingThresholdDays={pendingThresholdDays}
                             userId={loggedInUser?.id}
                             caseClosed={!!isCaseClosed}
-                            canReview={!isCaseClosed && (hasPermission('accountant') || hasPermission('case_officer') || hasPermission('admin'))}
-                            readOnly={contentReadOnly || (!hasPermission('accountant') && !hasPermission('case_officer') && !hasPermission('admin'))}
+                            canReview={!isCaseClosed && (hasPermission('accountant') || hasPermission('case_officer') || hasPermission('admin') || hasPermission('supervisor'))}
+                            readOnly={contentReadOnly || (!hasPermission('accountant') && !hasPermission('case_officer') && !hasPermission('admin') && !hasPermission('supervisor'))}
                             onRefresh={() => {
                                 if (selectedAppId) {
                                     fetchApplicationDocuments(selectedAppId).then(setDbDocs);
                                 }
                             }}
                         />
-                        {/* 文件列印 — 僅 admin 與 accountant 可見 */}
-                        {loggedInUser && selectedAppId && (hasPermission('admin') || hasPermission('accountant')) && (
-                            <ReimbursementPrintPanel
-                                applicationId={selectedAppId}
-                                operatorUserId={loggedInUser.id}
-                            />
-                        )}
                     </div>
                 );
 
@@ -1217,6 +1450,7 @@ function App() {
                                         isViewing={isViewing}
                                         completed={isCompleted}
                                         isFuture={isFuture}
+                                        caseClosed={!!isCaseClosed}
                                         label={STAGE_LABEL_MAP[s]}
                                         icon={STAGE_ICON_MAP[s]}
                                         onClick={() => { if (!isFuture) setViewedStage(s); }}
@@ -1224,6 +1458,49 @@ function App() {
                                 );
                             })}
                         </div>
+
+                        {/* 關懷紀錄按鈕 — 開啟唯讀 modal 顯示此案件的所有來電 / 關懷紀錄 */}
+                        <button
+                            type="button"
+                            onClick={() => setShowCareRecordsModal(true)}
+                            className="mt-4 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-rose-50 hover:bg-rose-100 border border-rose-200 text-rose-700 text-sm font-medium rounded-lg transition"
+                            title="檢視此案件相關的來電與關懷紀錄（唯讀）"
+                        >
+                            <Heart className="w-4 h-4" />
+                            關懷紀錄
+                        </button>
+
+                        {/* 不通過結案按鈕 — 任何進行中階段（status='1' 審核中 + 非結案）皆可觸發 */}
+                        {!isCaseClosed && appDetail?.status === '1' && (() => {
+                            // 只有 admin / supervisor / 案件 officer 可以結案
+                            const canClose = !!loggedInUser && (
+                                (loggedInUser.roles as Role[]).includes('admin')
+                                || (loggedInUser.roles as Role[]).includes('supervisor')
+                                || String(loggedInUser.id) === String(appDetail.officerId ?? '')
+                            );
+                            if (!canClose) return null;
+                            return (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        // 行政初審階段且資格判定不符 → 預帶入 reason codes
+                                        const isAdminReview = stage === 'admin_review';
+                                        const prefillCodes = (isAdminReview && eligibilityCheck.checked && !eligibilityCheck.eligible)
+                                            ? eligibilityCheck.reasonCodes.map(rc => ({ code: rc.code as CloseReasonCode, value: rc.value }))
+                                            : undefined;
+                                        setCloseCaseModalProps({
+                                            prefillCodes,
+                                            titleSuffix: prefillCodes?.length ? '已自動帶入資格判定結果' : undefined,
+                                        });
+                                    }}
+                                    className="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-white hover:bg-red-50 border border-red-200 text-red-700 text-xs font-medium rounded-lg transition"
+                                    title="任何階段都可中斷流程結案（不可逆）"
+                                >
+                                    <AlertTriangle className="w-3.5 h-3.5" />
+                                    不通過結案
+                                </button>
+                            );
+                        })()}
                     </div>
 
                     {/* Notification block */}
@@ -1297,49 +1574,102 @@ function App() {
                                 String(loggedInUser.id) === String(appDetail.officerId ?? '')
                                 || (loggedInUser.roles as Role[]).includes('admin')
                             );
+                        const subtypeLabel = appDetail.subsidySubtype === '1' ? '經濟弱勢'
+                                           : appDetail.subsidySubtype === '2' ? '小康家庭'
+                                           : null;
                         return (
-                            <div className="bg-white rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-700 flex flex-wrap items-center gap-x-6 gap-y-1">
-                                <span>
-                                    <span className="font-semibold text-slate-600">案件來源：</span>
-                                    {appDetail.applicationWay === '2' ? '轉介' : '自提'}
-                                </span>
-                                {appDetail.applicationWay === '2' && (
+                            <div className="bg-white rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-700 space-y-2">
+                                <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
                                     <span>
-                                        <span className="font-semibold text-slate-600">轉介單位：</span>
-                                        {appDetail.referralUnitName
-                                            ? appDetail.referralUnitName
-                                            : <span className="text-slate-400 italic">（單位已刪除）</span>}
+                                        <span className="font-semibold text-slate-600">出生年月日：</span>
+                                        {appDetail.applicantDob
+                                            ? <span className="text-slate-800">{appDetail.applicantDob}</span>
+                                            : <span className="text-slate-400 italic">（未填）</span>}
                                     </span>
-                                )}
-                                {canEditBasics && (
-                                    <button
-                                        type="button"
-                                        onClick={() => setShowEditBasicsModal(true)}
-                                        className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition cursor-pointer"
-                                    >
-                                        編輯案件基本資訊
-                                    </button>
+                                    <span>
+                                        <span className="font-semibold text-slate-600">癌別：</span>
+                                        {appDetail.cancerType
+                                            ? <span className="text-slate-800">{appDetail.cancerType}</span>
+                                            : <span className="text-slate-400 italic">（未填）</span>}
+                                    </span>
+                                    <span>
+                                        <span className="font-semibold text-slate-600">期數：</span>
+                                        {appDetail.cancerStage
+                                            ? <span className="text-slate-800">{appDetail.cancerStage}</span>
+                                            : <span className="text-slate-400 italic">（未填）</span>}
+                                    </span>
+                                    <span>
+                                        <span className="font-semibold text-slate-600">申請形式：</span>
+                                        {appDetail.applicationForm === 'P' ? <span className="text-slate-800">紙本</span>
+                                            : appDetail.applicationForm === 'E' ? <span className="text-slate-800">電子郵件</span>
+                                            : <span className="text-slate-400 italic">（未填）</span>}
+                                    </span>
+                                    <span>
+                                        <span className="font-semibold text-slate-600">治療階段：</span>
+                                        {appDetail.treatmentPhase === 'B' ? <span className="text-slate-800">治療前</span>
+                                            : appDetail.treatmentPhase === 'A' ? <span className="text-slate-800">治療後</span>
+                                            : appDetail.treatmentPhase === 'X' ? <span className="text-slate-800">治療前後</span>
+                                            : <span className="text-slate-400 italic">（未填）</span>}
+                                    </span>
+                                    <span>
+                                        <span className="font-semibold text-slate-600">補助子類型：</span>
+                                        {subtypeLabel
+                                            ? <span className="text-slate-800">{subtypeLabel}</span>
+                                            : <span className="text-slate-400 italic">（未指定）</span>}
+                                    </span>
+                                    <span>
+                                        <span className="font-semibold text-slate-600">案件來源：</span>
+                                        {appDetail.applicationWay === '2' ? '轉介' : '自提'}
+                                    </span>
+                                    <span>
+                                        <span className="font-semibold text-slate-600">聯絡電話：</span>
+                                        {appDetail.applicantPhone
+                                            ? <a href={`tel:${appDetail.applicantPhone.replace(/[^0-9+]/g, '')}`}
+                                                 className="text-blue-600 hover:underline">{appDetail.applicantPhone}</a>
+                                            : <span className="text-slate-400 italic">（未填）</span>}
+                                    </span>
+                                    {appDetail.applicationWay === '2' && (
+                                        <span>
+                                            <span className="font-semibold text-slate-600">轉介單位：</span>
+                                            {appDetail.referralUnitName
+                                                ? appDetail.referralUnitName
+                                                : <span className="text-slate-400 italic">（未填寫）</span>}
+                                        </span>
+                                    )}
+                                    {canEditBasics && (
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowEditBasicsModal(true)}
+                                            className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition cursor-pointer"
+                                        >
+                                            編輯案件基本資訊
+                                        </button>
+                                    )}
+                                </div>
+                                {appDetail.applicationWay === '2' && (
+                                    appDetail.referralContactName || appDetail.referralContactTitle || appDetail.referralContactPhone
+                                ) && (
+                                    <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 border-t border-slate-100 pt-2">
+                                        <span className="font-semibold text-slate-500">轉介承辦人：</span>
+                                        {appDetail.referralContactName && <span>{appDetail.referralContactName}</span>}
+                                        {appDetail.referralContactTitle && <span className="text-slate-400">／{appDetail.referralContactTitle}</span>}
+                                        {appDetail.referralContactPhone && (
+                                            <a href={`tel:${appDetail.referralContactPhone.replace(/[^0-9+]/g, '')}`}
+                                                className="text-blue-600 hover:underline">
+                                                {appDetail.referralContactPhone}
+                                            </a>
+                                        )}
+                                    </div>
                                 )}
                             </div>
                         );
                     })()}
 
-                    {/* 結案 banner */}
-                    {(appDetail?.status === '2' || appDetail?.status === '4') && (
-                        <div className={clsx(
-                            'flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium border',
-                            appDetail.status === '2'
-                                ? 'bg-red-50 border-red-200 text-red-700'
-                                : 'bg-emerald-50 border-emerald-200 text-emerald-700'
-                        )}>
-                            <span className="text-base">
-                                {appDetail.status === '2' ? '🔴' : '✅'}
-                            </span>
-                            <span>
-                                {appDetail.status === '2'
-                                    ? '此案件已結案（審核未通過），不可再繼續流程。'
-                                    : '此案件已結案（核銷完成），補助流程已結束。'}
-                            </span>
+                    {/* 結案 banner — 只在「審核未通過結案」時提示；核銷完成屬正常結束，不再贅述 */}
+                    {appDetail?.status === '2' && (
+                        <div className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium border bg-red-50 border-red-200 text-red-700">
+                            <span className="text-base">🔴</span>
+                            <span>此案件已結案（審核未通過），不可再繼續流程。</span>
                         </div>
                     )}
 
@@ -1380,7 +1710,11 @@ function App() {
                                     </div>
                                     <button
                                         type="button"
-                                        onClick={() => { setThresholdCloseReason(''); setThresholdCloseError(null); setShowThresholdCloseModal(true); }}
+                                        onClick={() => setCloseCaseModalProps({
+                                            prefillCodes: [{ code: '98' as CloseReasonCode }],
+                                            prefillNote: `已發送 ${reminderStatus?.count ?? 0} 次未補件提醒`,
+                                            titleSuffix: '補件超時結案',
+                                        })}
                                         className="shrink-0 px-3 py-1.5 bg-red-600 text-white text-sm font-medium rounded-lg hover:bg-red-700 transition cursor-pointer"
                                     >
                                         立即結案
@@ -1390,22 +1724,24 @@ function App() {
                         </>
                     )}
 
-                    {/* 董事審核階段：派組資訊卡片（純顯示） + 重新指派（chairman/admin） */}
+                    {/* 董事審核階段：派組資訊卡片（純顯示） + 重新指派（chairman/admin）。
+                        簽章面板移到審核意見表（StageContainer）下方，避免使用者填意見時被簽章區干擾。 */}
                     {appDetail && appDetail.stage === 'board_review' && appDetail.status === '1' && loggedInUser && selectedAppId && (
                         <>
-                            <BoardVoteCard applicationId={selectedAppId} refreshKey={boardRefreshKey} />
-                            <BoardSignaturePanel
+                            {/* #17 案件說明（董事審核階段：所有人皆唯讀，編輯改在家訪階段） */}
+                            <OfficerCaseSummaryPanel
                                 applicationId={selectedAppId}
-                                currentUserId={loggedInUser.id}
-                                refreshKey={boardRefreshKey}
-                                onChange={setSignatureStatus}
+                                operatorUserId={loggedInUser.id}
+                                initialValue={appDetail.officerCaseSummary ?? null}
+                                editable={false}
+                                onSaved={() => loadAppDetail(selectedAppId, true)}
                             />
+                            <BoardVoteCard applicationId={selectedAppId} refreshKey={boardRefreshKey} />
                             {isAdminOrChairman && (
                                 <div className="flex items-center gap-2 flex-wrap">
                                     <button
                                         type="button"
                                         onClick={async () => {
-                                            setAssignMsg(null);
                                             if (!showAssignDropdown) {
                                                 const res = await fetchActiveBoardGroups();
                                                 if (res.success && res.data) setActiveBoardGroups(res.data);
@@ -1423,14 +1759,13 @@ function App() {
                                                     const gid = e.target.value;
                                                     if (!gid) return;
                                                     setAssignBusy(true);
-                                                    setAssignMsg(null);
                                                     const res = await assignCaseToBoardGroup(selectedAppId, gid, loggedInUser.id, 'manual');
                                                     setAssignBusy(false);
                                                     if (!res.success) {
-                                                        setAssignMsg(res.error ?? '派案失敗');
+                                                        pushToast({ type: 'error', msg: res.error ?? '派案失敗' });
                                                         return;
                                                     }
-                                                    setAssignMsg(res.data?.reassigned ? '重新指派成功' : '指派成功');
+                                                    pushToast({ type: 'success', msg: res.data?.reassigned ? '重新指派成功' : '指派成功' });
                                                     setShowAssignDropdown(false);
                                                     // Refresh group card + signature panel + applicant's own membership check
                                                     setBoardRefreshKey(k => k + 1);
@@ -1452,7 +1787,6 @@ function App() {
                                             </select>
                                         </div>
                                     )}
-                                    {assignMsg && <span className="text-xs text-slate-600">{assignMsg}</span>}
                                 </div>
                             )}
                         </>
@@ -1461,6 +1795,16 @@ function App() {
                     <StageContainer stageKey={displayedStage}>
                         {renderStageContent()}
                     </StageContainer>
+
+                    {/* 董事簽章面板：移到審核意見表下方，讓使用者先填完意見/金額再簽章 */}
+                    {appDetail && appDetail.stage === 'board_review' && appDetail.status === '1' && loggedInUser && selectedAppId && (
+                        <BoardSignaturePanel
+                            applicationId={selectedAppId}
+                            currentUserId={loggedInUser.id}
+                            refreshKey={boardRefreshKey}
+                            onChange={setSignatureStatus}
+                        />
+                    )}
 
                     {/* Flow Controls */}
                     <div className="bg-white p-4 rounded-lg border border-gray-200">
@@ -1492,14 +1836,22 @@ function App() {
                                 {(() => {
                                     const isBoardReview  = stage === 'board_review';
                                     const isReimbursement = stage === 'reimbursement';
-                                    const boardIncomplete = isBoardReview && (boardApproved === null || boardOpinion.length < 50);
-                                    // 派組權限門檻（board_review 階段）：僅派組成員或 chairman/admin 可推進
-                                    const boardPermBlocked = isBoardReview && !canEditBoardReview;
+                                    const isVisit         = stage === 'visit';
+                                    const boardIncomplete = isBoardReview && (boardApproved === null || (boardOpinionMinChars > 0 && boardOpinion.length < boardOpinionMinChars));
+                                    // 派組權限門檻（board_review 階段）：派組成員 / chairman / admin / 承辦人 / 主管 都可推進
+                                    const boardPermBlocked = isBoardReview && !canAdvanceFromBoardReview;
                                     // Dirty-state guard: 未儲存的編輯阻擋推進
                                     const boardDirtyBlocked = isBoardReview && boardDirty;
                                     // Signature completeness gate: 全員簽完且 hash 有效才能推進
                                     const boardSignatureBlocked = isBoardReview && !signaturesComplete;
-                                    const advanceDisabled = isCaseClosed || isViewingPastStep || boardIncomplete || boardPermBlocked || boardDirtyBlocked || boardSignatureBlocked;
+                                    // 核銷階段：必須累積撥款都已回收（canCloseCase）才能按結案
+                                    const reimbursementBlocked = isReimbursement && !canCloseCase;
+                                    // 家庭訪視階段三項守門：指派人 + 家訪表 + 個管師案件說明
+                                    const visitMissingAssignee = isVisit && !appDetail?.homeVisitAssigneeId;
+                                    const visitMissingForm     = isVisit && !appDetail?.homeVisitSaved;
+                                    const visitMissingSummary  = isVisit && !(appDetail?.officerCaseSummary && appDetail.officerCaseSummary.trim());
+                                    const visitBlocked         = visitMissingAssignee || visitMissingForm || visitMissingSummary;
+                                    const advanceDisabled = isCaseClosed || isViewingPastStep || boardIncomplete || boardPermBlocked || boardDirtyBlocked || boardSignatureBlocked || reimbursementBlocked || visitBlocked;
 
                                     // 按鈕文字
                                     const btnLabel =
@@ -1512,13 +1864,22 @@ function App() {
                                             ? 'flex flex-col items-center bg-red-700 text-white px-4 py-2 rounded-md hover:bg-red-800 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition shadow-sm'
                                             : 'flex flex-col items-center bg-slate-900 text-white px-4 py-2 rounded-md hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition shadow-sm';
 
+                                    const visitMissingItems = [
+                                        visitMissingAssignee && '尚未指派家訪人員',
+                                        visitMissingForm     && '家訪關懷紀錄表尚未儲存或欄位不完整',
+                                        visitMissingSummary  && '個管師案件說明尚未填寫',
+                                    ].filter(Boolean) as string[];
                                     const advanceTitle =
                                         isViewingPastStep ? '請先返回目前步驟再操作流程' :
                                         isCaseClosed ? '此案件已結案' :
-                                        boardPermBlocked ? '僅本案派組成員、chairman 或 admin 可操作' :
+                                        visitBlocked ? `家庭訪視階段尚未完成：${visitMissingItems.join('、')}` :
+                                        boardPermBlocked ? '僅本案派組成員、董事長、承辦人員、主管或系統管理員可推進' :
                                         boardDirtyBlocked ? '有未儲存的編輯，請先按「儲存」' :
                                         boardSignatureBlocked ? `尚有 ${signaturesMissing} 位組員未簽章（或簽章已因內容變動失效）` :
-                                        boardIncomplete ? '請選擇審核結果並填寫至少 50 字審核意見' :
+                                        boardIncomplete ? (boardOpinionMinChars > 0
+                                            ? `請選擇審核結果並填寫至少 ${boardOpinionMinChars} 字審核意見`
+                                            : '請選擇審核結果') :
+                                        reimbursementBlocked ? '尚有撥款未完成回收紙本；累積回收金額需達核定金額才能結案' :
                                         isReimbursement ? '確認核銷完成並結案' :
                                         isBoardReview && boardApproved === false ? '確認董事審核未通過並結案' :
                                         `前進至「${advanceLabel}」`;
@@ -1544,49 +1905,15 @@ function App() {
                 </div>
             </main>
 
-            {/* Historical Receipts Modal */}
-            {showReceiptsModal && (
-                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[80vh] flex flex-col">
-                        <div className="p-5 border-b border-slate-200 flex items-center justify-between">
-                            <h3 className="text-lg font-bold text-slate-800">歷史收據</h3>
-                            <button
-                                onClick={() => { setShowReceiptsModal(false); setReceiptsPreviewUrl(null); }}
-                                className="text-slate-400 hover:text-slate-600 transition text-xl leading-none"
-                            >✕</button>
-                        </div>
-                        <div className="flex-1 overflow-y-auto p-5 space-y-3">
-                            {historicalReceipts.length === 0 ? (
-                                <p className="text-slate-400 text-sm text-center py-8">無歷史收據紀錄</p>
-                            ) : historicalReceipts.map((r) => (
-                                <div key={`${r.caseNumber}-${r.docId}`} className="flex items-center gap-4 border border-slate-100 rounded-xl p-4 hover:bg-slate-50">
-                                    <div className="flex-1 min-w-0">
-                                        <p className="text-sm font-semibold text-slate-700">{r.caseNumber}</p>
-                                        <p className="text-xs text-slate-500">{r.docLabel}</p>
-                                        {r.uploadedAt && (
-                                            <p className="text-xs text-slate-400 mt-0.5">上傳日期：{r.uploadedAt.slice(0, 10)}</p>
-                                        )}
-                                    </div>
-                                    <button
-                                        onClick={() => setReceiptsPreviewUrl(r.fileUrl)}
-                                        className="shrink-0 flex items-center gap-1.5 bg-blue-600 hover:bg-blue-700 text-white px-3 py-1.5 rounded-lg text-xs font-medium transition"
-                                    >
-                                        <Eye className="w-3.5 h-3.5" />
-                                        預覽
-                                    </button>
-                                </div>
-                            ))}
-                        </div>
-                    </div>
-                    {/* 安全預覽（浮水印 + 縮放 + 防列印 + 防下載）— 與行政初審階段同一套機制 */}
-                    {receiptsPreviewUrl && (
-                        <SecureFilePreviewModal
-                            url={receiptsPreviewUrl}
-                            label="歷史收據"
-                            onClose={() => setReceiptsPreviewUrl(null)}
-                        />
-                    )}
-                </div>
+            {/* 關懷紀錄唯讀檢視 Modal */}
+            {showCareRecordsModal && selectedAppId && loggedInUser && (
+                <ApplicationCareRecordsModal
+                    applicationId={selectedAppId}
+                    applicantUserId={appDetail?.applicantId ?? null}
+                    caseNumber={appDetail?.caseNumber ?? null}
+                    operatorUserId={loggedInUser.id}
+                    onClose={() => setShowCareRecordsModal(false)}
+                />
             )}
 
             {/* Send Notification Modal */}
@@ -1620,9 +1947,19 @@ function App() {
                     operatorUserId={loggedInUser.id}
                     initial={{
                         applicantName: appDetail.applicantName ?? '',
+                        applicantPhone: appDetail.applicantPhone ?? '',
+                        applicantDob: appDetail.applicantDob ?? '',
+                        cancerType: appDetail.cancerType ?? '',
+                        cancerStage: appDetail.cancerStage ?? '',
+                        applicationForm: appDetail.applicationForm ?? null,
+                        treatmentPhase: appDetail.treatmentPhase ?? null,
                         applicationType: (appDetail.applicationType as 'A' | 'B' | 'C' | 'D') ?? 'A',
                         applicationWay: appDetail.applicationWay ?? '1',
                         referralUnitId: appDetail.referralUnitId ?? null,
+                        referralUnitName: appDetail.referralUnitName ?? null,
+                        referralContactName: appDetail.referralContactName ?? null,
+                        referralContactTitle: appDetail.referralContactTitle ?? null,
+                        referralContactPhone: appDetail.referralContactPhone ?? null,
                     }}
                     onClose={() => setShowEditBasicsModal(false)}
                     onSaved={async () => {
@@ -1632,70 +1969,22 @@ function App() {
                 />
             )}
 
-            {showThresholdCloseModal && selectedAppId && reminderStatus && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-6 space-y-4">
-                        <div className="flex items-start gap-3">
-                            <AlertTriangle className="w-6 h-6 text-red-600 shrink-0 mt-0.5" />
-                            <div>
-                                <h3 className="text-lg font-bold text-slate-900">確認以不通過結案</h3>
-                                <p className="text-sm text-slate-600 mt-1">
-                                    本案件已發送 {reminderStatus.count} 次未補件提醒。結案後此案件 status 將設為「審核未通過」（不可逆），請填寫結案原因。
-                                </p>
-                            </div>
-                        </div>
-                        <div>
-                            <label className="block text-sm font-medium text-slate-700 mb-1">結案原因（至少 5 字）</label>
-                            <textarea
-                                rows={4}
-                                value={thresholdCloseReason}
-                                onChange={e => { setThresholdCloseReason(e.target.value); setThresholdCloseError(null); }}
-                                placeholder="例如：已寄出 3 次催件信仍未補齊文件、申請人聯繫不上…"
-                                className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-red-500 resize-none"
-                            />
-                            {thresholdCloseError && <p className="text-xs text-red-600 mt-1">{thresholdCloseError}</p>}
-                        </div>
-                        <div className="flex justify-end gap-2 pt-2">
-                            <button
-                                type="button"
-                                onClick={() => setShowThresholdCloseModal(false)}
-                                disabled={thresholdClosing}
-                                className="px-4 py-2 text-sm text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 transition disabled:opacity-50"
-                            >
-                                取消
-                            </button>
-                            <button
-                                type="button"
-                                disabled={thresholdClosing}
-                                onClick={async () => {
-                                    if (thresholdCloseReason.trim().length < 5) {
-                                        setThresholdCloseError('結案原因至少需 5 字');
-                                        return;
-                                    }
-                                    setThresholdClosing(true);
-                                    const res = await closeCaseByPendingDocThreshold(
-                                        selectedAppId,
-                                        thresholdCloseReason,
-                                        loggedInUser?.id ?? null,
-                                        reminderStatus.count,
-                                        reminderStatus.lastReminderAt,
-                                    );
-                                    setThresholdClosing(false);
-                                    if (!res.success) {
-                                        setThresholdCloseError(res.error ?? '結案失敗');
-                                        return;
-                                    }
-                                    setShowThresholdCloseModal(false);
-                                    await loadAppDetail(selectedAppId, true);
-                                    if (loggedInUser) await loadPendingAlerts(loggedInUser.id);
-                                }}
-                                className="px-4 py-2 text-sm bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 transition disabled:opacity-50 cursor-pointer"
-                            >
-                                {thresholdClosing ? '處理中…' : '確認結案'}
-                            </button>
-                        </div>
-                    </div>
-                </div>
+            {/* 通用「不通過結案」modal — admin/supervisor/officer 觸發；threshold 流程也走這個 */}
+            {closeCaseModalProps && selectedAppId && loggedInUser && (
+                <CloseCaseModal
+                    applicationId={selectedAppId}
+                    operatorUserId={loggedInUser.id}
+                    stage={appDetail?.stage}
+                    prefillReasonCodes={closeCaseModalProps.prefillCodes}
+                    prefillNote={closeCaseModalProps.prefillNote}
+                    titleSuffix={closeCaseModalProps.titleSuffix}
+                    onClose={() => setCloseCaseModalProps(null)}
+                    onClosed={async () => {
+                        setCloseCaseModalProps(null);
+                        await loadAppDetail(selectedAppId, true);
+                        if (loggedInUser) await loadPendingAlerts(loggedInUser.id);
+                    }}
+                />
             )}
         </div>
     );
@@ -1708,12 +1997,17 @@ interface StepItemProps {
     isViewing: boolean;
     completed: boolean;
     isFuture: boolean;
+    /** 案件是否已結案；結案後當前 stage 視為已完成（不顯示「進行中」） */
+    caseClosed?: boolean;
     label: string;
     icon: React.ReactNode;
     onClick: () => void;
 }
 
-function StepItem({ isCurrentTrue, isViewing, completed, isFuture, label, icon, onClick }: StepItemProps) {
+function StepItem({ isCurrentTrue, isViewing, completed, isFuture, caseClosed, label, icon, onClick }: StepItemProps) {
+    // 結案後 → 當前 stage 視為已完成
+    const effectiveCompleted = completed || (caseClosed && isCurrentTrue);
+    const showInProgress = isCurrentTrue && !caseClosed;
     return (
         <button
             onClick={onClick}
@@ -1728,18 +2022,23 @@ function StepItem({ isCurrentTrue, isViewing, completed, isFuture, label, icon, 
         >
             <div className={clsx(
                 'w-7 h-7 rounded-full flex items-center justify-center text-white shrink-0 shadow-sm transition-all',
-                isViewing && isCurrentTrue ? 'bg-blue-600 scale-110'
+                isViewing && showInProgress ? 'bg-blue-600 scale-110'
                     : isViewing ? 'bg-amber-500 scale-110'
-                        : isCurrentTrue ? 'bg-blue-600'
-                            : completed ? 'bg-green-500'
+                        : showInProgress ? 'bg-blue-600'
+                            : effectiveCompleted ? 'bg-green-500'
                                 : 'bg-gray-300'
             )}>
                 {icon}
             </div>
             <div className="flex-1 min-w-0">
                 <span className={clsx('text-sm font-medium block', isViewing && 'font-bold')}>{label}</span>
-                {isCurrentTrue && <span className="text-xs text-blue-500 font-medium">進行中</span>}
-                {!isCurrentTrue && isViewing && <span className="text-xs text-amber-500 font-medium">查看中</span>}
+                {showInProgress && <span className="text-xs text-blue-500 font-medium">進行中</span>}
+                {!showInProgress && caseClosed && isCurrentTrue && (
+                    <span className="text-xs text-green-600 font-medium">已完成</span>
+                )}
+                {!showInProgress && !isCurrentTrue && isViewing && (
+                    <span className="text-xs text-amber-500 font-medium">查看中</span>
+                )}
             </div>
         </button>
     );

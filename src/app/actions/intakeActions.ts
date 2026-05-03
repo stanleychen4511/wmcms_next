@@ -4,7 +4,6 @@ import { pool } from '../../lib/db';
 import { generateBlindIndex, encryptAES, generateSalt, hashPassword } from '../../lib/crypto';
 import path from 'path';
 import { writeAuditLog } from './auditActions';
-import { fetchSetting } from './settingsActions';
 import { uploadFile } from '../../lib/storage';
 
 export interface EligibilityResult {
@@ -94,8 +93,10 @@ export async function queryApplicantEligibility(idNumber: string): Promise<Eligi
         );
 
         const total = parseFloat(sumRes.rows[0].total || '0');
-        const maxAmountStr = await fetchSetting('max_apply_amount', '350000');
-        const maxAmount = Number(maxAmountStr) || 350000;
+        // 改：依 subsidy_amount_limits 取兩子類型最大值（資格查詢階段尚未選定子類型）
+        const { fetchSubsidyAmountLimitsMap } = await import('./eligibilityRulesActions');
+        const limits = await fetchSubsidyAmountLimitsMap();
+        const maxAmount = Math.max(limits['1'] ?? 0, limits['2'] ?? 0);
         const remaining = maxAmount - total;
 
         if (remaining <= 0) {
@@ -151,6 +152,23 @@ export async function submitExternalApplication(
     const adultCount     = formData.get('adult_children_count') ? Number(formData.get('adult_children_count')) : null;
     const applyAmount    = formData.get('apply_amount') ? Number(formData.get('apply_amount')) : null;
     const email          = ((formData.get('email') as string | null) ?? '').trim();
+    const applicantPhone = ((formData.get('applicant_phone') as string | null) ?? '').trim();
+    const applicantDob   = ((formData.get('applicant_dob') as string | null) ?? '').trim();
+    const cancerTypeIn   = ((formData.get('cancer_type') as string | null) ?? '').trim();
+    const cancerStageIn  = ((formData.get('cancer_stage') as string | null) ?? '').trim();
+    // 治療階段：'B'/'A'/'X'（必填）
+    const treatmentPhaseRaw = ((formData.get('treatment_phase') as string | null) ?? '').trim();
+    const treatmentPhase: 'B' | 'A' | 'X' | null =
+        treatmentPhaseRaw === 'B' || treatmentPhaseRaw === 'A' || treatmentPhaseRaw === 'X' ? treatmentPhaseRaw : null;
+    // 申請形式：外部收件後端強制 'E'，不從 formData 讀（避免被竄改）
+    const applicationForm: 'E' = 'E';
+    // 補助子類型（115 年辦法）
+    const subsidySubtypeRaw = (formData.get('subsidy_subtype') as string | null) ?? null;
+    const subsidySubtype: '1' | '2' | null =
+        subsidySubtypeRaw === '1' || subsidySubtypeRaw === '2' ? subsidySubtypeRaw : null;
+    // 經濟弱勢專屬（萬元）
+    const econDeposit       = formData.get('econ_deposit')        ? Number(formData.get('econ_deposit'))        : null;
+    const econMonthlyIncome = formData.get('econ_monthly_income') ? Number(formData.get('econ_monthly_income')) : null;
 
     if (!name || !idNumber) {
         return { success: false, error: '請填寫完整姓名與身分證字號' };
@@ -162,15 +180,35 @@ export async function submitExternalApplication(
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
         return { success: false, error: '請填寫有效的 Email 地址' };
     }
+    // 申請人聯絡電話必填
+    if (!applicantPhone) {
+        return { success: false, error: '請填寫申請人聯絡電話' };
+    }
+    // 出生年月日 / 癌別 / 期數 必填
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(applicantDob)) {
+        return { success: false, error: '請填寫有效的出生年月日（YYYY-MM-DD）' };
+    }
+    if (!cancerTypeIn) return { success: false, error: '請填寫癌別' };
+    if (!cancerStageIn) return { success: false, error: '請填寫癌症期數' };
+    if (!treatmentPhase) return { success: false, error: '請選擇治療階段（治療前／治療後／治療前後）' };
 
-    // Validate apply_amount against system setting
-    const maxAmountStr = await fetchSetting('max_apply_amount', '350000');
-    const maxAmount = Number(maxAmountStr) || 350000;
+    // 子類型 + 申請金額上限驗證（依 115 辦法子類型不同上限）
+    if (!subsidySubtype) {
+        return { success: false, error: '請選擇補助子類型（經濟弱勢／小康家庭）' };
+    }
+    const limitRow = await pool.query<{ amount_max: string }>(
+        `SELECT amount_max FROM subsidy_amount_limits WHERE subsidy_subtype = $1`,
+        [subsidySubtype]
+    );
+    const subtypeMax = Number(limitRow.rows[0]?.amount_max ?? 0);
     if (applyAmount == null || applyAmount <= 0) {
         return { success: false, error: '請輸入申請金額' };
     }
-    if (applyAmount > maxAmount) {
-        return { success: false, error: `申請金額不可超過累積補助上限 ${maxAmount.toLocaleString()} 元` };
+    if (subtypeMax > 0 && applyAmount > subtypeMax) {
+        return {
+            success: false,
+            error: `申請金額不可超過 ${subsidySubtype === '1' ? '經濟弱勢' : '小康家庭'} 累積補助上限 ${subtypeMax.toLocaleString()} 元`,
+        };
     }
 
     const client = await pool.connect();
@@ -264,14 +302,22 @@ export async function submitExternalApplication(
                 application_type,
                 age, annual_income, moveable_property, immoveable_property,
                 marital_status, has_children, underage_children_count, adult_children_count,
-                apply_amount
-             ) VALUES ($1, $2, NULL, '1', NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                apply_amount,
+                subsidy_subtype, econ_deposit, econ_monthly_income,
+                applicant_phone,
+                applicant_dob, cancer_type, cancer_stage,
+                application_form, treatment_phase
+             ) VALUES ($1, $2, NULL, '1', NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::date, $18, $19, $20, $21)
              RETURNING id`,
             [caseNumber, applicantId,
              applicationType,
              age, annualIncome, moveableProp, immoveableProp,
              maritalStatus, hasChildren, underageCount, adultCount,
-             applyAmount]
+             applyAmount,
+             subsidySubtype, econDeposit, econMonthlyIncome,
+             applicantPhone,
+             applicantDob, cancerTypeIn, cancerStageIn,
+             applicationForm, treatmentPhase]
         );
         applicationId = appRes.rows[0].id;
 
@@ -316,10 +362,11 @@ export async function submitExternalApplication(
         }
     }
 
-    for (const { field, docId, label } of intakeDocs) {
+    // 並行上傳所有文件 — 避免 Vercel function timeout（Hobby 10s / Pro 60s）
+    // 循序上傳 N 份檔案 + cold start 容易超時造成「提交中」永久 hang
+    await Promise.all(intakeDocs.map(async ({ field, docId, label }) => {
         const file = formData.get(field) as File | null;
-        if (!file || file.size === 0) continue;
-
+        if (!file || file.size === 0) return;
         try {
             const ext = path.extname(file.name).toLowerCase();
             const safeLabel = sanitizeForFilename(label);
@@ -334,7 +381,7 @@ export async function submitExternalApplication(
             await pool.query(
                 `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at)
                  VALUES ($1, $2, $3, '0', NOW())
-                 ON CONFLICT (application_id, id)
+                 ON CONFLICT (application_id, id) WHERE disbursement_id IS NULL
                  DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW()`,
                 [applicationId, docId, publicUrl]
             );
@@ -342,7 +389,7 @@ export async function submitExternalApplication(
             console.error(`Document upload error for ${field}:`, err);
             // Non-fatal: application is already created
         }
-    }
+    }));
 
     void writeAuditLog({
         userId: null,
@@ -362,8 +409,10 @@ export interface ApplicantQuota {
 }
 
 export async function fetchApplicantQuota(idNumber: string): Promise<ApplicantQuota> {
-    const maxAmountStr = await fetchSetting('max_apply_amount', '350000');
-    const maxAmount = Number(maxAmountStr) || 350000;
+    // 子類型未選前，採兩者較大值作為「上限」顯示（實際 enforcement 在 submit 時依子類型）
+    const { fetchSubsidyAmountLimitsMap } = await import('./eligibilityRulesActions');
+    const limits = await fetchSubsidyAmountLimitsMap();
+    const maxAmount = Math.max(limits['1'] ?? 0, limits['2'] ?? 0);
 
     if (!idNumber || idNumber.trim() === '') {
         return { cumulativeApproved: 0, maxAmount, remaining: maxAmount };

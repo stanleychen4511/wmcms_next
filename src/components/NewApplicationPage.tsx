@@ -1,8 +1,11 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, FilePlus, Search, CheckCircle, XCircle, AlertTriangle } from 'lucide-react';
+import { ArrowLeft, FilePlus, Search, CheckCircle, XCircle } from 'lucide-react';
 import { checkApplicationStatus } from '../app/actions/applicationActions';
 import { twIdError } from '../lib/validateTwId';
 import { AppHeader } from './AppHeader';
+import { useToast } from './FloatingToast';
+import { ApplicationForm } from './ApplicationForm';
+import type { ApplicantFormValues } from '../schemas/applicant';
 
 interface NewApplicationPageProps {
     username: string;
@@ -13,47 +16,6 @@ interface NewApplicationPageProps {
     onSubmitSuccess: (newCaseId: string) => void;
 }
 
-
-// ── Toast component ────────────────────────────────────────────────────────────
-
-interface ToastProps {
-    message: string;
-    type: 'error' | 'warning';
-    onClose: () => void;
-}
-
-function Toast({ message, type, onClose }: ToastProps) {
-    useEffect(() => {
-        const timer = setTimeout(onClose, 4000);
-        return () => clearTimeout(timer);
-    }, [onClose]);
-
-    return (
-        <div
-            className={[
-                'fixed bottom-4 right-4 left-4 sm:left-auto sm:right-6 sm:bottom-6 z-50 flex items-start gap-3 px-5 py-4 rounded-xl shadow-xl border text-sm font-medium max-w-full sm:max-w-sm',
-                'animate-slide-in-up',
-                type === 'error'
-                    ? 'bg-red-50 border-red-200 text-red-800'
-                    : 'bg-amber-50 border-amber-200 text-amber-800',
-            ].join(' ')}
-        >
-            {type === 'error' ? (
-                <XCircle className="w-5 h-5 shrink-0 mt-0.5 text-red-500" />
-            ) : (
-                <AlertTriangle className="w-5 h-5 shrink-0 mt-0.5 text-amber-500" />
-            )}
-            <span className="flex-1 leading-relaxed">{message}</span>
-            <button
-                onClick={onClose}
-                className="ml-2 text-current opacity-50 hover:opacity-100 transition leading-none text-base"
-                aria-label="關閉"
-            >
-                ✕
-            </button>
-        </div>
-    );
-}
 
 // ── Lookup result card ─────────────────────────────────────────────────────────
 
@@ -148,17 +110,117 @@ export function NewApplicationPage({
     onLogout,
     onSubmitSuccess,
 }: NewApplicationPageProps) {
+    const { push: pushToast } = useToast();
     const [name, setName] = useState('');
     const [idNumber, setIdNumber] = useState('');
     const [email, setEmail] = useState('');
     const [emailError, setEmailError] = useState('');
+    const [applicantPhone, setApplicantPhone] = useState('');
+    const [applicantPhoneError, setApplicantPhoneError] = useState('');
+    const [applicantDob, setApplicantDob] = useState('');
+    const [applicantDobError, setApplicantDobError] = useState('');
+    const [cancerType, setCancerType] = useState('');
+    const [cancerTypeError, setCancerTypeError] = useState('');
+    const [cancerStage, setCancerStage] = useState('');
+    const [cancerStageError, setCancerStageError] = useState('');
+    const [applicationForm, setApplicationForm] = useState<'P' | 'E' | ''>('');
+    const [applicationFormError, setApplicationFormError] = useState('');
+    const [treatmentPhase, setTreatmentPhase] = useState<'B' | 'A' | 'X' | ''>('');
+    const [treatmentPhaseError, setTreatmentPhaseError] = useState('');
     const [applicationType, setApplicationType] = useState('');
     const [applyAmount, setApplyAmount] = useState<number | ''>('');
     const [applicationWay, setApplicationWay] = useState<'1' | '2'>('1');
+    const [subsidySubtype, setSubsidySubtype] = useState<'1' | '2' | ''>('');
+    const [subsidySubtypeError, setSubsidySubtypeError] = useState('');
     const [referralUnitId, setReferralUnitId] = useState<string | null>(null);
     const [referralUnits, setReferralUnits] = useState<{ id: string; name: string }[]>([]);
     const [referralUnitsLoaded, setReferralUnitsLoaded] = useState(false);
     const [referralError, setReferralError] = useState('');
+    /** #6 轉介單位自由填寫 + 承辦人聯絡欄位 */
+    const [referralUnitName, setReferralUnitName] = useState('');
+    const [referralContactName, setReferralContactName] = useState('');
+    const [referralContactTitle, setReferralContactTitle] = useState('');
+    const [referralContactPhone, setReferralContactPhone] = useState('');
+    /** 4 個轉介必填欄位的個別錯誤訊息 */
+    const [referralFieldErrors, setReferralFieldErrors] = useState<{
+        unit?: string; name?: string; title?: string; phone?: string;
+    }>({});
+    /** referralUnitId 特殊值 'other' 表示「其他/不在清單中」，提交時將該名稱新建為 referral_unit */
+    const OTHER_UNIT = 'other';
+    /** 資格預審表單值（婚姻 / 子女 / 收入 / 動產 / 不動產 / 經濟弱勢專屬） */
+    const DEFAULT_QUAL: ApplicantFormValues = {
+        subsidyType: undefined,
+        type: '3',
+        age: 0,
+        hasChildren: false,
+        underageChildrenCount: 0,
+        adultChildrenCount: 0,
+        annualIncome: 0,
+        movableAssets: 0,
+        realEstateValue: 0,
+        econDeposit: undefined,
+        econMonthlyIncome: undefined,
+    };
+    const [qualFormValues, setQualFormValues] = useState<ApplicantFormValues>(DEFAULT_QUAL);
+    const [qualFormValid, setQualFormValid]   = useState(false);
+
+    /** 資格判定狀態：null = 尚未執行；checked + eligible 兩段式（仿 ExternalIntake） */
+    const [eligibilityCheck, setEligibilityCheck] =
+        useState<{ checked: boolean; eligible: boolean; reasons: string[] } | null>(null);
+    const [eligibilityChecking, setEligibilityChecking] = useState(false);
+
+    const handleQualValidation = (isValid: boolean, values: ApplicantFormValues) => {
+        setQualFormValid(isValid);
+        setQualFormValues(values);
+        // 資料一變動就作廢先前的資格判定，強制使用者重新執行
+        setEligibilityCheck(null);
+    };
+    /** 子類型外層 radio 變動 → 也作廢資格判定 */
+    useEffect(() => {
+        setEligibilityCheck(null);
+    }, [subsidySubtype]);
+
+    const handleRunEligibilityCheck = async () => {
+        if (eligibilityChecking) return;
+        if (!subsidySubtype) {
+            setEligibilityCheck({ checked: true, eligible: false, reasons: ['請先選擇補助子類型（經濟弱勢／小康家庭）'] });
+            return;
+        }
+        if (!qualFormValid) {
+            setEligibilityCheck({ checked: true, eligible: false, reasons: ['請先填寫資格預審資料（婚姻、年齡、收入等）'] });
+            return;
+        }
+        setEligibilityChecking(true);
+        try {
+            const { fetchEligibilityRules } = await import('../app/actions/eligibilityRulesActions');
+            const { checkEligibility } = await import('../utils/eligibility');
+            const rules = await fetchEligibilityRules();
+            const f = qualFormValues;
+            const maritalStatus = (f.type === '1' || f.type === '2' || f.type === '3') ? f.type : '3';
+            const hasUnderage = Number(f.underageChildrenCount ?? 0) > 0;
+            const childrenStatus = !f.hasChildren ? '3' : hasUnderage ? '1' : '2';
+            const result = checkEligibility({
+                subsidyType: subsidySubtype,
+                age: Number(f.age ?? 0),
+                realEstateValue: Number(f.realEstateValue ?? 0),
+                maritalStatus,
+                childrenStatus,
+                annualIncome:  Number(f.annualIncome ?? 0),
+                movableAssets: Number(f.movableAssets ?? 0),
+                deposit:       f.econDeposit       != null ? Number(f.econDeposit)       : undefined,
+                monthlyIncome: f.econMonthlyIncome != null ? Number(f.econMonthlyIncome) : undefined,
+            }, rules);
+            setEligibilityCheck({ checked: true, eligible: result.isEligible, reasons: result.reasons });
+        } catch (e) {
+            setEligibilityCheck({
+                checked: true, eligible: false,
+                reasons: [e instanceof Error ? e.message : '資格判定失敗，請稍後重試'],
+            });
+        } finally {
+            setEligibilityChecking(false);
+        }
+    };
+    const eligibilityPassed = !!(eligibilityCheck?.checked && eligibilityCheck?.eligible);
     const [applyAmountError, setApplyAmountError] = useState('');
     const [appTypeError, setAppTypeError] = useState('');
     const [nameError, setNameError] = useState('');
@@ -166,15 +228,20 @@ export function NewApplicationPage({
     const [lookupResult, setLookupResult] = useState<{ hasRecord: boolean; hasActive: boolean; totalApprovedAmount: number; applicantName?: string } | null>(null);
     const [eligible, setEligible] = useState(false);
     const [isLoadingQuery, setIsLoadingQuery] = useState(false);
-    const [toast, setToast] = useState<{ message: string; type: 'error' | 'warning' } | null>(null);
     const [isSubmitting, setIsSubmitting] = useState(false);
     const [queried, setQueried] = useState(false);
-    const [maxApplyAmount, setMaxApplyAmount] = useState(350000);
+    /** 各子類型補助上限（依 115 辦法）；未選子類型時 UI 顯示用兩者較大值 */
+    const [subtypeMaxAmounts, setSubtypeMaxAmounts] = useState<Record<'1' | '2', number>>({ '1': 30000, '2': 350000 });
     useEffect(() => {
-        import('../app/actions/settingsActions').then(m =>
-            m.fetchSetting('max_apply_amount', '350000').then(v => setMaxApplyAmount(Number(v) || 350000))
-        );
+        import('../app/actions/eligibilityRulesActions')
+            .then(m => m.fetchSubsidyAmountLimitsMap())
+            .then(setSubtypeMaxAmounts)
+            .catch(err => console.error('fetchSubsidyAmountLimitsMap error:', err));
     }, []);
+    /** 動態計算當前 form 適用的最大值：依 subsidySubtype；尚未選擇時取兩子類型較大值 */
+    const maxApplyAmount = subsidySubtype === '1' || subsidySubtype === '2'
+        ? subtypeMaxAmounts[subsidySubtype]
+        : Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2']);
 
     // Lazy-load referral units only when user picks '轉介'
     useEffect(() => {
@@ -233,6 +300,30 @@ export function NewApplicationPage({
         } else {
             setEmailError('');
         }
+        const trimmedPhone = applicantPhone.trim();
+        if (!trimmedPhone) {
+            setApplicantPhoneError('請填寫申請人聯絡電話');
+            ok = false;
+        } else {
+            setApplicantPhoneError('');
+        }
+        const trimmedDob = applicantDob.trim();
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDob)) {
+            setApplicantDobError('請選擇出生年月日');
+            ok = false;
+        } else {
+            setApplicantDobError('');
+        }
+        if (!cancerType.trim()) { setCancerTypeError('請填寫癌別'); ok = false; }
+        else { setCancerTypeError(''); }
+        if (!cancerStage.trim()) { setCancerStageError('請填寫癌症期數'); ok = false; }
+        else { setCancerStageError(''); }
+        if (applicationForm !== 'P' && applicationForm !== 'E') {
+            setApplicationFormError('請選擇申請形式'); ok = false;
+        } else { setApplicationFormError(''); }
+        if (treatmentPhase !== 'B' && treatmentPhase !== 'A' && treatmentPhase !== 'X') {
+            setTreatmentPhaseError('請選擇治療階段'); ok = false;
+        } else { setTreatmentPhaseError(''); }
         const amtNum = applyAmount === '' ? 0 : Number(applyAmount);
         if (amtNum <= 0) {
             setApplyAmountError('請輸入申請金額');
@@ -243,11 +334,52 @@ export function NewApplicationPage({
         } else {
             setApplyAmountError('');
         }
+        // 子類型必填
+        if (!subsidySubtype) {
+            setSubsidySubtypeError('請選擇補助子類型');
+            ok = false;
+        } else {
+            setSubsidySubtypeError('');
+        }
+        // 經濟弱勢 → 強制轉介
+        if (subsidySubtype === '1' && applicationWay !== '2') {
+            setSubsidySubtypeError('經濟弱勢補助依 115 辦法僅接受「轉介」管道');
+            ok = false;
+        }
+        // 資格預審欄位完整性
+        if (!qualFormValid) {
+            pushToast({ type: 'error', msg: '請填寫資格預審資料（婚姻、年齡、收入等）' });
+            ok = false;
+        }
+        // 必須通過資格判定才能送出
+        if (!eligibilityPassed) {
+            pushToast({
+                type: 'error',
+                msg: eligibilityCheck
+                    ? '資格判定未通過，請依提示調整資料後重新判定'
+                    : '請先點選「執行資格判定」',
+            });
+            ok = false;
+        }
         if (applicationWay === '2') {
-            if (!referralUnitId) { setReferralError('請選擇轉介單位'); ok = false; }
-            else { setReferralError(''); }
+            // 必須先選擇下拉（特定單位 / 其他）
+            if (!referralUnitId) {
+                setReferralError('請選擇轉介單位（不在清單中請選「其他」）');
+                ok = false;
+            } else {
+                setReferralError('');
+            }
+            // 4 個欄位皆必填
+            const errs: typeof referralFieldErrors = {};
+            if (!referralUnitName.trim())    errs.unit  = '單位名稱必填';
+            if (!referralContactName.trim()) errs.name  = '承辦人姓名必填';
+            if (!referralContactTitle.trim()) errs.title = '承辦人職稱必填';
+            if (!referralContactPhone.trim()) errs.phone = '承辦人聯絡電話必填';
+            setReferralFieldErrors(errs);
+            if (Object.keys(errs).length > 0) ok = false;
         } else {
             setReferralError('');
+            setReferralFieldErrors({});
         }
         return ok;
     };
@@ -262,7 +394,7 @@ export function NewApplicationPage({
             const apiRes = await checkApplicationStatus(idNumber.trim().toUpperCase());
             
             if (apiRes.error) {
-                setToast({ message: apiRes.error, type: 'error' });
+                pushToast({ type: 'error', msg: apiRes.error });
                 setEligible(false);
                 setIsLoadingQuery(false);
                 return;
@@ -281,21 +413,21 @@ export function NewApplicationPage({
             // Determine eligibility
             if (mappedResult.hasActive) {
                 setEligible(false);
-                setToast({
-                    message: '該申請人目前已有進行中的申請案件，無法重複申請，請待現有案件結案後再行申請。',
+                pushToast({
                     type: 'error',
+                    msg: '該申請人目前已有進行中的申請案件，無法重複申請，請待現有案件結案後再行申請。',
                 });
             } else if (mappedResult.totalApprovedAmount >= maxApplyAmount) {
                 setEligible(false);
-                setToast({
-                    message: `該申請人累積核准補助金額（NT$${mappedResult.totalApprovedAmount.toLocaleString()}）已達補助上限 NT$${maxApplyAmount.toLocaleString()} 元，無法再申請。`,
-                    type: 'warning',
+                pushToast({
+                    type: 'info',
+                    msg: `該申請人累積核准補助金額（NT$${mappedResult.totalApprovedAmount.toLocaleString()}）已達補助上限 NT$${maxApplyAmount.toLocaleString()} 元，無法再申請。`,
                 });
             } else {
                 setEligible(true);
             }
         } catch (err) {
-            setToast({ message: '連線錯誤，請稍後重試。', type: 'error' });
+            pushToast({ type: 'error', msg: '連線錯誤，請稍後重試。' });
         } finally {
             setIsLoadingQuery(false);
         }
@@ -305,6 +437,33 @@ export function NewApplicationPage({
         if (!eligible || !validateForSubmit()) return;
         setIsSubmitting(true);
         try {
+            // 若選「其他」→ 先建立新轉介單位、取得新 id
+            let effectiveReferralUnitId: string | null = null;
+            if (applicationWay === '2') {
+                if (referralUnitId === OTHER_UNIT) {
+                    const { createReferralUnit, fetchActiveReferralUnits } =
+                        await import('../app/actions/referralUnitActions');
+                    const createRes = await createReferralUnit(
+                        referralUnitName.trim(),
+                        referralContactPhone.trim() || null,
+                        9999,
+                        userAccount,
+                    );
+                    if (!createRes.success || !createRes.data) {
+                        pushToast({ type: 'error', msg: '新增轉介單位失敗：' + (createRes.success ? '系統錯誤' : createRes.error) });
+                        setIsSubmitting(false);
+                        return;
+                    }
+                    effectiveReferralUnitId = createRes.data.id;
+                    // 重新載入清單供日後新增案件可看到
+                    void fetchActiveReferralUnits().then(r => {
+                        if (r.success && r.data) setReferralUnits(r.data.map(u => ({ id: u.id, name: u.name })));
+                    });
+                } else {
+                    effectiveReferralUnitId = referralUnitId;
+                }
+            }
+
             const { createNewApplication } = await import('../app/actions/applicationActions');
             const res = await createNewApplication(
                 name.trim(),
@@ -313,16 +472,50 @@ export function NewApplicationPage({
                 applicationType,
                 applyAmount === '' ? null : Number(applyAmount),
                 applicationWay,
-                applicationWay === '2' ? referralUnitId : null,
+                effectiveReferralUnitId,
                 email.trim(),
+                applicationWay === '2' ? {
+                    unitName:     referralUnitName.trim() || undefined,
+                    contactName:  referralContactName.trim() || undefined,
+                    contactTitle: referralContactTitle.trim() || undefined,
+                    contactPhone: referralContactPhone.trim() || undefined,
+                } : undefined,
+                subsidySubtype === '' ? null : subsidySubtype,
+                applicantPhone.trim(),
+                applicantDob.trim(),
+                cancerType.trim(),
+                cancerStage.trim(),
+                applicationForm || '',
+                treatmentPhase || '',
             );
             if (res.success && res.caseId) {
+                // 寫入資格預審資料（婚姻 / 子女 / 收入 / 動產 / 不動產 / 經濟弱勢專屬）
+                const v = qualFormValues;
+                const maritalNew: '1' | '2' | '3' | null =
+                    (v.type === '1' || v.type === '2' || v.type === '3') ? v.type : null;
+                const { saveQualificationData } = await import('../app/actions/workflowActions');
+                await saveQualificationData(res.caseId, {
+                    age:                    v.age != null ? Number(v.age) : null,
+                    moveable_property:      v.movableAssets != null ? Number(v.movableAssets) : null,
+                    immoveable_property:    v.realEstateValue != null ? Number(v.realEstateValue) : null,
+                    annual_income:          v.annualIncome != null ? Number(v.annualIncome) : null,
+                    marital_status:         maritalNew,
+                    has_children:           v.hasChildren ?? null,
+                    underage_children_count: v.hasChildren && v.underageChildrenCount != null
+                                                ? Number(v.underageChildrenCount) : null,
+                    adult_children_count:   v.hasChildren && v.adultChildrenCount != null
+                                                ? Number(v.adultChildrenCount) : null,
+                    apply_amount:           applyAmount === '' ? null : Number(applyAmount),
+                    subsidy_subtype:        (subsidySubtype === '1' || subsidySubtype === '2') ? subsidySubtype : null,
+                    econ_deposit:           v.econDeposit       != null ? Number(v.econDeposit)       : null,
+                    econ_monthly_income:    v.econMonthlyIncome != null ? Number(v.econMonthlyIncome) : null,
+                });
                 onSubmitSuccess(res.caseId);
             } else {
-                setToast({ message: res.error || '建立案件失敗', type: 'error' });
+                pushToast({ type: 'error', msg: res.error || '建立案件失敗' });
             }
         } catch (err) {
-            setToast({ message: '系統錯誤', type: 'error' });
+            pushToast({ type: 'error', msg: '系統錯誤' });
         } finally {
             setIsSubmitting(false);
         }
@@ -436,6 +629,151 @@ export function NewApplicationPage({
                         <p className="text-xs text-slate-400 mt-1">核銷階段將寄送領款收據至此信箱</p>
                     </div>
 
+                    {/* 申請人聯絡電話 */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            申請人聯絡電話
+                            <span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <input
+                            type="tel"
+                            value={applicantPhone}
+                            onChange={e => { setApplicantPhone(e.target.value); setApplicantPhoneError(''); }}
+                            placeholder="例：0912-345-678 或 02-2321-2777"
+                            maxLength={50}
+                            className={[
+                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                applicantPhoneError
+                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                            ].join(' ')}
+                        />
+                        {applicantPhoneError && (
+                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                <XCircle className="w-3 h-3" />
+                                {applicantPhoneError}
+                            </p>
+                        )}
+                    </div>
+
+                    {/* 出生年月日 */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            出生年月日（西元）<span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <input
+                            type="date"
+                            value={applicantDob}
+                            onChange={e => { setApplicantDob(e.target.value); setApplicantDobError(''); }}
+                            className={[
+                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                applicantDobError
+                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                            ].join(' ')}
+                        />
+                        {applicantDobError && <p className="text-xs text-red-500 mt-1">{applicantDobError}</p>}
+                    </div>
+
+                    {/* 癌別 + 期數（同列） */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                                癌別 <span className="text-red-500 ml-1">*</span>
+                            </label>
+                            <input
+                                type="text"
+                                value={cancerType}
+                                onChange={e => { setCancerType(e.target.value); setCancerTypeError(''); }}
+                                placeholder="例：肺腺癌"
+                                maxLength={100}
+                                className={[
+                                    'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                    cancerTypeError
+                                        ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                        : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                                ].join(' ')}
+                            />
+                            {cancerTypeError && <p className="text-xs text-red-500 mt-1">{cancerTypeError}</p>}
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                                癌症期數 <span className="text-red-500 ml-1">*</span>
+                            </label>
+                            <input
+                                type="text"
+                                value={cancerStage}
+                                onChange={e => { setCancerStage(e.target.value); setCancerStageError(''); }}
+                                placeholder="例：第三期、IIIA"
+                                maxLength={50}
+                                className={[
+                                    'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                    cancerStageError
+                                        ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                        : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                                ].join(' ')}
+                            />
+                            {cancerStageError && <p className="text-xs text-red-500 mt-1">{cancerStageError}</p>}
+                        </div>
+                    </div>
+
+                    {/* 申請形式 + 治療階段（兩個 radio group 同列） */}
+                    <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                                申請形式 <span className="text-red-500 ml-1">*</span>
+                            </label>
+                            <div className="flex gap-3 mt-1">
+                                {([
+                                    { v: 'P', label: '紙本' },
+                                    { v: 'E', label: '電子郵件' },
+                                ] as const).map(opt => (
+                                    <label key={opt.v} className={`inline-flex items-center gap-1.5 px-3 py-2 rounded-lg border cursor-pointer text-sm flex-1 justify-center ${
+                                        applicationForm === opt.v
+                                            ? 'bg-blue-50 border-blue-300 text-blue-700'
+                                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                                    }`}>
+                                        <input
+                                            type="radio"
+                                            checked={applicationForm === opt.v}
+                                            onChange={() => { setApplicationForm(opt.v); setApplicationFormError(''); }}
+                                            className="accent-blue-600"
+                                        />
+                                        {opt.label}
+                                    </label>
+                                ))}
+                            </div>
+                            {applicationFormError && <p className="text-xs text-red-500 mt-1">{applicationFormError}</p>}
+                        </div>
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                                治療階段 <span className="text-red-500 ml-1">*</span>
+                            </label>
+                            <div className="flex gap-2 mt-1">
+                                {([
+                                    { v: 'B', label: '治療前' },
+                                    { v: 'A', label: '治療後' },
+                                    { v: 'X', label: '治療前後' },
+                                ] as const).map(opt => (
+                                    <label key={opt.v} className={`inline-flex items-center gap-1 px-2 py-2 rounded-lg border cursor-pointer text-sm flex-1 justify-center ${
+                                        treatmentPhase === opt.v
+                                            ? 'bg-blue-50 border-blue-300 text-blue-700'
+                                            : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                                    }`}>
+                                        <input
+                                            type="radio"
+                                            checked={treatmentPhase === opt.v}
+                                            onChange={() => { setTreatmentPhase(opt.v); setTreatmentPhaseError(''); }}
+                                            className="accent-blue-600"
+                                        />
+                                        {opt.label}
+                                    </label>
+                                ))}
+                            </div>
+                            {treatmentPhaseError && <p className="text-xs text-red-500 mt-1">{treatmentPhaseError}</p>}
+                        </div>
+                    </div>
+
                     {/* 申請類別 */}
                     <div>
                         <label className="block text-sm font-semibold text-slate-700 mb-1.5">
@@ -466,6 +804,127 @@ export function NewApplicationPage({
                         )}
                     </div>
 
+                    {/* 補助子類型（115 年辦法） */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            補助子類型（115 年辦法）
+                            <span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <div className="space-y-2">
+                            {[
+                                {
+                                    v: '1' as const,
+                                    label: '經濟弱勢',
+                                    limit: subtypeMaxAmounts['1'],
+                                    extra: '僅接受轉介',
+                                },
+                                {
+                                    v: '2' as const,
+                                    label: '小康家庭',
+                                    limit: subtypeMaxAmounts['2'],
+                                    extra: '自提或轉介均可',
+                                },
+                            ].map(opt => (
+                                <label key={opt.v} className="flex items-start gap-2 cursor-pointer">
+                                    <input
+                                        type="radio"
+                                        name="subsidy_subtype"
+                                        value={opt.v}
+                                        checked={subsidySubtype === opt.v}
+                                        onChange={() => {
+                                            setSubsidySubtype(opt.v);
+                                            setSubsidySubtypeError('');
+                                            // 經濟弱勢自動切換為轉介
+                                            if (opt.v === '1') setApplicationWay('2');
+                                        }}
+                                        className="mt-0.5 w-4 h-4 accent-blue-600"
+                                    />
+                                    <span className="text-sm">
+                                        <span className="font-medium text-slate-700">
+                                            {opt.label}
+                                            {opt.limit > 0 && (
+                                                <span className="font-normal text-slate-500 ml-1">
+                                                    （補助上限 NT${opt.limit.toLocaleString()}）
+                                                </span>
+                                            )}
+                                        </span>
+                                        <span className="block text-xs text-slate-500">{opt.extra}</span>
+                                    </span>
+                                </label>
+                            ))}
+                        </div>
+                        {subsidySubtypeError && (
+                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                <XCircle className="w-3 h-3" />
+                                {subsidySubtypeError}
+                            </p>
+                        )}
+                    </div>
+
+                    {/* 資格預審資料（婚姻 / 子女 / 收入 / 動產 / 不動產 / 經濟弱勢專屬） */}
+                    <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+                        <h3 className="text-sm font-semibold text-slate-700">資格預審資料</h3>
+                        <p className="text-xs text-slate-500">
+                            請依申請人實際狀況填寫；後續可在「行政初審」階段檢視或調整。
+                        </p>
+                        <ApplicationForm
+                            // key 綁 subsidySubtype：當外層 radio 切換時強制 form 重新 mount，
+                            // 同步 econ/midclass 專屬欄位顯示。
+                            key={subsidySubtype || 'unset'}
+                            initialValues={{
+                                ...DEFAULT_QUAL,
+                                subsidyType: subsidySubtype || undefined,
+                            }}
+                            onValidation={handleQualValidation}
+                            subtypeMaxAmounts={subtypeMaxAmounts}
+                            hideSubsidyType={true}  // 子類型由外層 radio 管
+                        />
+
+                        {/* 資格判定按鈕 + 結果（仿外部收件） */}
+                        <div className="border-t border-slate-100 pt-3 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <p className="text-xs text-slate-500">
+                                    填寫完成後，點選「執行資格判定」確認是否符合 115 年辦法資格。
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={handleRunEligibilityCheck}
+                                    disabled={eligibilityChecking || isSubmitting}
+                                    className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg disabled:opacity-50 shrink-0"
+                                >
+                                    {eligibilityChecking ? '判定中…' : '執行資格判定'}
+                                </button>
+                            </div>
+                            {!eligibilityCheck && (
+                                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-600 flex items-start gap-2">
+                                    <CheckCircle className="w-4 h-4 mt-0.5 text-slate-400 shrink-0" />
+                                    <span>尚未執行資格判定 — 須通過判定後才能送出申請。</span>
+                                </div>
+                            )}
+                            {eligibilityCheck?.eligible && (
+                                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-700 flex items-start gap-2">
+                                    <CheckCircle className="w-4 h-4 mt-0.5 shrink-0" />
+                                    <div>
+                                        <p className="font-medium">符合 115 年辦法之申請資格</p>
+                                        <p className="text-xs text-emerald-600 mt-0.5">最終仍須由承辦人覆核與文件查驗。</p>
+                                    </div>
+                                </div>
+                            )}
+                            {eligibilityCheck && !eligibilityCheck.eligible && (
+                                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 space-y-2">
+                                    <div className="flex items-start gap-2">
+                                        <XCircle className="w-4 h-4 mt-0.5 text-amber-600 shrink-0" />
+                                        <p className="font-medium">不符合 115 年辦法之申請資格 — 暫不可送出</p>
+                                    </div>
+                                    <ul className="list-disc list-inside space-y-1 text-xs ml-1">
+                                        {eligibilityCheck.reasons.map((r, i) => <li key={i}>{r}</li>)}
+                                    </ul>
+                                    <p className="text-[11px] text-amber-700">請調整上方資料後再次按「執行資格判定」。</p>
+                                </div>
+                            )}
+                        </div>
+                    </div>
+
                     {/* 案件來源 */}
                     <div>
                         <label className="block text-sm font-semibold text-slate-700 mb-1.5">
@@ -473,16 +932,18 @@ export function NewApplicationPage({
                             <span className="text-red-500 ml-1">*</span>
                         </label>
                         <div className="flex items-center gap-4">
-                            <label className="inline-flex items-center gap-2 cursor-pointer">
+                            <label className={`inline-flex items-center gap-2 ${subsidySubtype === '1' ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'}`}>
                                 <input
                                     type="radio"
                                     name="application_way"
                                     value="1"
                                     checked={applicationWay === '1'}
+                                    disabled={subsidySubtype === '1'}
                                     onChange={() => { setApplicationWay('1'); setReferralUnitId(null); setReferralError(''); }}
                                     className="w-4 h-4 accent-blue-600"
                                 />
                                 <span className="text-sm text-slate-700">自提</span>
+                                {subsidySubtype === '1' && <span className="text-xs text-slate-400">(經濟弱勢不可選)</span>}
                             </label>
                             <label className="inline-flex items-center gap-2 cursor-pointer">
                                 <input
@@ -498,37 +959,138 @@ export function NewApplicationPage({
                         </div>
 
                         {applicationWay === '2' && (
-                            <div className="mt-3">
-                                {referralUnitsLoaded && referralUnits.length === 0 ? (
-                                    <div className="text-sm text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                                        請先至後台建立轉介單位（管理員 → 轉介單位管理）
+                            <div className="mt-3 space-y-3">
+                                <>
+                                    <label className="block text-xs font-medium text-slate-600 mb-1">
+                                        轉介單位 <span className="text-red-500">*</span>
+                                    </label>
+                                    <select
+                                        value={referralUnitId ?? ''}
+                                        onChange={e => {
+                                            const v = e.target.value || null;
+                                            setReferralUnitId(v);
+                                            setReferralError('');
+                                            // 選了既有單位 → 自動帶入名稱（且鎖死下方輸入框）
+                                            if (v && v !== OTHER_UNIT) {
+                                                const matched = referralUnits.find(u => u.id === v);
+                                                if (matched) {
+                                                    setReferralUnitName(matched.name);
+                                                    setReferralFieldErrors(prev => ({ ...prev, unit: undefined }));
+                                                }
+                                            } else if (v === OTHER_UNIT) {
+                                                // 切換到「其他」→ 清空讓使用者自填
+                                                setReferralUnitName('');
+                                            } else {
+                                                setReferralUnitName('');
+                                            }
+                                        }}
+                                        className={[
+                                            'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                            referralError
+                                                ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                                : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                                        ].join(' ')}
+                                    >
+                                        <option value="">{referralUnitsLoaded ? '請選擇轉介單位' : '載入中…'}</option>
+                                        {referralUnits.map(u => (
+                                            <option key={u.id} value={u.id}>{u.name}</option>
+                                        ))}
+                                        <option value={OTHER_UNIT}>其他（不在清單中，提交後將自動新增）</option>
+                                    </select>
+                                    {referralError && (
+                                        <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                            <XCircle className="w-3 h-3" />
+                                            {referralError}
+                                        </p>
+                                    )}
+                                </>
+
+                                {/* #6 轉介單位／承辦人聯絡（必填） */}
+                                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 space-y-3">
+                                    <p className="text-xs text-slate-500">
+                                        {referralUnitId === OTHER_UNIT
+                                            ? '請輸入新轉介單位名稱（提交後將自動加入轉介單位清單）；承辦窗口資訊為必填。'
+                                            : '選定既有轉介單位後其名稱會自動帶入；承辦窗口資訊為必填。'}
+                                    </p>
+                                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-600 mb-1">
+                                                轉介單位名稱 <span className="text-red-500">*</span>
+                                                {referralUnitId && referralUnitId !== OTHER_UNIT && (
+                                                    <span className="ml-1 text-[11px] text-slate-400 font-normal">（自動帶入，不可修改）</span>
+                                                )}
+                                            </label>
+                                            <input
+                                                type="text" maxLength={100}
+                                                value={referralUnitName}
+                                                onChange={e => {
+                                                    setReferralUnitName(e.target.value);
+                                                    setReferralFieldErrors(p => ({ ...p, unit: undefined }));
+                                                }}
+                                                disabled={!!referralUnitId && referralUnitId !== OTHER_UNIT}
+                                                placeholder="例：國泰綜合醫院 社工室"
+                                                className={`w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 disabled:bg-slate-100 disabled:text-slate-500 ${referralFieldErrors.unit ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                                            />
+                                            {referralFieldErrors.unit && (
+                                                <p className="text-xs text-red-500 mt-0.5">{referralFieldErrors.unit}</p>
+                                            )}
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-600 mb-1">
+                                                承辦人姓名 <span className="text-red-500">*</span>
+                                            </label>
+                                            <input
+                                                type="text" maxLength={50}
+                                                value={referralContactName}
+                                                onChange={e => {
+                                                    setReferralContactName(e.target.value);
+                                                    setReferralFieldErrors(p => ({ ...p, name: undefined }));
+                                                }}
+                                                placeholder="例：王小明"
+                                                className={`w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ${referralFieldErrors.name ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                                            />
+                                            {referralFieldErrors.name && (
+                                                <p className="text-xs text-red-500 mt-0.5">{referralFieldErrors.name}</p>
+                                            )}
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-600 mb-1">
+                                                承辦人職稱 <span className="text-red-500">*</span>
+                                            </label>
+                                            <input
+                                                type="text" maxLength={50}
+                                                value={referralContactTitle}
+                                                onChange={e => {
+                                                    setReferralContactTitle(e.target.value);
+                                                    setReferralFieldErrors(p => ({ ...p, title: undefined }));
+                                                }}
+                                                placeholder="例:社工師／個管師"
+                                                className={`w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ${referralFieldErrors.title ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                                            />
+                                            {referralFieldErrors.title && (
+                                                <p className="text-xs text-red-500 mt-0.5">{referralFieldErrors.title}</p>
+                                            )}
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-600 mb-1">
+                                                承辦人聯絡電話 <span className="text-red-500">*</span>
+                                            </label>
+                                            <input
+                                                type="text" maxLength={30}
+                                                value={referralContactPhone}
+                                                onChange={e => {
+                                                    setReferralContactPhone(e.target.value);
+                                                    setReferralFieldErrors(p => ({ ...p, phone: undefined }));
+                                                }}
+                                                placeholder="例:(03) 5278999 #1234"
+                                                className={`w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ${referralFieldErrors.phone ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                                            />
+                                            {referralFieldErrors.phone && (
+                                                <p className="text-xs text-red-500 mt-0.5">{referralFieldErrors.phone}</p>
+                                            )}
+                                        </div>
                                     </div>
-                                ) : (
-                                    <>
-                                        <label className="block text-xs font-medium text-slate-600 mb-1">轉介單位</label>
-                                        <select
-                                            value={referralUnitId ?? ''}
-                                            onChange={e => { setReferralUnitId(e.target.value || null); setReferralError(''); }}
-                                            className={[
-                                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
-                                                referralError
-                                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
-                                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
-                                            ].join(' ')}
-                                        >
-                                            <option value="">{referralUnitsLoaded ? '請選擇轉介單位' : '載入中…'}</option>
-                                            {referralUnits.map(u => (
-                                                <option key={u.id} value={u.id}>{u.name}</option>
-                                            ))}
-                                        </select>
-                                        {referralError && (
-                                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
-                                                <XCircle className="w-3 h-3" />
-                                                {referralError}
-                                            </p>
-                                        )}
-                                    </>
-                                )}
+                                </div>
                             </div>
                         )}
                     </div>
@@ -643,25 +1205,6 @@ export function NewApplicationPage({
                 </div>
             </main>
 
-            {/* Toast */}
-            {toast && (
-                <Toast
-                    message={toast.message}
-                    type={toast.type}
-                    onClose={() => setToast(null)}
-                />
-            )}
-
-            {/* Inline style for toast animation */}
-            <style>{`
-                @keyframes slideInUp {
-                    from { opacity: 0; transform: translateY(16px); }
-                    to   { opacity: 1; transform: translateY(0); }
-                }
-                .animate-slide-in-up {
-                    animation: slideInUp 0.25s ease-out both;
-                }
-            `}</style>
         </div>
     );
 }

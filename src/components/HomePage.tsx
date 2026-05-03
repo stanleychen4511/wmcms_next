@@ -15,6 +15,8 @@ import {
     X,
     UserCog,
     BarChart3,
+    Phone,
+    FileSpreadsheet,
 } from 'lucide-react';
 import { PendingDocAlert, PendingDocThresholdAlert } from '../app/actions/pendingDocAlertActions';
 import { fetchActiveBanners, Banner } from '../app/actions/bannerActions';
@@ -23,12 +25,17 @@ import ReactMarkdown from 'react-markdown';
 import { clsx } from 'clsx';
 import { Role } from '../types';
 import { AppHeader } from './AppHeader';
+import { ModalEscapeListener } from '../hooks/useModalDismiss';
+import { ContactSearchModal } from './ContactSearchModal';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 interface HomePageProps {
     username: string;
+    userId: string;
     userRoles: Role[];
+    /** 當前操作角色（多角色帳號切換用）；未提供時 fallback 到 userRoles 第一個 */
+    activeRole?: Role;
     pendingAlerts?: PendingDocAlert[];
     thresholdAlerts?: PendingDocThresholdAlert[];
     unassignedCount?: number;
@@ -45,6 +52,7 @@ interface HomePageProps {
     onGoNotifications: () => void;
     onGoUserSettings?: () => void;
     onGoStats?: () => void;
+    onGoReports?: () => void;
     onLogout: () => void;
 }
 
@@ -106,6 +114,20 @@ const QUICK_LINKS = [
         desc: '日期區間內通過/不通過案件分布',
         color: 'bg-purple-50 text-purple-600 border-purple-100',
         action: 'stats',
+    },
+    {
+        icon: <Phone className="w-4 h-4" />,
+        label: '聯絡紀錄',
+        desc: '查詢、新增來電與關懷紀錄',
+        color: 'bg-rose-50 text-rose-600 border-rose-100',
+        action: 'contact_records',
+    },
+    {
+        icon: <FileSpreadsheet className="w-4 h-4" />,
+        label: '報表查詢',
+        desc: '匯出三張顧客報表（自費醫療系列）',
+        color: 'bg-emerald-50 text-emerald-600 border-emerald-100',
+        action: 'reports',
     },
 ];
 
@@ -220,10 +242,15 @@ function BannerCarousel({ banners }: { banners: Banner[] }) {
 
 const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
 
-export function HomePage({ username, userRoles, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onLogout, onSelectCase }: HomePageProps) {
+export function HomePage({ username, userId, userRoles, activeRole, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onGoReports, onLogout, onSelectCase }: HomePageProps) {
     const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
     const canViewStats = userRoles.some(r => STATS_ROLES.includes(r));
     const [selectedAnn, setSelectedAnn] = useState<Announcement | null>(null);
+    const [contactSearchOpen, setContactSearchOpen] = useState(false);
+
+    /** 聯絡紀錄功能可見角色 — 與 contactRecordActions ALLOWED_ROLES 一致 */
+    const CONTACT_ROLES = ['supervisor', 'case_officer', 'volunteer', 'admin'];
+    const canUseContactRecords = userRoles.some(r => CONTACT_ROLES.includes(r));
 
     function isNew(publishDate: string, days: number) {
         return (Date.now() - new Date(publishDate).getTime()) / 86400000 <= days;
@@ -317,10 +344,26 @@ export function HomePage({ username, userRoles, pendingAlerts = [], thresholdAle
                         <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wider">快速功能</h3>
                         <div className="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-1 gap-2 sm:gap-3">
                             {QUICK_LINKS.map((link, idx) => {
+                                // 當前操作角色為 volunteer 時隱藏：
+                                //   - 通知管理（notifications）
+                                //   - 外部收件（external_intake）
+                                // 判定用「目前正在操作的角色」，多角色帳號切到 volunteer 視野時也會生效
+                                const isActingAsVolunteer = (activeRole ?? userRoles[0]) === 'volunteer';
+
                                 const hasAccess =
                                     link.action === 'new_application' ? (userRoles.includes('case_officer') || userRoles.includes('admin')) :
                                     link.action === 'admin' ? (userRoles.includes('admin') || userRoles.includes('chairman' as Role)) :
                                     link.action === 'stats' ? canViewStats :
+                                    link.action === 'notifications' ? !isActingAsVolunteer :
+                                    link.action === 'external_intake' ? !isActingAsVolunteer :
+                                    link.action === 'contact_records' ? canUseContactRecords :
+                                    link.action === 'reports' ? (
+                                        userRoles.includes('admin')
+                                        || userRoles.includes('supervisor')
+                                        || userRoles.includes('board_member' as Role)
+                                        || userRoles.includes('executive' as Role)
+                                        || userRoles.includes('chairman' as Role)
+                                    ) :
                                     true;
 
                                 if (!hasAccess) return null;
@@ -335,6 +378,8 @@ export function HomePage({ username, userRoles, pendingAlerts = [], thresholdAle
                                     link.action === 'external_intake' ? () => window.open('/apply', '_blank') :
                                     link.action === 'user_settings' ? onGoUserSettings :
                                     link.action === 'stats' ? onGoStats :
+                                    link.action === 'contact_records' ? () => setContactSearchOpen(true) :
+                                    link.action === 'reports' ? onGoReports :
                                     undefined;
 
                                 return (
@@ -393,8 +438,17 @@ export function HomePage({ username, userRoles, pendingAlerts = [], thresholdAle
                 </div>
             </main>
 
+            {/* 聯絡紀錄 modal — 內含查詢 + 新增來電 + 新增關懷 */}
+            {contactSearchOpen && (
+                <ContactSearchModal
+                    operatorUserId={userId}
+                    onClose={() => setContactSearchOpen(false)}
+                />
+            )}
+
             {selectedAnn && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setSelectedAnn(null)}>
+                    <ModalEscapeListener onClose={() => setSelectedAnn(null)} />
                     <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
                         <div className="p-5 border-b border-slate-200 flex items-start justify-between gap-4">
                             <div>

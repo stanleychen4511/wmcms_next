@@ -60,6 +60,7 @@ export interface DocumentTypeConfig {
     storage_location_path: string | null;
     sort_order: number;
     is_active: boolean;
+    scope: 'C' | 'D';
 }
 
 export async function fetchDocumentTypeConfigs(): Promise<DocumentTypeConfig[]> {
@@ -76,7 +77,7 @@ export async function fetchDocumentTypeConfigs(): Promise<DocumentTypeConfig[]> 
                 FROM file_storage_location l JOIN loc_path lp ON l.parent_id = lp.id
             )
             SELECT d.id, d.label, d.phase, d.is_required, d.allow_supplement,
-                   d.storage_location_id, d.sort_order, d.is_active,
+                   d.storage_location_id, d.sort_order, d.is_active, d.scope,
                    lp.full_path AS storage_location_path
             FROM document_type_config d
             LEFT JOIN loc_path lp ON lp.id = d.storage_location_id
@@ -146,13 +147,88 @@ function sanitizeForFilename(str: string): string {
     return str.replace(/[\/\\:*?"<>|\s]+/g, '_');
 }
 
+/**
+ * 依 disbursementId 與 document_type_config.scope 守門：
+ *   scope='C' → disbursementId 必須為 null/undefined（case-level）
+ *   scope='D' → disbursementId 必須非 null（disbursement-level），且依文件類型強制角色 + review_stage：
+ *     id=18 領款收據：case_officer + review_stage='1'
+ *     id=17 醫療收據：accountant + review_stage='3'
+ *
+ * 若 disbursementId 提供 → 需傳入 operatorUserId 以做角色檢查。
+ */
+async function checkDocumentScopeAndRole(
+    client: any,
+    documentId: string,
+    disbursementId: string | null | undefined,
+    operatorUserId: string | null | undefined
+): Promise<{ ok: true } | { ok: false; error: string }> {
+    const cfgRes = await client.query(
+        `SELECT scope FROM document_type_config WHERE id = $1`,
+        [documentId]
+    );
+    if (cfgRes.rows.length === 0) {
+        return { ok: false, error: `未知文件類型 id=${documentId}` };
+    }
+    const scope: 'C' | 'D' = cfgRes.rows[0].scope;
+    const hasDisb = disbursementId !== null && disbursementId !== undefined && disbursementId !== '';
+    if (scope === 'C' && hasDisb) {
+        return { ok: false, error: 'case-level 文件不可帶 disbursementId' };
+    }
+    if (scope === 'D' && !hasDisb) {
+        return { ok: false, error: 'disbursement-level 文件需提供 disbursementId' };
+    }
+    if (scope === 'C') return { ok: true };
+
+    // scope='D'：必須有 operator + 取得撥款的 review_stage
+    if (!operatorUserId) {
+        return { ok: false, error: '上傳 disbursement-level 文件需要 operatorUserId' };
+    }
+    const disbRes = await client.query(
+        `SELECT review_stage FROM payment_disbursements WHERE id = $1`,
+        [disbursementId]
+    );
+    if (disbRes.rows.length === 0) {
+        return { ok: false, error: '撥款不存在' };
+    }
+    const stage: string = disbRes.rows[0].review_stage;
+
+    const rolesRes = await client.query(
+        `SELECT r.code FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1`,
+        [operatorUserId]
+    );
+    const roles = new Set(rolesRes.rows.map((r: any) => r.code));
+
+    // 領款收據（id=18）：個管階段
+    if (Number(documentId) === 18) {
+        if (!roles.has('case_officer')) return { ok: false, error: '只有個管師可上傳領款收據' };
+        if (stage !== '1') return { ok: false, error: '僅個管階段（review_stage=1）可上傳領款收據' };
+    }
+    // 醫療收據（id=17）：會計階段
+    if (Number(documentId) === 17) {
+        if (!roles.has('accountant')) return { ok: false, error: '只有會計可上傳醫療收據' };
+        if (stage !== '3') return { ok: false, error: '僅會計階段（review_stage=3）可上傳醫療收據' };
+    }
+    return { ok: true };
+}
+
+/** 撥款相關文件（醫療收據/領款收據）僅接受可合併列印的格式（PDF / 圖片） */
+const DISBURSEMENT_DOC_EXTS = ['.pdf', '.jpg', '.jpeg', '.png'];
+function isDisbursementReceiptType(documentId: string): boolean {
+    const n = Number(documentId);
+    return n === 17 || n === 18;
+}
+
 export async function uploadApplicationDocument(
     applicationId: string,
     documentId: string,    // e.g. '1', '2', ... (matches application_documents.id SMALLINT)
     documentLabel: string, // e.g. '自費醫療補助申請書'
     caseNumber: string,    // e.g. 'A115003'
     formData: FormData,
-    uploaderAccount?: string
+    uploaderAccount?: string,
+    options?: {
+        disbursementId?: string | null;   // scope='D' 文件必填
+        operatorUserId?: string | null;   // scope='D' 文件必填（用來檢查角色）
+    }
 ): Promise<{ success: boolean; filePath?: string; error?: string }> {
     const file = formData.get('file') as File;
     if (!file) return { success: false, error: '未提供檔案' };
@@ -170,13 +246,35 @@ export async function uploadApplicationDocument(
         return { success: false, error: '僅接受 PDF、Word 或圖片檔案（.pdf、.doc、.docx、.jpg、.png）' };
     }
 
+    // 撥款相關文件（醫療收據 / 領款收據）必須是 PDF 或圖片，否則合併列印無法處理
+    if (isDisbursementReceiptType(documentId) && !DISBURSEMENT_DOC_EXTS.includes(ext)) {
+        return { success: false, error: '醫療收據／領款收據僅接受 PDF 或圖片（不支援 .doc / .docx，請先轉檔）' };
+    }
+
+    const disbursementId = options?.disbursementId ?? null;
+    const operatorUserId = options?.operatorUserId ?? null;
+
     try {
+        // scope + 角色 + review_stage 守門（先做，避免不合法上傳浪費 blob 寫入）
+        if (/^\d+$/.test(applicationId)) {
+            const client = await pool.connect();
+            try {
+                const check = await checkDocumentScopeAndRole(
+                    client, documentId, disbursementId, operatorUserId
+                );
+                if (!check.ok) return { success: false, error: check.error };
+            } finally {
+                client.release();
+            }
+        }
+
         const bytes = await file.arrayBuffer();
         const buffer = Buffer.from(bytes);
 
         const safeLabel = sanitizeForFilename(documentLabel);
         const timestamp = formatTimestamp(new Date());
-        const fileName = `${caseNumber}_${safeLabel}_${timestamp}${ext}`;
+        const disbSuffix = disbursementId ? `_disb${disbursementId}` : '';
+        const fileName = `${caseNumber}_${safeLabel}${disbSuffix}_${timestamp}${ext}`;
         const localRelPath = `/uploads/${applicationId}/${fileName}`;
         const blobKey = `uploads/${applicationId}/${fileName}`;
 
@@ -189,24 +287,36 @@ export async function uploadApplicationDocument(
         if (/^\d+$/.test(applicationId)) {
             const client = await pool.connect();
             try {
-                await client.query(
-                    `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at, pages)
-                     VALUES ($1, $2, $3, '0', NOW(), $4)
-                     ON CONFLICT (application_id, id)
-                     DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW(), pages = EXCLUDED.pages`,
-                    [applicationId, documentId, publicUrl, pages]
-                );
+                if (disbursementId) {
+                    // disbursement-level：upsert by (application_id, id, disbursement_id) 部分唯一索引
+                    await client.query(
+                        `INSERT INTO application_documents (application_id, id, disbursement_id, file_path, status, uploaded_at, pages)
+                         VALUES ($1, $2, $3, $4, '0', NOW(), $5)
+                         ON CONFLICT (application_id, id, disbursement_id) WHERE disbursement_id IS NOT NULL
+                         DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW(), pages = EXCLUDED.pages`,
+                        [applicationId, documentId, disbursementId, publicUrl, pages]
+                    );
+                } else {
+                    // case-level：原行為，但 ON CONFLICT 針對 partial unique index
+                    await client.query(
+                        `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at, pages)
+                         VALUES ($1, $2, $3, '0', NOW(), $4)
+                         ON CONFLICT (application_id, id) WHERE disbursement_id IS NULL
+                         DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW(), pages = EXCLUDED.pages`,
+                        [applicationId, documentId, publicUrl, pages]
+                    );
+                }
             } finally {
                 client.release();
             }
         }
 
         void writeAuditLog({
-            userId: null,
+            userId: operatorUserId ?? null,
             action: 'document.upload',
             targetType: 'document',
             targetId: documentId,
-            detail: { applicationId, documentLabel, filePath: publicUrl },
+            detail: { applicationId, documentLabel, filePath: publicUrl, disbursementId: disbursementId ?? undefined },
         });
         return { success: true, filePath: publicUrl };
     } catch (err: any) {
@@ -225,14 +335,16 @@ export async function updateDocumentStatus(
     const client = await pool.connect();
     try {
         // Upsert logic for status change
+        // 此 action 僅用於 case-level 文件審核（disbursement_id IS NULL）
         const existRes = await client.query(
-            `SELECT 1 FROM application_documents WHERE application_id = $1 AND id = $2`,
+            `SELECT 1 FROM application_documents WHERE application_id = $1 AND id = $2 AND disbursement_id IS NULL`,
             [applicationId, documentId]
         );
 
         if (existRes.rows.length > 0) {
             await client.query(
-                `UPDATE application_documents SET status = $1, reject_reason = $2 WHERE application_id = $3 AND id = $4`,
+                `UPDATE application_documents SET status = $1, reject_reason = $2
+                 WHERE application_id = $3 AND id = $4 AND disbursement_id IS NULL`,
                 [status, rejectReason || null, applicationId, documentId]
             );
         } else {
@@ -278,7 +390,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                    lp.full_path AS storage_location_path
             FROM document_type_config d
             LEFT JOIN loc_path lp ON lp.id = d.storage_location_id
-            WHERE d.is_active = true
+            WHERE d.is_active = true AND d.scope = 'C'
             ORDER BY d.phase, d.sort_order, d.id
         `);
 
@@ -287,9 +399,12 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
             is_required: boolean; storage_location_path: string | null;
         }[];
 
+        // 僅取 case-level 文件（scope='C'，即 disbursement_id IS NULL）
+        // disbursement-level 文件（醫療收據、領款收據）由 DisbursementPanel 顯示
         const uploadRes = await client.query(
             `SELECT id::text, file_path, status, reject_reason, uploaded_at
-             FROM application_documents WHERE application_id = $1`,
+             FROM application_documents
+             WHERE application_id = $1 AND disbursement_id IS NULL`,
             [applicationId]
         );
 
@@ -361,22 +476,30 @@ export async function fetchHistoricalReceipts(applicantId: string): Promise<Hist
 }
 
 export async function fetchLastApplicationDocs(
-    applicantId: string
+    applicantId: string,
+    currentApplicationId?: string,
 ): Promise<{ docId: string; label: string; fileUrl: string; sourceCaseNumber: string }[]> {
     if (!applicantId) return [];
     const client = await pool.connect();
     try {
-        // Get the most recent application for this applicant (any status)
+        // 取此申請人「上一筆」案件 — 排除當前正在檢視的案件
+        // 沒提供 currentApplicationId 時退化為純粹「最新一筆」（兼容舊呼叫）
+        const params: unknown[] = [applicantId];
+        let excludeClause = '';
+        if (currentApplicationId && /^\d+$/.test(currentApplicationId)) {
+            params.push(currentApplicationId);
+            excludeClause = `AND id != $${params.length}::bigint`;
+        }
         const appRes = await client.query(
             `SELECT id, case_number FROM applications
-             WHERE applicant_id = $1
+             WHERE applicant_id = $1 ${excludeClause}
              ORDER BY apply_at DESC LIMIT 1`,
-            [applicantId]
+            params,
         );
-        if (appRes.rows.length === 0) return [];
+        if (appRes.rows.length === 0) return [];  // 此人是首次申請（排除自己後沒有其他案件）
         const { id: lastAppId, case_number: caseNumber } = appRes.rows[0];
 
-        // Get doc id=3 (身分證) and id=4 (個資同意書) from that application
+        // 取上一筆案件的 doc id=3 (身分證) 與 id=4 (個資同意書)
         const docsRes = await client.query(
             `SELECT id::text AS doc_id, file_path
              FROM application_documents
@@ -407,7 +530,7 @@ export async function copyDocumentToApplication(
         await client.query(
             `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at)
              VALUES ($1, $2, $3, '0', NOW())
-             ON CONFLICT (application_id, id)
+             ON CONFLICT (application_id, id) WHERE disbursement_id IS NULL
              DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW()`,
             [targetApplicationId, docId, fileUrl]
         );

@@ -70,6 +70,13 @@ CREATE TABLE IF NOT EXISTS document_type_config (
 ALTER TABLE document_type_config
     ADD COLUMN IF NOT EXISTS allow_supplement BOOLEAN NOT NULL DEFAULT FALSE;
 
+-- 補欄位：scope（refine-disbursement-flow，2026-04）
+--   'C' = case-level（一案一份；application_documents.disbursement_id IS NULL）
+--   'D' = disbursement-level（每筆撥款一份；application_documents.disbursement_id 指向 payment_disbursements）
+ALTER TABLE document_type_config
+    ADD COLUMN IF NOT EXISTS scope CHAR(1) NOT NULL DEFAULT 'C'
+        CHECK (scope IN ('C','D'));
+
 -- 6. applications
 CREATE TABLE IF NOT EXISTS applications (
     id                       BIGSERIAL   PRIMARY KEY,
@@ -88,7 +95,7 @@ CREATE TABLE IF NOT EXISTS applications (
     moveable_property        NUMERIC(12,0),
     immoveable_property      NUMERIC(12,0),
     annual_income            NUMERIC(12,0),
-    marital_status           CHAR(1),    -- '1'=未婚/單身 '2'=已婚
+    marital_status           CHAR(1),    -- 115 辦法：'1'=已婚 '2'=單親 '3'=單身（CHECK 約束於 6b6 加上）
     has_children             BOOLEAN,
     underage_children_count  INT,
     adult_children_count     INT
@@ -242,6 +249,7 @@ END$$;
 DROP TABLE IF EXISTS board_review_votes;
 
 -- 7e. board_review_signatures（董事審核電子簽章，added 2026-04）
+-- 自 2026-04 起每位董事擁有獨立的審核結果（member_approved / member_amount / member_comments）
 CREATE TABLE IF NOT EXISTS board_review_signatures (
     application_id     BIGINT      NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
     signer_user_id     BIGINT      NOT NULL REFERENCES users(id)        ON DELETE CASCADE,
@@ -252,6 +260,10 @@ CREATE TABLE IF NOT EXISTS board_review_signatures (
     ip_address         TEXT,
     PRIMARY KEY (application_id, signer_user_id)
 );
+ALTER TABLE board_review_signatures
+    ADD COLUMN IF NOT EXISTS member_approved BOOLEAN,
+    ADD COLUMN IF NOT EXISTS member_amount   NUMERIC(12,0),
+    ADD COLUMN IF NOT EXISTS member_comments TEXT;
 
 -- 6a. referral_units（轉介單位字典表，added 2026-04；供 applications.referral_unit_id FK 使用）
 CREATE TABLE IF NOT EXISTS referral_units (
@@ -270,12 +282,186 @@ ALTER TABLE applications
 ALTER TABLE applications
     ADD COLUMN IF NOT EXISTS referral_unit_id  BIGINT;
 
+-- 6b3. applications: 轉介單位自由填寫 + 承辦人聯絡（#6, added 2026-04）
+ALTER TABLE applications
+    ADD COLUMN IF NOT EXISTS referral_unit_name TEXT,
+    ADD COLUMN IF NOT EXISTS referral_contact_name TEXT,
+    ADD COLUMN IF NOT EXISTS referral_contact_title TEXT,
+    ADD COLUMN IF NOT EXISTS referral_contact_phone TEXT;
+
+-- 6b4. applications: 補助子類型（#2, added 2026-04，依 115 年辦法）
+ALTER TABLE applications
+    ADD COLUMN IF NOT EXISTS subsidy_subtype CHAR(1)
+    CHECK (subsidy_subtype IS NULL OR subsidy_subtype IN ('1', '2'));
+COMMENT ON COLUMN applications.subsidy_subtype IS
+    '補助子類型（115 年辦法）：1=經濟弱勢、2=小康家庭；NULL 為舊資料未分類';
+
+-- 6b6. applications.marital_status：對齊 115 辦法編碼（added 2026-04）
+--   '1'=已婚、'2'=單親、'3'=單身（與 mid_class_eligibility_matrix 一致）
+ALTER TABLE applications DROP CONSTRAINT IF EXISTS applications_marital_status_chk;
+ALTER TABLE applications
+    ADD CONSTRAINT applications_marital_status_chk
+    CHECK (marital_status IS NULL OR marital_status IN ('1', '2', '3'));
+
+-- 6b7. applications: 經濟弱勢專屬欄位（added 2026-04）
+ALTER TABLE applications
+    ADD COLUMN IF NOT EXISTS econ_deposit         NUMERIC(12, 2),
+    ADD COLUMN IF NOT EXISTS econ_monthly_income  NUMERIC(12, 2);
+COMMENT ON COLUMN applications.econ_deposit
+    IS '【經濟弱勢專屬】存款（夫妻取平均，萬元）— 115 年辦法第四條第三項第 1 款';
+COMMENT ON COLUMN applications.econ_monthly_income
+    IS '【經濟弱勢專屬】每月收入（夫妻取平均，萬元）— 115 年辦法第四條第三項第 1 款';
+
+-- 6b5. 補助金額上限表 + 小康家庭資格矩陣（#2 + #3, added 2026-04）
+CREATE TABLE IF NOT EXISTS subsidy_amount_limits (
+    subsidy_subtype CHAR(1) PRIMARY KEY
+        CHECK (subsidy_subtype IN ('1', '2')),
+    amount_max     NUMERIC(12, 0) NOT NULL CHECK (amount_max >= 0),
+    updated_at     TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by     BIGINT REFERENCES users(id) ON DELETE SET NULL
+);
+COMMENT ON TABLE  subsidy_amount_limits IS '補助金額上限（依子類型，單位：元）— 115 年辦法第三條';
+COMMENT ON COLUMN subsidy_amount_limits.subsidy_subtype IS '子類型：1=經濟弱勢、2=小康家庭';
+COMMENT ON COLUMN subsidy_amount_limits.amount_max IS '每一申請人不限年度累計補助上限（元）';
+
+INSERT INTO subsidy_amount_limits (subsidy_subtype, amount_max)
+VALUES ('1', 30000), ('2', 350000)
+ON CONFLICT (subsidy_subtype) DO NOTHING;
+
+CREATE TABLE IF NOT EXISTS mid_class_eligibility_matrix (
+    marital_status   CHAR(1) NOT NULL CHECK (marital_status  IN ('1', '2', '3')),  -- 1=已婚 2=單親 3=單身
+    children_status  CHAR(1) NOT NULL CHECK (children_status IN ('1', '2', '3')),  -- 1=未成年子女 2=已成年子女 3=無子女
+    income_min       NUMERIC(12, 0) NOT NULL CHECK (income_min >= 0),
+    income_max       NUMERIC(12, 0) NOT NULL CHECK (income_max >= 0),
+    assets_max       NUMERIC(12, 0) NOT NULL CHECK (assets_max >= 0),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by       BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    PRIMARY KEY (marital_status, children_status)
+);
+COMMENT ON TABLE  mid_class_eligibility_matrix IS '小康家庭資格矩陣（115 年辦法第四條第三項第 2 款）— 單位：萬元';
+COMMENT ON COLUMN mid_class_eligibility_matrix.marital_status IS '婚姻狀態：1=已婚（收入夫妻合計）、2=單親（個人收入）、3=單身（個人收入）';
+COMMENT ON COLUMN mid_class_eligibility_matrix.children_status IS '子女狀態：1=未成年子女、2=已成年子女、3=無子女';
+COMMENT ON COLUMN mid_class_eligibility_matrix.income_min IS '年收入下限（萬）';
+COMMENT ON COLUMN mid_class_eligibility_matrix.income_max IS '年收入上限（萬）';
+COMMENT ON COLUMN mid_class_eligibility_matrix.assets_max IS '存款＋有價證券上限（萬）';
+
+INSERT INTO mid_class_eligibility_matrix (marital_status, children_status, income_min, income_max, assets_max)
+VALUES
+    ('1', '1',  70, 164, 120),
+    ('1', '2',  70, 164,  60),
+    ('1', '3',  70, 164,  60),
+    ('2', '1',  32, 105,  65),
+    ('2', '2',  32, 105,  32),
+    ('3', '1',  32, 105,  65),
+    ('3', '2',  32, 105,  32),
+    ('3', '3',  32, 105,  32)
+ON CONFLICT (marital_status, children_status) DO NOTHING;
+
+-- 移除舊版資格設定（pre-115 辦法）— 冪等
+DELETE FROM system_settings
+WHERE key IN (
+    'eligibility_age_min', 'eligibility_age_max', 'eligibility_real_estate_max',
+    'eligibility_s31_income_min', 'eligibility_s31_income_max', 'eligibility_s31_assets_max',
+    'eligibility_s32_income_min', 'eligibility_s32_income_max', 'eligibility_s32_assets_max',
+    'eligibility_s33_income_min', 'eligibility_s33_income_max', 'eligibility_s33_assets_max',
+    'eligibility_s34_income_min', 'eligibility_s34_income_max'
+);
+INSERT INTO system_settings (key, value, description) VALUES
+    ('elig_age_min',                  '25',   '【115 辦法】申請人年齡下限（歲）'),
+    ('elig_age_max',                  '65',   '【115 辦法】申請人年齡上限（歲）'),
+    ('elig_real_estate_max',          '2500', '【115 辦法】不動產上限：戶籍內直系合計（萬元）'),
+    ('elig_econ_deposit_max',         '16',   '【115 辦法-經濟弱勢】存款上限（夫妻取平均，萬元）'),
+    ('elig_econ_monthly_income_max',  '3',    '【115 辦法-經濟弱勢】每月收入上限（夫妻取平均，萬元）')
+ON CONFLICT (key) DO UPDATE SET description = EXCLUDED.description;
+
+-- 6b2. applications: 家訪指派（added 2026-04，#11）
+ALTER TABLE applications
+    ADD COLUMN IF NOT EXISTS home_visit_assignee_id BIGINT REFERENCES users(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_applications_home_visit_assignee
+    ON applications (home_visit_assignee_id);
+COMMENT ON COLUMN applications.home_visit_assignee_id IS '家訪指派人 user_id（volunteer / case_officer）；NULL 為尚未指派';
+
+-- 6b8. applications: 個管師案件說明（#17, added 2026-04）
+ALTER TABLE applications
+    ADD COLUMN IF NOT EXISTS officer_case_summary TEXT;
+COMMENT ON COLUMN applications.officer_case_summary IS
+    '【#17】個管師填寫的案件說明（董事審核參考用，建議 5 點條列）；填寫於家訪/行政初審階段，董事審核頁唯讀顯示，列印於審核意見表';
+
 -- 6c. applications: 董事審核意見永久保存欄位（added 2026-04）
 --   application_workflow.comments 是 stage-scoped、推進 stage 會被覆寫；
 --   board_review_comments 是 case-scoped 永久保存，由 saveBoardReviewDraft 同步寫入，
 --   推進 stage 不會覆寫；retreat 退回 board_review 之前的 stage 才會清空。
 ALTER TABLE applications
     ADD COLUMN IF NOT EXISTS board_review_comments TEXT;
+
+-- 6b9. applications: 申請人聯絡電話（2026-05）
+--   每件申請都需填寫；存於 application 而非 user，因聯絡電話可能因案而異。
+--   舊資料無此欄位故先 nullable；application 端 UI 強制必填。
+ALTER TABLE applications
+    ADD COLUMN IF NOT EXISTS applicant_phone TEXT;
+COMMENT ON COLUMN applications.applicant_phone IS '申請人聯絡電話（內外部收件皆必填）';
+
+-- 6b10. applications: 出生年月日 + 癌別 + 期數（2026-05）
+--   三欄皆為申請必填欄位；可在行政初審階段重新編輯。
+--   舊資料 nullable；新案 UI 強制必填、edit 不可清空。
+ALTER TABLE applications
+    ADD COLUMN IF NOT EXISTS applicant_dob   DATE,
+    ADD COLUMN IF NOT EXISTS cancer_type     TEXT,
+    ADD COLUMN IF NOT EXISTS cancer_stage    TEXT;
+COMMENT ON COLUMN applications.applicant_dob IS '申請人出生年月日（西元）';
+COMMENT ON COLUMN applications.cancer_type   IS '癌別自由文字（例：肺腺癌）';
+COMMENT ON COLUMN applications.cancer_stage  IS '癌症期數自由文字（例：第三期、IIIA）';
+
+-- 6b11. applications: 申請形式 + 治療前後（2026-05，給報表用）
+--   application_form：'P' 紙本 / 'E' 電子郵件；外部收件後端強制 'E'
+--   treatment_phase：'B' 治療前 / 'A' 治療後 / 'X' 治療前後
+--   兩欄皆必填；可在行政初審階段重新編輯。
+ALTER TABLE applications
+    ADD COLUMN IF NOT EXISTS application_form CHAR(1),
+    ADD COLUMN IF NOT EXISTS treatment_phase  CHAR(1);
+COMMENT ON COLUMN applications.application_form IS '申請形式：P=紙本 E=電子郵件（外部收件強制 E）';
+COMMENT ON COLUMN applications.treatment_phase  IS '治療階段：B=治療前 A=治療後 X=治療前後';
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'applications_application_form_chk') THEN
+        ALTER TABLE applications
+            ADD CONSTRAINT applications_application_form_chk
+            CHECK (application_form IS NULL OR application_form IN ('P', 'E'));
+    END IF;
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'applications_treatment_phase_chk') THEN
+        ALTER TABLE applications
+            ADD CONSTRAINT applications_treatment_phase_chk
+            CHECK (treatment_phase IS NULL OR treatment_phase IN ('B', 'A', 'X'));
+    END IF;
+END$$;
+
+-- 14. application_close_reasons: 結構化結案原因（2026-05）
+--   一個案件可勾多個原因；每個 reason_code 可帶 detail_value（金額/年齡/補助項目/取消原因）。
+CREATE TABLE IF NOT EXISTS application_close_reasons (
+    application_id BIGINT      NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    reason_code    CHAR(2)     NOT NULL,
+        -- '01' 低收/中低收入戶
+        -- '02' 年收入過低（detail = 金額）
+        -- '03' 年收入過高（detail = 金額）
+        -- '04' 存款過高（detail = 金額）
+        -- '05' 房產價值過高（detail = 金額）
+        -- '06' 年齡過低（detail = 年齡）
+        -- '07' 年齡過高（detail = 年齡）
+        -- '08' 補助項目不符（detail = 欲申請項目自由文字）
+        -- '09' 非癌症
+        -- '10' 非本國籍
+        -- '99' 申請人取消申請（detail = 取消原因自由文字）
+    detail_value   TEXT,
+    closed_at_stage TEXT,        -- 結案當下的 workflow.stage（admin_review/visit/board_review/reimbursement）
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    PRIMARY KEY (application_id, reason_code)
+);
+CREATE INDEX IF NOT EXISTS idx_close_reasons_app  ON application_close_reasons (application_id);
+CREATE INDEX IF NOT EXISTS idx_close_reasons_code ON application_close_reasons (reason_code);
+COMMENT ON TABLE  application_close_reasons IS '【#R】結構化結案原因（多選 + detail）';
+COMMENT ON COLUMN application_close_reasons.reason_code IS '01-10 不通過原因 / 99 申請人取消';
+COMMENT ON COLUMN application_close_reasons.detail_value IS '金額／年齡／自由說明';
+COMMENT ON COLUMN application_close_reasons.closed_at_stage IS '結案發生的 workflow stage';
 
 -- CHECK 約束（冪等）
 DO $$
@@ -314,6 +500,161 @@ BEGIN
     END IF;
 END$$;
 
+-- 7f. payment_disbursements（多次撥款紀錄；added 2026-04）
+CREATE TABLE IF NOT EXISTS payment_disbursements (
+    id                 BIGSERIAL    PRIMARY KEY,
+    application_id     BIGINT       NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    receipt_number     TEXT         NOT NULL UNIQUE,
+    amount             NUMERIC(12,0) NOT NULL CHECK (amount > 0),
+    payee_name         TEXT,
+    payee_id_number    TEXT,
+    payee_relation     TEXT,
+    payment_method     TEXT,
+    bank_name          TEXT,
+    bank_branch        TEXT,
+    bank_account       TEXT,
+    sent_at            DATE,
+    received_at        DATE,
+    receipt_file_path  TEXT,
+    notes              TEXT,
+    created_by         BIGINT       REFERENCES users(id) ON DELETE SET NULL,
+    created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
+    updated_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW()
+);
+CREATE INDEX IF NOT EXISTS idx_payment_disbursements_application_id
+    ON payment_disbursements (application_id);
+
+-- 7f-1b. payment_disbursements 外部隱碼（refine-disbursement-flow，2026-04）
+--   receipt_number = 內部可讀流水號（YYYY-MM-NNNN）
+--   external_code  = 對外的不可預測短碼（6 字元 base32，UNIQUE）
+--   申請人收到的收據／email 只露 external_code；內部界面同時顯示兩者方便對照。
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS external_code TEXT;
+DO $$
+BEGIN
+    IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'payment_disbursements_external_code_key') THEN
+        ALTER TABLE payment_disbursements
+            ADD CONSTRAINT payment_disbursements_external_code_key UNIQUE (external_code);
+    END IF;
+END$$;
+COMMENT ON COLUMN payment_disbursements.receipt_number IS '內部收據編號（YYYY-MM-NNNN，每月歸零的流水號），UNIQUE';
+COMMENT ON COLUMN payment_disbursements.external_code  IS '外部隱碼（6 字元 base32 隨機），對外露出此碼；UNIQUE';
+
+-- 7f-2. payment_disbursements 多層審核欄位（#12，added 2026-04）
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS review_stage CHAR(1) NOT NULL DEFAULT '9'
+        CHECK (review_stage IN ('1','2','3','4','9','X')),
+    ADD COLUMN IF NOT EXISTS officer_signed_at      TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS supervisor_user_id     BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS supervisor_signed_at   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS accountant_user_id     BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS accountant_signed_at   TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS executive_user_id      BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS executive_signed_at    TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS rejected_reason        TEXT,
+    ADD COLUMN IF NOT EXISTS rejected_at            TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS rejected_by            BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS rejected_from_stage    CHAR(1);
+
+-- 串行守門：每案最多一筆 in-flight（review_stage IN '1'..'4'）
+CREATE UNIQUE INDEX IF NOT EXISTS idx_payment_disb_one_in_flight
+    ON payment_disbursements (application_id)
+    WHERE review_stage IN ('1','2','3','4');
+
+COMMENT ON COLUMN payment_disbursements.review_stage IS
+    '審核流程狀態：1=個管師持有中、2=主管審核中、3=會計審核中、4=執行長審核中、9=已完成、X=已退件廢棄';
+COMMENT ON COLUMN payment_disbursements.officer_signed_at      IS '個管師【送出】時間';
+COMMENT ON COLUMN payment_disbursements.supervisor_user_id     IS '主管審核人 user_id';
+COMMENT ON COLUMN payment_disbursements.supervisor_signed_at   IS '主管【送出】時間';
+COMMENT ON COLUMN payment_disbursements.accountant_user_id     IS '會計審核人 user_id';
+COMMENT ON COLUMN payment_disbursements.accountant_signed_at   IS '會計【送出】時間';
+COMMENT ON COLUMN payment_disbursements.executive_user_id      IS '執行長審核人 user_id';
+COMMENT ON COLUMN payment_disbursements.executive_signed_at    IS '執行長【完成】時間（同時觸發通知）';
+COMMENT ON COLUMN payment_disbursements.rejected_reason        IS '退件原因（必填）';
+COMMENT ON COLUMN payment_disbursements.rejected_at            IS '退件時間';
+COMMENT ON COLUMN payment_disbursements.rejected_by            IS '退件人 user_id';
+COMMENT ON COLUMN payment_disbursements.rejected_from_stage    IS '從哪一層退件（2/3/4），便於追蹤與通知對象';
+
+-- 7f-3. payment_disbursements 各階段 checklist 守門欄位（refine-disbursement-flow，2026-04）
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS officer_doc_check                  BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS supervisor_doc_check               BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS accountant_medical_uploaded_check  BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS accountant_amount_match_check      BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS accountant_board_opinion_check     BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS accountant_bank_setup_check        BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS executive_final_check              BOOLEAN NOT NULL DEFAULT FALSE;
+
+COMMENT ON COLUMN payment_disbursements.officer_doc_check                  IS '個管：線上/紙本文件齊全（送出至主管前必勾）';
+COMMENT ON COLUMN payment_disbursements.supervisor_doc_check               IS '主管：領款收據確認無誤（送出至會計前必勾）';
+COMMENT ON COLUMN payment_disbursements.accountant_medical_uploaded_check  IS '會計：醫療收據已上傳';
+COMMENT ON COLUMN payment_disbursements.accountant_amount_match_check      IS '會計：醫療單據與領款收據金額核對無誤';
+COMMENT ON COLUMN payment_disbursements.accountant_board_opinion_check     IS '會計：董事審核意見表 2 份';
+COMMENT ON COLUMN payment_disbursements.accountant_bank_setup_check        IS '會計：已設定銀行補助款';
+COMMENT ON COLUMN payment_disbursements.executive_final_check              IS '執行長：申請表、家訪、審核意見表確認';
+
+-- 7f-4. payment_disbursements 具領人關係其他欄位（refine-disbursement-flow，2026-04）
+--   當 payee_relation = '其他' 時，UI 開放選填具體關係描述（例：鄰居、社工等）
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS payee_relation_other TEXT;
+COMMENT ON COLUMN payment_disbursements.payee_relation_other IS '具領人關係：當 payee_relation = "其他" 時的補充描述';
+
+-- 14b. notification_logs 加 disbursement_id（refine-disbursement-flow，2026-04）
+--   讓「個管寄送領款收據」「撥款完成通知」等事件可追蹤是哪一筆撥款觸發
+ALTER TABLE notification_logs
+    ADD COLUMN IF NOT EXISTS disbursement_id BIGINT REFERENCES payment_disbursements(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_notification_logs_disbursement
+    ON notification_logs (disbursement_id) WHERE disbursement_id IS NOT NULL;
+COMMENT ON COLUMN notification_logs.disbursement_id IS '若通知與特定撥款關聯（例：個管寄領款收據／撥款完成通知）則記錄該 payment_disbursements.id';
+
+-- 8b. application_documents 加 disbursement_id 並重構 PK（refine-disbursement-flow，2026-04）
+--   配合 document_type_config.scope：
+--     scope='C'（case-level）：每案每 type 至多一筆 → 由 partial unique index 守門
+--     scope='D'（disbursement-level）：每筆撥款各一份 → (app_id, id, disbursement_id) 唯一
+--   原 PK = (application_id, id) 改為 row_id 代理鍵，避免 disbursement-level 衝突
+ALTER TABLE application_documents
+    ADD COLUMN IF NOT EXISTS disbursement_id BIGINT REFERENCES payment_disbursements(id) ON DELETE CASCADE;
+
+-- 加 row_id 代理鍵（已存在則略過）並用它替換複合 PK（冪等）
+ALTER TABLE application_documents
+    ADD COLUMN IF NOT EXISTS row_id BIGSERIAL;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'application_documents_pkey'
+          AND pg_get_constraintdef(oid) LIKE 'PRIMARY KEY (application_id, id)'
+    ) THEN
+        ALTER TABLE application_documents DROP CONSTRAINT application_documents_pkey;
+    END IF;
+    IF NOT EXISTS (
+        SELECT 1 FROM pg_constraint WHERE conname = 'application_documents_pkey'
+    ) THEN
+        ALTER TABLE application_documents ADD CONSTRAINT application_documents_pkey PRIMARY KEY (row_id);
+    END IF;
+END$$;
+
+-- case-level 唯一性：disbursement_id IS NULL 時每案每 type 至多一筆
+CREATE UNIQUE INDEX IF NOT EXISTS uq_app_docs_case_level
+    ON application_documents (application_id, id)
+    WHERE disbursement_id IS NULL;
+
+-- disbursement-level 唯一性：scope='D' 時每筆撥款每 type 至多一筆
+CREATE UNIQUE INDEX IF NOT EXISTS uq_app_docs_disb_level
+    ON application_documents (application_id, id, disbursement_id)
+    WHERE disbursement_id IS NOT NULL;
+
+CREATE INDEX IF NOT EXISTS idx_app_docs_disbursement_id
+    ON application_documents (disbursement_id) WHERE disbursement_id IS NOT NULL;
+
+COMMENT ON COLUMN application_documents.disbursement_id IS '若文件 scope=D（如醫療收據、領款收據），指向對應 payment_disbursements；scope=C 則為 NULL';
+COMMENT ON COLUMN application_documents.row_id          IS 'Surrogate primary key（取代原複合 PK），讓 disbursement-level 文件可同 (app_id, id) 多筆';
+
+-- 9b. home_visit: 訪視者資訊 + 照片（added 2026-04）
+ALTER TABLE home_visit ADD COLUMN IF NOT EXISTS visitor_title TEXT;
+ALTER TABLE home_visit ADD COLUMN IF NOT EXISTS visitor_name TEXT;
+ALTER TABLE home_visit ADD COLUMN IF NOT EXISTS visit_photo_urls TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[];
+
 -- 2c. users: 通知接收偏好（Phase 3，added 2026-04）
 ALTER TABLE users
     ADD COLUMN IF NOT EXISTS notification_channels TEXT[] NOT NULL DEFAULT ARRAY['email'];
@@ -345,19 +686,65 @@ CREATE TABLE IF NOT EXISTS user_line_link_codes (
 );
 CREATE INDEX IF NOT EXISTS idx_user_line_link_codes_code ON user_line_link_codes (code);
 
--- 2c. applicant_care_records（事後關懷紀錄；以申請人為單位，一對多）
-CREATE TABLE IF NOT EXISTS applicant_care_records (
-    id                 BIGSERIAL   PRIMARY KEY,
-    applicant_user_id  BIGINT      NOT NULL REFERENCES users(id) ON DELETE CASCADE,
-    care_user_id       BIGINT               REFERENCES users(id) ON DELETE SET NULL,
-    care_date          DATE        NOT NULL,
-    summary            TEXT        NOT NULL,
-    media_urls         TEXT[]      NOT NULL DEFAULT ARRAY[]::TEXT[],
-    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
-    updated_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
+-- 2c. contact_records（#14：來電紀錄與關懷紀錄合併表）
+CREATE TABLE IF NOT EXISTS contact_records (
+    id                BIGSERIAL PRIMARY KEY,
+    record_type       CHAR(1) NOT NULL CHECK (record_type IN ('1', '2')),  -- 1=來電 2=關懷
+    contact_date      DATE NOT NULL,
+    handler_user_id   BIGINT REFERENCES users(id) ON DELETE SET NULL,
+
+    applicant_user_id BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    caller_name       TEXT,
+    caller_gender     CHAR(1) CHECK (caller_gender IS NULL OR caller_gender IN ('M', 'F', 'U')),
+    caller_phone      TEXT,
+
+    application_id    BIGINT REFERENCES applications(id) ON DELETE SET NULL,
+
+    from_source       CHAR(2),
+    consultant_type   CHAR(1) CHECK (consultant_type IS NULL OR consultant_type IN ('1', '2', '3')),
+    consult_program   CHAR(1) CHECK (consult_program IS NULL OR consult_program IN ('1', '2')),
+    reject_reasons    TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+
+    summary           TEXT,
+    media_urls        TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
 );
-CREATE INDEX IF NOT EXISTS idx_care_records_applicant_user_id
-    ON applicant_care_records (applicant_user_id);
+CREATE INDEX IF NOT EXISTS idx_contact_records_phone     ON contact_records (caller_phone);
+CREATE INDEX IF NOT EXISTS idx_contact_records_applicant ON contact_records (applicant_user_id);
+CREATE INDEX IF NOT EXISTS idx_contact_records_app       ON contact_records (application_id);
+CREATE INDEX IF NOT EXISTS idx_contact_records_date      ON contact_records (contact_date DESC);
+
+-- 2c-2. contact_records 關懷專屬欄位（refine-contact-care，2026-05）
+--   record_type='2' 時記錄聯絡對象（與申請人之關係）
+ALTER TABLE contact_records
+    ADD COLUMN IF NOT EXISTS contacted_party       CHAR(1),
+    ADD COLUMN IF NOT EXISTS contacted_party_other TEXT;
+COMMENT ON COLUMN contact_records.contacted_party       IS '關懷紀錄專用：聯絡對象與申請人之關係（1=本人 2=配偶 9=其他）';
+COMMENT ON COLUMN contact_records.contacted_party_other IS '當 contacted_party=9 時的補充描述';
+
+-- 2c-3. caller_phone 正規化欄位 + index（2026-05）
+--   原本查詢用 regexp_replace(caller_phone, '[^0-9]', '') = $1，
+--   函數套在欄位上會繞過 index 變 full table scan。
+--   改用 generated column 預先正規化 + B-tree index，
+--   完全比對 / 前綴 / 末碼比對都能用得到 index。
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1 FROM information_schema.columns
+        WHERE table_name = 'contact_records' AND column_name = 'caller_phone_digits'
+    ) THEN
+        ALTER TABLE contact_records
+            ADD COLUMN caller_phone_digits TEXT
+            GENERATED ALWAYS AS (regexp_replace(COALESCE(caller_phone, ''), '[^0-9]', '', 'g')) STORED;
+    END IF;
+END $$;
+COMMENT ON COLUMN contact_records.caller_phone_digits IS '正規化過的電話（只留數字）；給 index 用，禁止手動寫入';
+CREATE INDEX IF NOT EXISTS idx_contact_records_phone_digits
+    ON contact_records (caller_phone_digits);
+-- 舊的 idx_contact_records_phone 已被取代（caller_phone 直接比對沒人用）
+DROP INDEX IF EXISTS idx_contact_records_phone;
 
 -- 14a. notification_logs: pending-doc reminder flag (added 2026-04)
 ALTER TABLE notification_logs
@@ -474,13 +861,14 @@ INSERT INTO roles (code, name) VALUES
     ('chairman',      '董事長'),
     ('board_member',  '董事'),
     ('accountant',    '會計'),
+    ('executive',     '執行長'),
     ('volunteer',     '志工'),
     ('applicant',     '申請人')
 ON CONFLICT (code) DO UPDATE SET name = EXCLUDED.name;
 
 -- ── 系統設定 ──────────────────────────────────────────────────
 INSERT INTO system_settings (key, value, description) VALUES
-    ('max_apply_amount',       '350000', '每人累積補助金額上限（元）'),
+    -- max_apply_amount 已移除（#2/#3）：改由 subsidy_amount_limits 表依子類型動態查詢
     ('pending_doc_alert_days', '14',     '超過幾天未補件則觸發缺件警示'),
     ('pending_doc_notification_threshold', '3', '同案件累計發送幾次未補件提醒後，於 UI 提示承辦人考慮以不通過結案'),
     ('board_auto_assign',                  'false', '董事審核階段自動派案開關（true/false）：true 時案件進 board_review 自動派給當前案件最少、priority 最小的組別'),
@@ -495,7 +883,9 @@ INSERT INTO system_settings (key, value, description) VALUES
     ('org_address',            '106005 台北市大安區金山南路二段 165 號 4 樓',  '登記住址'),
     ('org_phone',              '(02) 2321-2777',                               '聯絡電話'),
     ('org_fax',                '(02) 2321-3828',                               '傳真'),
-    ('org_line_qr_url',        '/org-line-qr.png',                             'LINE 加入志工 QR code 圖片路徑（相對於 public/，或外部 URL）')
+    ('org_line_qr_url',        '/org-line-qr.png',                             'LINE 加入志工 QR code 圖片路徑（相對於 public/，或外部 URL）'),
+    -- refine-disbursement-flow：撥款退件原因最少字數
+    ('disbursement_reject_reason_min_chars', '10', '撥款流程退件時，退件原因 trim 後最少字數（rejectDisbursement 守門用）')
 ON CONFLICT (key) DO NOTHING;
 
 -- ── 通知渠道 ──────────────────────────────────────────────────
@@ -512,10 +902,10 @@ UPDATE notification_channels SET is_enabled = TRUE WHERE channel = 'line';
 INSERT INTO notification_templates (name, channel, subject, body, description, status, sort_order)
 SELECT * FROM (VALUES
     ('line_case_entered_board_review', 'line', '',
-     E'【萬美基金會】新案件待派組\n案號：{{案號}}\n申請人：{{申請人}}\n申請金額：NT$ {{申請金額}}\n\n本案已進入董事審選階段，請至系統儘速指派董事組。\n{{系統連結}}',
+     E'【萬美基金會】新案件待派組\n案號：{{案號}}\n申請人：{{申請人}}\n申請金額：NT$ {{申請金額}}\n\n本案已進入董事審核階段，請至系統儘速指派董事組。\n{{系統連結}}',
      '系統範本：案件進入 board_review 時通知董事長（LINE）', 1, 100),
     ('email_case_entered_board_review', 'email', '【萬美基金會】新案件待派組',
-     E'董事長 您好：\n\n以下案件已進入「董事審選」階段，請儘速於系統指派董事組進行審查：\n\n案號：{{案號}}\n申請人：{{申請人}}\n申請金額：NT$ {{申請金額}}\n\n系統連結：{{系統連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     E'董事長 您好：\n\n以下案件已進入「董事審核」階段，請儘速於系統指派董事組進行審查：\n\n案號：{{案號}}\n申請人：{{申請人}}\n申請金額：NT$ {{申請金額}}\n\n系統連結：{{系統連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
      '系統範本：案件進入 board_review 時通知董事長（Email）', 1, 101),
     ('line_case_assigned_to_board_group', 'line', '',
      E'【萬美基金會】您所屬組別有新案件待審\n組別：{{組別名稱}}\n案號：{{案號}}\n申請人：{{申請人}}\n\n請至系統完成審查與簽章。\n{{系統連結}}',
@@ -525,7 +915,14 @@ SELECT * FROM (VALUES
      '系統範本：案件派組時通知該組成員（Email）', 1, 103),
     ('email_case_payment_receipt_to_applicant', 'email', '萬美基金會申請通過通知',
      E'{{申請人}} 您好：\n\n您所申請的補助案件已通過董事審核，特此通知。\n\n案號：{{案號}}\n申請金額：NT$ {{申請金額}}\n核定金額：NT$ {{核定金額}}\n\n請列印附件之「領款收據」，填寫具領人資料、簽名後郵寄回基金會以辦理撥款。\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
-     '系統範本：案件推進到 reimbursement 時自動寄領款收據 PDF 給申請人', 1, 104)
+     '系統範本：個管師於每筆撥款手動產生並寄送領款收據 PDF 給申請人（refine-disbursement-flow 起改為手動觸發）', 1, 104),
+    -- refine-disbursement-flow：撥款完成通知（站內 + Email + LINE）
+    ('email_disbursement_completed', 'email', '萬美基金會撥款完成通知',
+     E'{{申請人}} 您好：\n\n您所申請的補助案件當次撥款已完成發放。\n\n案號：{{案號}}\n本次撥款金額：NT$ {{本次撥款金額}}\n累計已撥金額：NT$ {{累計撥款金額}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     '系統範本：執行長按【完成】時通知所有相關人員（個管/主管/會計/申請人）', 1, 105),
+    ('line_disbursement_completed', 'line', '',
+     E'【萬美基金會】撥款完成\n案號：{{案號}}\n本次金額：NT$ {{本次撥款金額}}\n累計：NT$ {{累計撥款金額}}',
+     '系統範本：撥款完成通知（LINE）', 1, 106)
 ) AS v(name, channel, subject, body, description, status, sort_order)
 WHERE NOT EXISTS (
     SELECT 1 FROM notification_templates t WHERE t.name = v.name
@@ -554,24 +951,25 @@ SELECT setval('file_storage_location_id_seq', (SELECT MAX(id) FROM file_storage_
 -- ── 文件類型設定 ──────────────────────────────────────────────
 -- 申請階段
 INSERT INTO document_type_config
-    (id, label, phase, is_required, storage_location_id, sort_order, is_active, allow_supplement)
+    (id, label, phase, is_required, storage_location_id, sort_order, is_active, allow_supplement, scope)
 VALUES
-    ( 1, '自費醫療補助申請表',             'apply', TRUE,  8,    1,  TRUE, FALSE),
-    ( 2, '重大傷病證明',                   'apply', TRUE,  NULL, 6,  TRUE, TRUE),
-    ( 3, '身分證正反面影本',               'apply', TRUE,  7,    2,  TRUE, FALSE),
-    ( 4, '個資同意書',                     'apply', TRUE,  9,    3,  TRUE, FALSE),
-    ( 5, '現職醫事人員在職證明',           'apply', FALSE, NULL, 11, TRUE, FALSE),
-    ( 6, '綜所稅清單(配偶亦繳)',           'apply', TRUE,  NULL, 4,  TRUE, TRUE),
-    ( 8, '全戶戶籍謄本',                   'apply', TRUE,  NULL, 5,  TRUE, TRUE),
-    ( 9, '集保結算所資料',                 'apply', FALSE, NULL, 9,  TRUE, FALSE),
-    (10, '購屋貸款利息單據',               'apply', FALSE, NULL, 10, TRUE, FALSE),
-    (11, '診斷證明',                       'apply', TRUE,  NULL, 7,  TRUE, TRUE),
-    (13, '醫療單據正本或與正本相符之影本', 'apply', TRUE,  NULL, 8,  TRUE, TRUE),
+    ( 1, '自費醫療補助申請表',             'apply', TRUE,  8,    1,  TRUE, FALSE, 'C'),
+    ( 2, '重大傷病證明',                   'apply', TRUE,  NULL, 6,  TRUE, TRUE,  'C'),
+    ( 3, '身分證正反面影本',               'apply', TRUE,  7,    2,  TRUE, FALSE, 'C'),
+    ( 4, '個資同意書',                     'apply', TRUE,  9,    3,  TRUE, FALSE, 'C'),
+    ( 5, '現職醫事人員在職證明',           'apply', FALSE, NULL, 11, TRUE, FALSE, 'C'),
+    ( 6, '綜所稅清單(配偶亦繳)',           'apply', TRUE,  NULL, 4,  TRUE, TRUE,  'C'),
+    ( 8, '全戶戶籍謄本',                   'apply', TRUE,  NULL, 5,  TRUE, TRUE,  'C'),
+    ( 9, '集保結算所資料',                 'apply', FALSE, NULL, 9,  TRUE, FALSE, 'C'),
+    (10, '購屋貸款利息單據',               'apply', FALSE, NULL, 10, TRUE, FALSE, 'C'),
+    (11, '診斷證明',                       'apply', TRUE,  NULL, 7,  TRUE, TRUE,  'C'),
+    (13, '醫療單據正本或與正本相符之影本', 'apply', TRUE,  NULL, 8,  TRUE, TRUE,  'C'),
 -- 核銷階段
-    (17, '醫療收據',             'reimbursement', TRUE,  NULL, 1, TRUE, FALSE),
-    (18, '領款收據',             'reimbursement', TRUE,  NULL, 2, TRUE, FALSE),
-    (19, '保險給付通知單',       'reimbursement', FALSE, NULL, 3, TRUE, FALSE),
-    (20, '生命故事同意刊登截圖證明', 'reimbursement', FALSE, NULL, 4, TRUE, FALSE)
+    (17, '醫療收據',             'reimbursement', TRUE,  NULL, 1, TRUE, FALSE, 'D'),  -- 每筆撥款一份
+    (18, '領款收據',             'reimbursement', TRUE,  NULL, 2, TRUE, FALSE, 'D'),  -- 每筆撥款一份
+    (19, '保險給付通知單',       'reimbursement', FALSE, NULL, 3, TRUE, FALSE, 'C'),
+    (20, '生命故事同意刊登截圖證明', 'reimbursement', FALSE, NULL, 4, TRUE, FALSE, 'C'),
+    (21, '存摺封面影本',         'reimbursement', TRUE,  NULL, 5, TRUE, TRUE,  'C')   -- refine-disbursement-flow：必備、可延後補件
 ON CONFLICT (id) DO UPDATE SET
     label               = EXCLUDED.label,
     phase               = EXCLUDED.phase,
@@ -579,7 +977,8 @@ ON CONFLICT (id) DO UPDATE SET
     storage_location_id = EXCLUDED.storage_location_id,
     sort_order          = EXCLUDED.sort_order,
     is_active           = EXCLUDED.is_active,
-    allow_supplement    = EXCLUDED.allow_supplement;
+    allow_supplement    = EXCLUDED.allow_supplement,
+    scope               = EXCLUDED.scope;
 
 -- ── 公告分類（預設） ──────────────────────────────────────────
 INSERT INTO announcement_categories (name, color, sort_order, is_active) VALUES
@@ -603,7 +1002,7 @@ COMMENT ON TABLE application_documents    IS '案件文件與審核狀態（複�
 COMMENT ON TABLE document_type_config     IS '文件類型設定：phase（apply/board/reimbursement）、is_required（必備）、allow_supplement（可延後補件）';
 COMMENT ON TABLE file_storage_location    IS '檔案實體儲存位置樹狀結構（parent_id 自參考），用於記錄紙本或影印本的實體櫃位';
 COMMENT ON TABLE home_visit               IS '家訪紀錄：每個案件最多一筆，記錄家庭狀況、訪視心得、訪視人員';
-COMMENT ON TABLE applicant_care_records   IS '事後關懷紀錄（以申請人為主體）：social_worker / volunteer 追蹤關懷；同一申請人可多筆，每筆含摘要與媒體 URL 陣列';
+COMMENT ON TABLE contact_records   IS '【#14】來電與關懷紀錄合併表（record_type=1 來電 / 2 關懷）';
 COMMENT ON TABLE system_settings          IS '系統參數（key-value）：max_apply_amount、pending_doc_alert_days、pending_doc_notification_threshold、announcement_new_days 等';
 COMMENT ON TABLE audit_logs               IS '稽核日誌：所有敏感操作（登入、建案、審核、權限異動、通知發送、結案、設定變更等）的紀錄。detail 為 JSONB';
 COMMENT ON TABLE notification_channels    IS '通知渠道設定（email/line/sms）：config 為 JSONB，email 含 SMTP host/port/user/password_enc/password_iv 等';
@@ -689,7 +1088,7 @@ COMMENT ON COLUMN applications.age                     IS '申請人年齡（資
 COMMENT ON COLUMN applications.moveable_property       IS '動產金額（元）';
 COMMENT ON COLUMN applications.immoveable_property     IS '不動產金額（元）';
 COMMENT ON COLUMN applications.annual_income           IS '年收入（元）';
-COMMENT ON COLUMN applications.marital_status          IS '婚姻狀況：1=未婚/單身 2=已婚';
+COMMENT ON COLUMN applications.marital_status          IS '婚姻狀態（115 年辦法）：1=已婚（夫妻合計收入）、2=單親（個人收入）、3=單身（個人收入）；NULL 為舊資料未填';
 COMMENT ON COLUMN applications.has_children            IS '是否有子女';
 COMMENT ON COLUMN applications.underage_children_count IS '未成年子女人數';
 COMMENT ON COLUMN applications.adult_children_count    IS '成年子女人數';
@@ -781,16 +1180,27 @@ COMMENT ON COLUMN home_visit.subsidy_need_reason           IS '萬美基金會�
 COMMENT ON COLUMN home_visit.visitor_recommendations       IS '訪視者建議事項：1=有補助需求 2=轉介資源 3=其他';
 COMMENT ON COLUMN home_visit.visitor_recommendations_other IS '訪視者建議事項-其他說明（當 visitor_recommendations=3 時使用）';
 COMMENT ON COLUMN home_visit.updated_at                    IS '最後更新時間';
+COMMENT ON COLUMN home_visit.visitor_title                 IS '訪視者職稱（志工 / 個管師）';
+COMMENT ON COLUMN home_visit.visitor_name                  IS '訪視者姓名（自填）';
+COMMENT ON COLUMN home_visit.visit_photo_urls              IS '家訪照片雲端連結陣列（必填至少一張，使用者貼外部 URL）';
 
--- applicant_care_records
-COMMENT ON COLUMN applicant_care_records.id                IS '主鍵，自動遞增';
-COMMENT ON COLUMN applicant_care_records.applicant_user_id IS '被關懷的申請人 ID，FK 至 users.id（applicant 角色）';
-COMMENT ON COLUMN applicant_care_records.care_user_id      IS '執行關懷者 ID（volunteer / social_worker），FK 至 users.id；原使用者刪除時設 NULL 保留歷史';
-COMMENT ON COLUMN applicant_care_records.care_date         IS '關懷執行日期';
-COMMENT ON COLUMN applicant_care_records.summary           IS '關懷摘要（明文，自由文字）';
-COMMENT ON COLUMN applicant_care_records.media_urls        IS '媒體雲端連結陣列（圖片/影片 URL），預設空陣列';
-COMMENT ON COLUMN applicant_care_records.created_at        IS '紀錄建立時間';
-COMMENT ON COLUMN applicant_care_records.updated_at        IS '紀錄最後更新時間';
+-- contact_records（#14）
+COMMENT ON COLUMN contact_records.record_type     IS '1=來電紀錄 2=關懷紀錄';
+COMMENT ON COLUMN contact_records.contact_date    IS '紀錄日期';
+COMMENT ON COLUMN contact_records.handler_user_id IS '接聽人/紀錄者（FK→users）';
+COMMENT ON COLUMN contact_records.applicant_user_id IS '若已是申請人則關聯 user.id；來電未識別時為 NULL';
+COMMENT ON COLUMN contact_records.caller_name     IS '來電者姓名（自由填，未必=applicant_user.name）';
+COMMENT ON COLUMN contact_records.caller_gender   IS 'M=男 F=女 U=未知';
+COMMENT ON COLUMN contact_records.caller_phone    IS '聯絡方式（電話/LINE/Email）；含歷史檢索 index';
+COMMENT ON COLUMN contact_records.application_id  IS '可關聯特定補助案；未關聯為 NULL';
+COMMENT ON COLUMN contact_records.from_source     IS '從何得知本補助：01醫院社工 02醫師 03網路 04病友 05親友 06鄉鎮市公所 07他會 08合作的個管師 09公文 10FB 11Hope基金會 12癌資中心 13醫院個管';
+COMMENT ON COLUMN contact_records.consultant_type IS '諮詢人：1=本人 2=親友 3=轉介個案';
+COMMENT ON COLUMN contact_records.consult_program IS '諮詢方案（對齊 #2 子類型）：1=小康家庭 2=經濟弱勢';
+COMMENT ON COLUMN contact_records.reject_reasons  IS '無法申請原因（多選代碼）：1收入不符 2存款證券不符 3補助項目不符 4年齡不符 5非癌症 6非本國籍 7中低收入';
+COMMENT ON COLUMN contact_records.summary         IS '備註／追蹤摘要';
+COMMENT ON COLUMN contact_records.media_urls      IS '雲端連結（關懷紀錄常用）；空陣列為預設';
+COMMENT ON COLUMN contact_records.created_at      IS '紀錄建立時間';
+COMMENT ON COLUMN contact_records.updated_at      IS '紀錄最後更新時間';
 
 -- audit_logs
 COMMENT ON COLUMN audit_logs.id          IS '主鍵，自動遞增';

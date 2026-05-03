@@ -1,16 +1,22 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
     ChevronRight, FileText, ArrowLeft, Clock, CheckCircle, XCircle,
-    Heart, Plus, Pencil, Trash2, ExternalLink, Loader2,
+    Heart, Plus, Trash2, Loader2, ClipboardList,
 } from 'lucide-react';
 import { ApplicationRecord, WorkflowStage } from '../types';
 import { AppHeader } from './AppHeader';
-import { CareRecordModal } from './CareRecordModal';
+import { ContactRecordModal } from './ContactRecordModal';
+import { InfoSheetModal, type InfoSection } from './InfoSheetModal';
 import {
-    fetchCareRecordsByApplicant,
-    deleteCareRecord,
-    type CareRecord,
-} from '../app/actions/careRecordActions';
+    fetchContactRecords,
+    deleteContactRecord,
+    type ContactRecord,
+} from '../app/actions/contactRecordActions';
+import {
+    fetchApplicantHomeVisits,
+    type ApplicantHomeVisit,
+} from '../app/actions/homeVisitActions';
+import { useToast } from './FloatingToast';
 
 interface ApplicantHistoryPageProps {
     applicantName: string;
@@ -57,9 +63,9 @@ export function ApplicantHistoryPage({
 }: ApplicantHistoryPageProps) {
     const [activeTab, setActiveTab] = useState<Tab>('applications');
 
-    // 角色判定（依 spec）
-    const canViewCare = ['volunteer', 'social_worker', 'admin', 'supervisor'].some(r => userRoles.includes(r));
-    const canCreateCare = ['volunteer', 'social_worker'].some(r => userRoles.includes(r));
+    // 角色判定 — 關懷紀錄角色重整後：supervisor / case_officer / admin 可看可建
+    const canViewCare = ['supervisor', 'case_officer', 'admin'].some(r => userRoles.includes(r));
+    const canCreateCare = ['supervisor', 'case_officer', 'admin'].some(r => userRoles.includes(r));
     const isAdmin = userRoles.includes('admin');
 
     const sortedRecords = [...records].sort(
@@ -129,6 +135,7 @@ export function ApplicantHistoryPage({
                         loggedInUserId={loggedInUserId}
                         canCreate={canCreateCare}
                         isAdmin={isAdmin}
+                        applicationRecords={records}
                     />
                 )}
             </main>
@@ -293,51 +300,67 @@ interface CareSectionProps {
     loggedInUserId: string;
     canCreate: boolean;
     isAdmin: boolean;
+    /** 此申請人的歷次案件（用於關懷紀錄綁定下拉） */
+    applicationRecords: ApplicationRecord[];
 }
 
-function CareSection({ applicantUserId, applicantName, loggedInUserId, canCreate, isAdmin }: CareSectionProps) {
-    const [records, setRecords] = useState<CareRecord[]>([]);
+function CareSection({ applicantUserId, applicantName, loggedInUserId, canCreate, isAdmin, applicationRecords }: CareSectionProps) {
+    const { push: pushToast } = useToast();
+    const [records, setRecords] = useState<ContactRecord[]>([]);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string>('');
     const [modalOpen, setModalOpen] = useState(false);
-    const [editingRecord, setEditingRecord] = useState<CareRecord | null>(null);
+    const [editingRecord, setEditingRecord] = useState<ContactRecord | null>(null);
+    // 家訪關懷紀錄表（home_visit；每案 0~1 筆）
+    const [homeVisits, setHomeVisits] = useState<ApplicantHomeVisit[]>([]);
+    const [openHomeVisit, setOpenHomeVisit] = useState<ApplicantHomeVisit | null>(null);
 
     const loadRecords = useCallback(async () => {
         if (!applicantUserId) {
             setRecords([]);
+            setHomeVisits([]);
             setLoading(false);
             return;
         }
         setLoading(true);
         setError('');
-        const res = await fetchCareRecordsByApplicant(loggedInUserId, applicantUserId);
+        const [crRes, hvRes] = await Promise.all([
+            fetchContactRecords(loggedInUserId, { applicantUserId }),
+            fetchApplicantHomeVisits(loggedInUserId, applicantUserId),
+        ]);
         setLoading(false);
-        if (res.success) {
-            setRecords(res.data);
-        } else {
-            setError(res.error);
-        }
+        if (crRes.success) setRecords(crRes.data);
+        else setError(crRes.error);
+        if (hvRes.success) setHomeVisits(hvRes.data);
     }, [applicantUserId, loggedInUserId]);
 
     useEffect(() => {
         void loadRecords();
     }, [loadRecords]);
 
-    const handleOpenCreate = () => {
+    /** 開啟「新增」modal — 預設類型由 createType 決定（'1'=來電 / '2'=關懷） */
+    const [createType, setCreateType] = useState<'1' | '2'>('1');
+    const handleOpenCreatePhone = () => {
         setEditingRecord(null);
+        setCreateType('1');
         setModalOpen(true);
     };
-    const handleOpenEdit = (r: CareRecord) => {
+    const handleOpenCreateCare = () => {
+        setEditingRecord(null);
+        setCreateType('2');
+        setModalOpen(true);
+    };
+    const handleOpenEdit = (r: ContactRecord) => {
         setEditingRecord(r);
         setModalOpen(true);
     };
-    const handleDelete = async (r: CareRecord) => {
-        if (!confirm(`確定刪除 ${r.careDate} 的關懷紀錄？`)) return;
-        const res = await deleteCareRecord(loggedInUserId, r.id);
+    const handleDelete = async (r: ContactRecord) => {
+        if (!confirm(`確定刪除 ${r.contactDate} 的紀錄？`)) return;
+        const res = await deleteContactRecord(loggedInUserId, r.id);
         if (res.success) {
             await loadRecords();
         } else {
-            alert(res.error);
+            pushToast({ type: 'error', msg: res.error });
         }
     };
 
@@ -349,24 +372,71 @@ function CareSection({ applicantUserId, applicantName, loggedInUserId, canCreate
         );
     }
 
+    const phoneCount = records.filter(r => r.recordType === '1').length;
+    const careCount  = records.filter(r => r.recordType === '2').length;
+    const visitCount = homeVisits.length;
+    const totalEvents = phoneCount + careCount + visitCount;
+
+    // 把三種事件合併成單一時間軸，依日期 desc 排序（最新在上）
+    type Event =
+        | { kind: 'phone' | 'care'; date: string; raw: ContactRecord }
+        | { kind: 'visit';          date: string; raw: ApplicantHomeVisit };
+    const events: Event[] = [
+        ...records.map<Event>(r => ({
+            kind: r.recordType === '1' ? 'phone' : 'care',
+            date: r.contactDate || '',
+            raw: r,
+        })),
+        ...homeVisits.map<Event>(hv => ({
+            kind: 'visit',
+            date: hv.visitDate || '',
+            raw: hv,
+        })),
+    ].sort((a, b) => (b.date || '').localeCompare(a.date || ''));
+
+    const STATUS_LABEL_HERE: Record<string, string> = {
+        '1': '審核中', '2': '審核未通過', '3': '待核銷', '4': '核銷完成',
+    };
+
     return (
         <div className="space-y-4">
             <div className="flex items-center justify-between">
                 <h3 className="text-sm font-semibold text-slate-600 flex items-center gap-1.5">
-                    <Heart className="w-4 h-4 text-rose-500" />
-                    共 {records.length} 筆關懷紀錄
+                    <ClipboardList className="w-4 h-4 text-emerald-600" />
+                    共 {totalEvents} 筆紀錄
+                    {totalEvents > 0 && (
+                        <span className="text-xs text-slate-400 font-normal ml-1">
+                            （來電 {phoneCount} / 關懷 {careCount} / 家訪 {visitCount}）
+                        </span>
+                    )}
                 </h3>
                 {canCreate && (
-                    <button
-                        type="button"
-                        onClick={handleOpenCreate}
-                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-sm font-medium rounded-lg transition"
-                    >
-                        <Plus className="w-4 h-4" />
-                        新增關懷紀錄
-                    </button>
+                    <div className="flex items-center gap-2">
+                        <button
+                            type="button"
+                            onClick={handleOpenCreatePhone}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 hover:bg-blue-700 text-white text-sm font-medium rounded-lg transition"
+                            title="紀錄一通與此申請人有關的來電（不需綁案件）"
+                        >
+                            <Plus className="w-4 h-4" />
+                            新增來電紀錄
+                        </button>
+                        <button
+                            type="button"
+                            onClick={handleOpenCreateCare}
+                            className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-rose-600 hover:bg-rose-700 text-white text-sm font-medium rounded-lg transition"
+                            title="紀錄一次對申請人的主動關懷（需綁定特定案件）"
+                        >
+                            <Plus className="w-4 h-4" />
+                            新增關懷紀錄
+                        </button>
+                    </div>
                 )}
             </div>
+            <p className="text-xs text-slate-500 -mt-2">
+                依日期排序（最新在上）顯示此申請人歷次案件的所有事件 — 來電、關懷、家訪。
+                本頁可新增「來電」與「關懷」；「家訪」請於對應案件的家訪步驟建立。
+            </p>
 
             {error && (
                 <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-3 rounded-lg">
@@ -379,86 +449,157 @@ function CareSection({ applicantUserId, applicantName, loggedInUserId, canCreate
                     <Loader2 className="w-5 h-5 animate-spin mr-2" />
                     載入中…
                 </div>
-            ) : records.length === 0 ? (
+            ) : events.length === 0 ? (
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-12 text-center text-slate-400">
                     <Heart className="w-10 h-10 mx-auto mb-3 text-slate-300" />
-                    尚無關懷紀錄{canCreate && '，可點右上角「新增關懷紀錄」開始追蹤'}
+                    尚無紀錄{canCreate && '，可點右上角「新增來電紀錄」'}
                 </div>
             ) : (
-                <div className="space-y-3">
-                    {records.map(r => {
-                        const canEdit = r.careUserId === loggedInUserId;
-                        const canDelete = canEdit || isAdmin;
-                        return (
-                            <div key={r.id} className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 space-y-2">
-                                <div className="flex items-start justify-between gap-3">
-                                    <div className="flex-1 min-w-0">
-                                        <div className="flex items-center gap-2 text-sm">
-                                            <span className="font-semibold text-slate-800">{r.careDate}</span>
-                                            <span className="text-slate-400">·</span>
-                                            <span className="text-slate-600">{r.careUserName}</span>
-                                            {r.createdAt !== r.updatedAt && (
-                                                <span className="text-[10px] text-slate-400">（已編輯）</span>
-                                            )}
-                                        </div>
-                                    </div>
-                                    <div className="flex items-center gap-1 shrink-0">
-                                        {canEdit && (
-                                            <button
-                                                type="button"
-                                                onClick={() => handleOpenEdit(r)}
-                                                className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded transition"
-                                                title="編輯"
-                                            >
-                                                <Pencil className="w-4 h-4" />
-                                            </button>
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4">
+                    <div className="space-y-1">
+                        {events.map(ev => {
+                            // 家訪 home_visit 渲染（先檢查 visit 讓 TS narrowing 正確）
+                            if (ev.kind === 'visit') {
+                                const hv = ev.raw;
+                                return (
+                                    <button
+                                        key={`v-${hv.homeVisitId}`}
+                                        type="button"
+                                        onClick={() => setOpenHomeVisit(hv)}
+                                        className="w-full flex items-center gap-3 p-2 rounded hover:bg-emerald-50 text-left transition"
+                                    >
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded shrink-0 bg-emerald-100 text-emerald-700">
+                                            家訪
+                                        </span>
+                                        <span
+                                            className="text-xs px-2 py-0.5 rounded font-mono bg-emerald-100 text-emerald-700 shrink-0"
+                                            title="所屬案件編號"
+                                        >
+                                            {hv.caseNumber}
+                                        </span>
+                                        <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${
+                                            hv.caseStatus === '4' ? 'bg-emerald-50 text-emerald-700 border border-emerald-200'
+                                            : hv.caseStatus === '2' ? 'bg-rose-50 text-rose-700 border border-rose-200'
+                                            : 'bg-amber-50 text-amber-700 border border-amber-200'
+                                        }`}>
+                                            {STATUS_LABEL_HERE[hv.caseStatus] ?? hv.caseStatus}
+                                        </span>
+                                        <span className="text-xs text-slate-600 font-mono shrink-0">{hv.visitDate ?? '—'}</span>
+                                        {hv.visitorName && (
+                                            <span className="text-xs text-slate-500 shrink-0">
+                                                · 訪視者：{hv.visitorName}{hv.visitorTitle ? `（${hv.visitorTitle}）` : ''}
+                                            </span>
                                         )}
+                                        <span className="text-xs text-slate-700 truncate">
+                                            {hv.subsidyNeedReason?.trim() || hv.selfReportedCondition?.trim() || '（無摘要）'}
+                                        </span>
+                                    </button>
+                                );
+                            }
+                            // 來電 / 關懷 contact_record 共用渲染
+                            {
+                                const r = ev.raw;
+                                const canDelete = (r.handlerUserId === loggedInUserId) || isAdmin;
+                                const tagClass = ev.kind === 'phone'
+                                    ? 'bg-blue-100 text-blue-700'
+                                    : 'bg-rose-100 text-rose-700';
+                                const tagLabel = ev.kind === 'phone' ? '來電' : '關懷';
+                                const summary = r.summary?.trim() || '（無摘要）';
+                                return (
+                                    <div
+                                        key={`c-${r.id}`}
+                                        className="group flex items-center gap-3 p-2 rounded hover:bg-slate-50 transition"
+                                    >
+                                        <button
+                                            type="button"
+                                            onClick={() => handleOpenEdit(r)}
+                                            className="flex-1 flex items-center gap-3 text-left min-w-0"
+                                        >
+                                            <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${tagClass}`}>
+                                                {tagLabel}
+                                            </span>
+                                            {r.caseNumber && (
+                                                <span
+                                                    className="text-xs px-2 py-0.5 rounded font-mono bg-emerald-100 text-emerald-700 shrink-0"
+                                                    title="此紀錄關聯之案件編號"
+                                                >
+                                                    {r.caseNumber}
+                                                </span>
+                                            )}
+                                            <span className="text-xs text-slate-600 font-mono shrink-0">{r.contactDate}</span>
+                                            <span className="text-xs text-slate-500 shrink-0">· {r.handlerName}</span>
+                                            <span className="text-xs text-slate-700 truncate">{summary}</span>
+                                            {r.createdAt !== r.updatedAt && (
+                                                <span className="text-[10px] text-slate-400 shrink-0">（已編輯）</span>
+                                            )}
+                                        </button>
                                         {canDelete && (
                                             <button
                                                 type="button"
                                                 onClick={() => handleDelete(r)}
-                                                className="p-1.5 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded transition"
-                                                title="刪除"
+                                                className="p-1 text-slate-300 hover:text-red-600 hover:bg-red-50 rounded opacity-0 group-hover:opacity-100 transition"
+                                                title="刪除此紀錄"
                                             >
-                                                <Trash2 className="w-4 h-4" />
+                                                <Trash2 className="w-3.5 h-3.5" />
                                             </button>
                                         )}
                                     </div>
-                                </div>
-                                <p className="text-sm text-slate-700 whitespace-pre-wrap">{r.summary}</p>
-                                {r.mediaUrls.length > 0 && (
-                                    <div className="flex flex-wrap gap-2 pt-1">
-                                        {r.mediaUrls.map((url, idx) => (
-                                            <a
-                                                key={idx}
-                                                href={url}
-                                                target="_blank"
-                                                rel="noopener noreferrer"
-                                                className="inline-flex items-center gap-1 px-2 py-1 bg-slate-100 hover:bg-slate-200 text-slate-700 text-xs rounded transition"
-                                            >
-                                                <ExternalLink className="w-3 h-3" />
-                                                連結 {idx + 1}
-                                            </a>
-                                        ))}
-                                    </div>
-                                )}
-                            </div>
-                        );
-                    })}
+                                );
+                            }
+                        })}
+                    </div>
                 </div>
             )}
 
             {modalOpen && (
-                <CareRecordModal
+                <ContactRecordModal
                     mode={editingRecord ? 'edit' : 'create'}
                     applicantUserId={applicantUserId}
                     applicantName={applicantName}
+                    defaultRecordType={createType}
                     existingRecord={editingRecord ?? undefined}
+                    /* 提供此申請人的歷次案件供關懷模式下拉選擇 */
+                    applications={applicationRecords
+                        .filter(r => !!r.caseNumber)
+                        .map(r => ({
+                            id: r.id,
+                            caseNumber: r.caseNumber!,
+                            // 前端 ApplicationStatus 只有 active/closed；近似 mapping
+                            status: r.status === 'active' ? '1' : '4',
+                        }))}
                     operatorUserId={loggedInUserId}
                     onSaved={loadRecords}
                     onClose={() => setModalOpen(false)}
                 />
             )}
+
+            {/* 家訪紀錄表詳情 modal */}
+            {openHomeVisit && (() => {
+                const hv = openHomeVisit;
+                const sections: InfoSection[] = [
+                    { label: '訪視日期', value: hv.visitDate },
+                    { label: '訪視員', value: [hv.visitorName, hv.visitorTitle].filter(Boolean).join('・') || null },
+                    { label: '本人陳述', value: hv.selfReportedCondition, multiline: true },
+                    { label: '對病情的反應', value: [hv.diseaseReactionStatus, hv.diseaseReactionOther].filter(Boolean).join('｜') || null },
+                    { label: '治療態度', value: [hv.treatmentAttitudeStatus, hv.treatmentAttitudeOther].filter(Boolean).join('｜') || null },
+                    { label: '主要照顧者', value: [hv.primaryCaregiver, hv.primaryCaregiverOther].filter(Boolean).join('｜') || null },
+                    { label: '家庭互動', value: [hv.familyInteractionStatus, hv.familyInteractionOther].filter(Boolean).join('｜') || null },
+                    { label: '當事人想法', value: hv.impactedPartyThoughts, multiline: true },
+                    { label: '治療支持', value: [hv.treatmentSupportStatus, hv.treatmentSupportOther].filter(Boolean).join('｜') || null },
+                    { label: '其他狀況', value: hv.otherStatusNotes, multiline: true },
+                    { label: '需要補助原因', value: hv.subsidyNeedReason, multiline: true },
+                    { label: '訪視員建議', value: [hv.visitorRecommendations, hv.visitorRecommendationsOther].filter(Boolean).join('｜') || null, multiline: true },
+                ];
+                return (
+                    <InfoSheetModal
+                        title={`家訪關懷紀錄表 — ${hv.caseNumber}`}
+                        headline={`${STATUS_LABEL_HERE[hv.caseStatus] ?? hv.caseStatus}　訪視日期：${hv.visitDate ?? '—'}`}
+                        sections={sections}
+                        images={hv.photoUrls}
+                        onClose={() => setOpenHomeVisit(null)}
+                    />
+                );
+            })()}
         </div>
     );
 }

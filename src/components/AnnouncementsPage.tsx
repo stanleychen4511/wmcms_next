@@ -4,6 +4,7 @@ import { Megaphone, X, ChevronRight, Search } from 'lucide-react';
 import { clsx } from 'clsx';
 import { fetchAllAnnouncements, Announcement } from '../app/actions/announcementActions';
 import { AppHeader } from './AppHeader';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 interface AnnouncementsPageProps {
     username?: string;
@@ -109,32 +110,39 @@ export function AnnouncementsPage({ username, onBack, onGoHome, onLogout }: Anno
 
             {/* Detail Modal */}
             {selected && (
-                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setSelected(null)}>
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
-                        <div className="p-5 border-b border-slate-200 flex items-start justify-between gap-4">
-                            <div>
-                                {selected.category_name && (
-                                    <span className={clsx('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mb-2', selected.category_color ?? 'bg-gray-100 text-gray-600')}>
-                                        {selected.category_name}
-                                    </span>
-                                )}
-                                <h3 className="text-lg font-bold text-slate-800 leading-snug">{selected.title}</h3>
-                                <p className="text-xs text-slate-400 mt-1">{selected.publish_date}</p>
-                            </div>
-                            <button onClick={() => setSelected(null)} className="text-slate-400 hover:text-slate-600 transition shrink-0 mt-0.5">
-                                <X className="w-5 h-5" />
-                            </button>
-                        </div>
-                        <div className="flex-1 overflow-y-auto p-5">
-                            <div className="prose prose-sm max-w-none text-slate-700">
-                                <ReactMarkdown components={{ img: () => null }}>
-                                    {selected.content}
-                                </ReactMarkdown>
-                            </div>
-                        </div>
+                <AnnouncementDetailModal item={selected} onClose={() => setSelected(null)} />
+            )}
+        </div>
+    );
+}
+
+function AnnouncementDetailModal({ item, onClose }: { item: Announcement; onClose: () => void }) {
+    useModalDismiss(onClose);
+    return (
+        <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-2xl w-full max-w-2xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                <div className="p-5 border-b border-slate-200 flex items-start justify-between gap-4">
+                    <div>
+                        {item.category_name && (
+                            <span className={clsx('inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium mb-2', item.category_color ?? 'bg-gray-100 text-gray-600')}>
+                                {item.category_name}
+                            </span>
+                        )}
+                        <h3 className="text-lg font-bold text-slate-800 leading-snug">{item.title}</h3>
+                        <p className="text-xs text-slate-400 mt-1">{item.publish_date}</p>
+                    </div>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition shrink-0 mt-0.5">
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+                <div className="flex-1 overflow-y-auto p-5">
+                    <div className="prose prose-sm max-w-none text-slate-700">
+                        <ReactMarkdown components={{ img: () => null }}>
+                            {item.content}
+                        </ReactMarkdown>
                     </div>
                 </div>
-            )}
+            </div>
         </div>
     );
 }

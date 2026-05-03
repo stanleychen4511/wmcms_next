@@ -8,6 +8,7 @@ import {
     type StatsOutcome,
     type StatsDrillDownRow,
 } from '../app/actions/caseStatisticsActions';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 interface Props {
     fromDate: string;
@@ -35,6 +36,7 @@ export function CaseStatisticsDrillDownModal({
     title,
     onClose,
 }: Props) {
+    useModalDismiss(onClose);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string>('');
     const [rows, setRows] = useState<StatsDrillDownRow[]>([]);
@@ -61,8 +63,8 @@ export function CaseStatisticsDrillDownModal({
     }, [fromDate, toDate, dimension, dimensionValue, outcome, operatorUserId]);
 
     return (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-4xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 shrink-0">
                     <h3 className="text-base font-bold text-slate-800">
                         {title}

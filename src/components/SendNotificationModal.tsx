@@ -12,19 +12,21 @@ import {
 } from '../app/actions/notificationActions';
 import { applyPlaceholders } from '../lib/notificationUtils';
 import { isApplicationInPendingDocState } from '../app/actions/pendingDocAlertActions';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 // ─── Role display helpers ──────────────────────────────────────────────────────
 
 const ROLE_LABEL: Record<string, string> = {
+    admin:         '系統管理員',
+    chairman:      '董事長',
     supervisor:    '主管',
     case_officer:  '承辦人員',
-    social_worker: '社工',
     accountant:    '會計',
     board_member:  '董事',
     volunteer:     '志工',
 };
 
-const ROLE_PRIORITY = ['supervisor', 'case_officer', 'social_worker', 'accountant', 'board_member', 'volunteer'];
+const ROLE_PRIORITY = ['admin', 'chairman', 'supervisor', 'case_officer', 'accountant', 'board_member', 'volunteer'];
 
 function getPrimaryRole(roles: string[]): string {
     for (const r of ROLE_PRIORITY) {
@@ -84,6 +86,7 @@ export function SendNotificationModal({
     onClose,
     onSent,
 }: SendNotificationModalProps) {
+    useModalDismiss(onClose);
     const [templates, setTemplates] = useState<NotificationTemplate[]>([]);
     const [staffRecipients, setStaffRecipients] = useState<NotificationRecipient[]>([]);
     const [applicantRecipient, setApplicantRecipient] = useState<NotificationRecipient | null>(null);
@@ -223,8 +226,8 @@ export function SendNotificationModal({
     const staffGroups = groupByRole(staffRecipients);
 
     return (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
 
                 {/* Header */}
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 shrink-0">

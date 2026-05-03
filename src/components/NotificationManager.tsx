@@ -8,6 +8,7 @@ import {
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { AppHeader } from './AppHeader';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 import {
     NotificationChannel, NotificationTemplate, SmtpConfig,
     fetchChannels, updateChannelEnabled, saveSmtpConfig, loadSmtpConfig,
@@ -16,6 +17,7 @@ import {
 } from '../app/actions/notificationActions';
 import { fetchLineCredentialStatus, sendLineMessage } from '../app/actions/lineActions';
 import { SYSTEM_TEMPLATE_NAMES } from '../lib/systemTemplates';
+import { useToast } from './FloatingToast';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -133,6 +135,7 @@ interface TplModalProps {
 }
 
 function TemplateModal({ mode, tpl, userId, onClose, onSaved }: TplModalProps) {
+    useModalDismiss(onClose);
     const isSystem = mode === 'edit' && !!tpl && SYSTEM_TEMPLATE_NAMES.has(tpl.name);
     const [name, setName] = useState(tpl?.name ?? '');
     const [channel, setChannel] = useState(tpl?.channel ?? 'email');
@@ -156,8 +159,8 @@ function TemplateModal({ mode, tpl, userId, onClose, onSaved }: TplModalProps) {
     };
 
     return (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-lg max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200 shrink-0">
                     <h3 className="text-base font-bold text-slate-800">{mode === 'add' ? '新增範本' : '編輯範本'}</h3>
                     <button onClick={onClose}><X className="w-4 h-4 text-slate-400" /></button>
@@ -235,6 +238,7 @@ interface ScheduleFormProps {
 }
 
 function ScheduleFormModal({ schedule, templates, onClose, onSaved }: ScheduleFormProps) {
+    useModalDismiss(onClose);
     const [name, setName] = useState(schedule?.name ?? '');
     const [templateId, setTemplateId] = useState<number | null>(schedule?.template_id ?? null);
     const [missingDocDaysGt, setMissingDocDaysGt] = useState<number>(
@@ -265,8 +269,8 @@ function ScheduleFormModal({ schedule, templates, onClose, onSaved }: ScheduleFo
     };
 
     return (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md flex flex-col">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md flex flex-col" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
                     <h3 className="text-base font-bold text-slate-800">
                         {schedule?.id ? '編輯排程' : '新增排程'}
@@ -350,6 +354,7 @@ interface NotificationManagerProps {
 }
 
 export function NotificationManager({ userId, onBack, username, onLogout }: NotificationManagerProps) {
+    const { push: pushToast } = useToast();
     const [activeTab, setActiveTab] = useState<Tab>('channels');
     const [channels, setChannels] = useState<NotificationChannel[]>([]);
     const [templates, setTemplates] = useState<NotificationTemplate[]>([]);
@@ -360,7 +365,6 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
     const [showScheduleForm, setShowScheduleForm] = useState(false);
     const [editingSchedule, setEditingSchedule] = useState<Partial<NotificationSchedule> | null>(null);
     const [scheduleExecuting, setScheduleExecuting] = useState<number | null>(null);
-    const [actionError, setActionError] = useState('');
 
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -375,31 +379,30 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
 
     const handleToggleChannel = async (ch: NotificationChannel) => {
         if (ch.channel === 'sms' && !ch.is_enabled) {
-            alert('SMS 渠道尚未開通，請等待後續整合。');
+            pushToast({ type: 'info', msg: 'SMS 渠道尚未開通，請等待後續整合。' });
             return;
         }
-        setActionError('');
         const res = await updateChannelEnabled(ch.channel, !ch.is_enabled);
-        if (!res.success) setActionError(res.error ?? '操作失敗');
+        if (!res.success) pushToast({ type: 'error', msg: res.error ?? '操作失敗' });
         else await loadData();
     };
 
     const handleToggleTemplate = async (tpl: NotificationTemplate) => {
         const res = await toggleTemplateStatus(tpl.id, tpl.status === 1 ? 0 : 1);
-        if (!res.success) setActionError(res.error ?? '操作失敗');
+        if (!res.success) pushToast({ type: 'error', msg: res.error ?? '操作失敗' });
         else await loadData();
     };
 
     const handleToggleSchedule = async (sch: NotificationSchedule) => {
         const res = await toggleScheduleActive(sch.id, !sch.is_active);
-        if (!res.success) setActionError(res.error ?? '操作失敗');
+        if (!res.success) pushToast({ type: 'error', msg: res.error ?? '操作失敗' });
         else await loadData();
     };
 
     const handleDeleteSchedule = async (id: number) => {
         if (!confirm('確定刪除此排程？')) return;
         const res = await deleteSchedule(id);
-        if (!res.success) setActionError(res.error ?? '刪除失敗');
+        if (!res.success) pushToast({ type: 'error', msg: res.error ?? '刪除失敗' });
         else await loadData();
     };
 
@@ -408,10 +411,10 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
         const res = await executeSchedule(id, 'manual');
         setScheduleExecuting(null);
         if (res.success) {
-            alert(`執行完成：成功 ${res.sent} 封，失敗 ${res.failed} 封。`);
+            pushToast({ type: 'success', msg: `執行完成：成功 ${res.sent} 封，失敗 ${res.failed} 封。` });
             await loadData();
         } else {
-            alert(`執行失敗：${res.error}`);
+            pushToast({ type: 'error', msg: `執行失敗：${res.error}` });
         }
     };
 
@@ -429,13 +432,6 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                     </h2>
                     <p className="text-sm text-slate-500 mt-0.5">設定通知渠道及管理通知範本</p>
                 </div>
-
-                {actionError && (
-                    <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
-                        <AlertTriangle className="w-4 h-4 shrink-0" />{actionError}
-                        <button onClick={() => setActionError('')} className="ml-auto"><X className="w-4 h-4" /></button>
-                    </div>
-                )}
 
                 {/* ── Tab navigation ── */}
                 <div className="flex gap-1 border-b border-slate-200">

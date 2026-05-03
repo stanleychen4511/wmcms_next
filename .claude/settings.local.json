@@ -6,7 +6,9 @@
       "Bash(find C:/Projects/wmcms_next -type f \\\\\\(-name *.ts -o -name *.tsx \\\\\\))",
       "Bash(xargs grep:*)",
       "Bash(find C:/Projects/wmcms_next -type f \\\\\\(-name *.sql -o -name schema* \\\\\\))",
-      "Bash(grep -r 'CREATE TABLE.*home_visit' C:/Projects/wmcms_next --include=*.sql --include=*.ts)"
+      "Bash(grep -r 'CREATE TABLE.*home_visit' C:/Projects/wmcms_next --include=*.sql --include=*.ts)",
+      "mcp__pg_wmcms__pg_execute_query",
+      "mcp__pg_wmcms_demo__pg_execute_query"
     ]
   }
 }

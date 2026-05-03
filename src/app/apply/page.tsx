@@ -1,8 +1,13 @@
 import { ExternalIntake } from '../../components/ExternalIntake';
+import { FloatingToastProvider } from '../../components/FloatingToast';
 
 export const metadata = {
     title: '線上補助申請 — 萬美基金會',
 };
+
+// 提交流程含多個檔案上傳 + DB 寫入；放寬 Vercel function timeout
+// （Hobby 預設 10s 太短易卡住；Pro 才能設到 60s 以上）
+export const maxDuration = 60;
 
 export default function ApplyPage() {
     return (
@@ -19,7 +24,9 @@ export default function ApplyPage() {
 
             {/* Content */}
             <main className="container mx-auto px-4 sm:px-6 py-8 max-w-3xl">
-                <ExternalIntake />
+                <FloatingToastProvider>
+                    <ExternalIntake />
+                </FloatingToastProvider>
             </main>
 
             {/* Footer */}

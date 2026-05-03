@@ -15,6 +15,7 @@ import {
     disableTemplateFile,
     enableTemplateFile,
 } from '../app/actions/templateActions';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -48,6 +49,7 @@ interface CategoryModalProps {
 }
 
 function CategoryModal({ mode, cat, userId, onClose, onSaved }: CategoryModalProps) {
+    useModalDismiss(onClose);
     const [name, setName] = useState(cat?.name ?? '');
     const [sortOrder, setSortOrder] = useState(cat?.sort_order ?? 1);
     const [saving, setSaving] = useState(false);
@@ -65,8 +67,8 @@ function CategoryModal({ mode, cat, userId, onClose, onSaved }: CategoryModalPro
     };
 
     return (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-sm" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
                     <h3 className="text-base font-bold text-slate-800">{mode === 'add' ? '新增分類' : '編輯分類'}</h3>
                     <button onClick={onClose}><X className="w-4 h-4 text-slate-400" /></button>
@@ -109,6 +111,7 @@ interface TemplateModalProps {
 }
 
 function TemplateModal({ mode, file, categories, userId, onClose, onSaved }: TemplateModalProps) {
+    useModalDismiss(onClose);
     const [displayName, setDisplayName] = useState(file?.display_name ?? '');
     const [description, setDescription] = useState(file?.description ?? '');
     const [categoryId, setCategoryId] = useState<number | null>(file?.category_id ?? null);
@@ -142,8 +145,8 @@ function TemplateModal({ mode, file, categories, userId, onClose, onSaved }: Tem
     };
 
     return (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
                     <h3 className="text-base font-bold text-slate-800">{mode === 'add' ? '上傳範本檔案' : '編輯範本資訊'}</h3>
                     <button onClick={onClose}><X className="w-4 h-4 text-slate-400" /></button>

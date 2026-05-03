@@ -5,7 +5,6 @@ import { generateBlindIndex } from '../../lib/crypto';
 import { CaseSummary, ApplicationRecord, WorkflowStage, ApplicationStatus } from '../../types';
 import { STATUS_TO_STAGE, DB_STAGE_TO_FRONTEND, STATUS_LABEL } from '../../lib/stageMaps';
 import { writeAuditLog } from './auditActions';
-import { fetchSetting } from './settingsActions';
 
 export interface ApplicationStatusResult {
     found: boolean;
@@ -88,8 +87,10 @@ export async function checkApplicationStatus(idNumber: string): Promise<Applicat
 
         const totalApprovedAmount = parseInt(sumRes.rows[0].total_approved || '0', 10);
 
-        const maxAmountStr = await fetchSetting('max_apply_amount', '350000');
-        const maxAmount = Number(maxAmountStr) || 350000;
+        // 子類型尚未選定（lookup 階段），採兩子類型較大值；submit 時再用實際子類型 enforce
+        const { fetchSubsidyAmountLimitsMap } = await import('./eligibilityRulesActions');
+        const limits = await fetchSubsidyAmountLimitsMap();
+        const maxAmount = Math.max(limits['1'] ?? 0, limits['2'] ?? 0);
         const remaining = Math.max(0, maxAmount - totalApprovedAmount);
 
         const appData = appRes.rows[0] ?? null;
@@ -126,20 +127,70 @@ export async function createNewApplication(
     applicationWay: '1' | '2' = '1',
     referralUnitId: number | string | null = null,
     email: string = '',
+    referralInfo?: {
+        unitName?: string;
+        contactName?: string;
+        contactTitle?: string;
+        contactPhone?: string;
+    },
+    /** 補助子類型（115 年辦法）：'1'=經濟弱勢、'2'=小康家庭；未指定則 NULL（後續可在資格表單補填） */
+    subsidySubtype?: '1' | '2' | null,
+    /** 申請人聯絡電話（必填） */
+    applicantPhone: string = '',
+    /** 申請人出生年月日 YYYY-MM-DD（必填） */
+    applicantDob: string = '',
+    /** 癌別（必填） */
+    cancerType: string = '',
+    /** 癌症期數（必填） */
+    cancerStage: string = '',
+    /** 申請形式：'P' 紙本 / 'E' 電子郵件（必填） */
+    applicationForm: 'P' | 'E' | '' = '',
+    /** 治療階段：'B' 治療前 / 'A' 治療後 / 'X' 治療前後（必填） */
+    treatmentPhase: 'B' | 'A' | 'X' | '' = '',
 ): Promise<{ success: boolean; caseId?: string; error?: string }> {
     // Email 必填驗證（核銷階段需自動寄領款收據至此信箱）
     const trimmedEmail = (email ?? '').trim();
     if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
         return { success: false, error: '請填寫有效的 Email 地址' };
     }
-    // 案件來源與轉介單位驗證：way='1' 時一律寫 NULL；way='2' 時必須給有效且啟用中的單位
+    // 申請人電話必填
+    const trimmedPhone = (applicantPhone ?? '').trim();
+    if (!trimmedPhone) {
+        return { success: false, error: '請填寫申請人聯絡電話' };
+    }
+    // 出生年月日 / 癌別 / 期數 必填
+    const trimmedDob = (applicantDob ?? '').trim();
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(trimmedDob)) {
+        return { success: false, error: '請填寫有效的出生年月日（YYYY-MM-DD）' };
+    }
+    const trimmedCancerType = (cancerType ?? '').trim();
+    if (!trimmedCancerType) {
+        return { success: false, error: '請填寫癌別' };
+    }
+    const trimmedCancerStage = (cancerStage ?? '').trim();
+    if (!trimmedCancerStage) {
+        return { success: false, error: '請填寫癌症期數' };
+    }
+    // 申請形式 / 治療前後 必填
+    if (applicationForm !== 'P' && applicationForm !== 'E') {
+        return { success: false, error: '請選擇申請形式（紙本／電子郵件）' };
+    }
+    if (treatmentPhase !== 'B' && treatmentPhase !== 'A' && treatmentPhase !== 'X') {
+        return { success: false, error: '請選擇治療階段（治療前／治療後／治療前後）' };
+    }
+    // 案件來源與轉介單位驗證：way='1' 時一律寫 NULL；way='2' 時須提供轉介單位
+    //   - 可從 referral_units 表選（referralUnitId）
+    //   - 或在 referralInfo.unitName 自由填寫（#6 改版後加上）
+    //   兩者擇一即可
     const way: '1' | '2' = applicationWay === '2' ? '2' : '1';
     let effectiveUnitId: string | null = null;
     if (way === '2') {
-        if (referralUnitId === null || referralUnitId === undefined || referralUnitId === '') {
-            return { success: false, error: '選擇「轉介」時必須指定轉介單位' };
+        const hasUnitId   = !(referralUnitId === null || referralUnitId === undefined || referralUnitId === '');
+        const hasFreeText = !!(referralInfo?.unitName?.trim());
+        if (!hasUnitId && !hasFreeText) {
+            return { success: false, error: '選擇「轉介」時請選擇或自由填寫轉介單位' };
         }
-        effectiveUnitId = String(referralUnitId);
+        if (hasUnitId) effectiveUnitId = String(referralUnitId);
     }
 
     const client = await pool.connect();
@@ -266,13 +317,34 @@ export async function createNewApplication(
         const caseNumber = `${typePrefix}${rocYear}${count.toString().padStart(3, '0')}`; // e.g. D115003 (7 chars)
 
         // 4. Create the application — status '1' = 審核中 (per spec)
+        // 子類型驗證：經濟弱勢（'1'）依 115 辦法僅接受轉介
+        const effectiveSubtype: '1' | '2' | null = subsidySubtype ?? null;
+        if (effectiveSubtype === '1' && way !== '2') {
+            await client.query('ROLLBACK');
+            return { success: false, error: '經濟弱勢補助依 115 辦法僅接受「轉介」管道' };
+        }
+
         const appRes = await client.query(`
             INSERT INTO applications (
                 case_number, applicant_id, officer_id, status, apply_at,
-                application_type, apply_amount, application_way, referral_unit_id
-            ) VALUES ($1, $2, $3, '1', NOW(), $4, $5, $6, $7::bigint)
+                application_type, apply_amount, application_way, referral_unit_id,
+                referral_unit_name, referral_contact_name, referral_contact_title, referral_contact_phone,
+                subsidy_subtype, applicant_phone,
+                applicant_dob, cancer_type, cancer_stage,
+                application_form, treatment_phase
+            ) VALUES ($1, $2, $3, '1', NOW(), $4, $5, $6, $7::bigint, $8, $9, $10, $11, $12, $13, $14::date, $15, $16, $17, $18)
             RETURNING id;
-        `, [caseNumber, applicantId, officerId, typePrefix, applyAmount ?? null, way, effectiveUnitId]);
+        `, [
+            caseNumber, applicantId, officerId, typePrefix, applyAmount ?? null, way, effectiveUnitId,
+            referralInfo?.unitName?.trim() || null,
+            referralInfo?.contactName?.trim() || null,
+            referralInfo?.contactTitle?.trim() || null,
+            referralInfo?.contactPhone?.trim() || null,
+            effectiveSubtype,
+            trimmedPhone,
+            trimmedDob, trimmedCancerType, trimmedCancerStage,
+            applicationForm, treatmentPhase,
+        ]);
 
         const newCaseId = appRes.rows[0].id;
 
@@ -308,20 +380,31 @@ export async function createNewApplication(
  * Fetch a summary of all applicants and their latest application status.
  * Used for the main inquiry list page.
  */
-export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
+export async function fetchCaseSummaries(
+    options?: { volunteerOnlyFilterUserId?: string }
+): Promise<CaseSummary[]> {
+    // 志工視野過濾（#11）：只回家訪指派為該志工的案件
+    // 上層應只在「使用者僅有 volunteer 角色，沒有 case_officer/admin 等廣權限」時傳入此參數
+    const volunteerFilter = options?.volunteerOnlyFilterUserId;
+    const useVolunteerFilter = !!(volunteerFilter && /^\d+$/.test(volunteerFilter));
+
     const client = await pool.connect();
     try {
-        // Query to get aggregated data for each applicant
-        // We join applications to get counts and sums, and another join for latest application details
-        const res = await client.query(`
-            WITH user_stats AS (
+        // applicants_for_volunteer：依 home_visit_assignee_id 比對，只看這位志工被指派的案件
+        const queryText = `
+            ${useVolunteerFilter ? `
+            WITH applicants_for_volunteer AS (
+                SELECT DISTINCT a.applicant_id
+                FROM applications a
+                WHERE a.home_visit_assignee_id = $1::bigint
+            ),
+            ` : 'WITH '}user_stats AS (
                 SELECT
                     applicant_id,
                     COUNT(*) as app_count,
-                    -- 僅核銷完成（status='4'）的案件才計入累積核准金額。
-                    -- 共筆模式下 board_review 階段即可儲存 approved_amount，若不加 status 過濾會提前計入未結案的草案金額。
                     SUM(COALESCE(approved_amount, 0)) FILTER (WHERE status = '4' AND approved_amount IS NOT NULL AND approved_amount > 0) as total_approved
                 FROM applications
+                ${useVolunteerFilter ? 'WHERE applicant_id IN (SELECT applicant_id FROM applicants_for_volunteer)' : ''}
                 GROUP BY applicant_id
             ),
             latest_apps AS (
@@ -332,6 +415,7 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                     a.officer_id,
                     a.apply_at,
                     a.status,
+                    a.subsidy_subtype,
                     u_off.name_enc as off_name_enc, u_off.name_iv as off_name_iv,
                     u_off.account as officer_account,
                     w.stage as wf_stage,
@@ -340,6 +424,7 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                 LEFT JOIN users u_off ON u_off.id = a.officer_id
                 LEFT JOIN application_workflow w ON w.application_id = a.id
                 LEFT JOIN board_review_assignments bra ON bra.application_id = a.id
+                ${useVolunteerFilter ? 'WHERE a.applicant_id IN (SELECT applicant_id FROM applicants_for_volunteer)' : ''}
                 ORDER BY a.applicant_id, a.apply_at DESC
             )
             SELECT
@@ -357,12 +442,15 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                 l.off_name_enc,
                 l.off_name_iv,
                 l.officer_account,
-                l.board_group_id
+                l.board_group_id,
+                l.subsidy_subtype
             FROM users u
             JOIN user_stats s ON s.applicant_id = u.id
             LEFT JOIN latest_apps l ON l.applicant_id = u.id
             ORDER BY l.apply_at DESC NULLS LAST
-        `);
+        `;
+        const params = useVolunteerFilter ? [volunteerFilter] : [];
+        const res = await client.query(queryText, params);
 
         const { decryptAES } = await import('../../lib/crypto');
         
@@ -398,6 +486,8 @@ export async function fetchCaseSummaries(): Promise<CaseSummary[]> {
                 officer: offName,
                 officerId: row.officer_id ? String(row.officer_id) : null,
                 assignedBoardGroupId: row.board_group_id != null ? String(row.board_group_id) : null,
+                subsidySubtype: (row.subsidy_subtype === '1' || row.subsidy_subtype === '2')
+                    ? row.subsidy_subtype : null,
             };
         });
     } catch (err) {
@@ -447,8 +537,8 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
     const client = await pool.connect();
     try {
         const res = await client.query(`
-            SELECT 
-                a.id, a.apply_at, a.status, a.approved_amount,
+            SELECT
+                a.id, a.case_number, a.apply_at, a.status, a.approved_amount,
                 u_off.name_enc as off_name_enc, u_off.name_iv as off_name_iv,
                 u_off.account as officer_account,
                 w.stage as wf_stage
@@ -487,6 +577,7 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
             
             return {
                 id: row.id,
+                caseNumber: row.case_number ?? undefined,
                 applicantId,
                 applicantName,
                 appliedAt: row.apply_at ? row.apply_at.toISOString().split('T')[0] : '',
@@ -554,8 +645,25 @@ export async function fetchUnassignedCount(): Promise<number> {
 
 export interface UpdateApplicationBasicsPatch {
     applicantName?: string;
+    /** 申請人聯絡電話；不可清空 */
+    applicantPhone?: string;
+    /** 出生年月日 YYYY-MM-DD；不可清空 */
+    applicantDob?: string;
+    /** 癌別；不可清空 */
+    cancerType?: string;
+    /** 癌症期數；不可清空 */
+    cancerStage?: string;
+    /** 申請形式：'P' 紙本 / 'E' 電子郵件；不可清空 */
+    applicationForm?: 'P' | 'E';
+    /** 治療階段：'B'/'A'/'X'；不可清空 */
+    treatmentPhase?: 'B' | 'A' | 'X';
     applicationWay?: '1' | '2';
     referralUnitId?: string | null;
+    /** #6 轉介單位／承辦人聯絡欄位（way='2' 時隨案保存） */
+    referralUnitName?: string | null;
+    referralContactName?: string | null;
+    referralContactTitle?: string | null;
+    referralContactPhone?: string | null;
 }
 
 /**
@@ -584,6 +692,10 @@ export async function updateApplicationBasics(
         const caseRes = await client.query(
             `SELECT a.status, a.officer_id, a.applicant_id,
                     a.application_type, a.application_way, a.referral_unit_id,
+                    a.referral_unit_name, a.referral_contact_name,
+                    a.referral_contact_title, a.referral_contact_phone,
+                    a.applicant_phone, a.applicant_dob, a.cancer_type, a.cancer_stage,
+                    a.application_form, a.treatment_phase,
                     w.stage AS wf_stage
              FROM applications a
              LEFT JOIN application_workflow w ON w.application_id = a.id
@@ -700,6 +812,88 @@ export async function updateApplicationBasics(
             }
         }
 
+        // ── Step e2: applicant phone handling（必填、不可清空） ─────────────
+        let phoneActuallyChanged = false;
+        let nextPhone: string = row.applicant_phone ?? '';
+        if (patch.applicantPhone !== undefined) {
+            const newPhone = patch.applicantPhone.trim();
+            if (!newPhone) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '申請人聯絡電話為必填' };
+            }
+            if (newPhone.length > 50) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '聯絡電話過長' };
+            }
+            if (newPhone !== (row.applicant_phone ?? '')) {
+                phoneActuallyChanged = true;
+                nextPhone = newPhone;
+            }
+        }
+
+        // ── Step e3: DOB / 癌別 / 期數 — 必填且不可清空 ────────────────────
+        const formatDob = (v: unknown): string => {
+            if (!v) return '';
+            const d = new Date(v as string | number | Date);
+            if (Number.isNaN(d.getTime())) return '';
+            const p = (n: number) => String(n).padStart(2, '0');
+            return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+        };
+        const curDob = formatDob(row.applicant_dob);
+        let dobChanged = false;
+        let nextDob: string = curDob;
+        if (patch.applicantDob !== undefined) {
+            const v = patch.applicantDob.trim();
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(v)) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '出生年月日格式錯誤（YYYY-MM-DD）' };
+            }
+            if (v !== curDob) { dobChanged = true; nextDob = v; }
+        }
+        let cancerTypeChanged = false;
+        let nextCancerType: string = row.cancer_type ?? '';
+        if (patch.cancerType !== undefined) {
+            const v = patch.cancerType.trim();
+            if (!v) { await client.query('ROLLBACK'); return { success: false, error: '癌別為必填' }; }
+            if (v.length > 100) { await client.query('ROLLBACK'); return { success: false, error: '癌別過長' }; }
+            if (v !== (row.cancer_type ?? '')) { cancerTypeChanged = true; nextCancerType = v; }
+        }
+        let cancerStageChanged = false;
+        let nextCancerStage: string = row.cancer_stage ?? '';
+        if (patch.cancerStage !== undefined) {
+            const v = patch.cancerStage.trim();
+            if (!v) { await client.query('ROLLBACK'); return { success: false, error: '癌症期數為必填' }; }
+            if (v.length > 50) { await client.query('ROLLBACK'); return { success: false, error: '癌症期數過長' }; }
+            if (v !== (row.cancer_stage ?? '')) { cancerStageChanged = true; nextCancerStage = v; }
+        }
+
+        // ── Step e4: 申請形式 / 治療前後 — 必填且不可清空 ─────────────────
+        let applicationFormChanged = false;
+        let nextApplicationForm: 'P' | 'E' = (row.application_form === 'P' || row.application_form === 'E') ? row.application_form : 'P';
+        if (patch.applicationForm !== undefined) {
+            if (patch.applicationForm !== 'P' && patch.applicationForm !== 'E') {
+                await client.query('ROLLBACK');
+                return { success: false, error: '申請形式必須為紙本或電子郵件' };
+            }
+            if (patch.applicationForm !== row.application_form) {
+                applicationFormChanged = true;
+                nextApplicationForm = patch.applicationForm;
+            }
+        }
+        let treatmentPhaseChanged = false;
+        let nextTreatmentPhase: 'B' | 'A' | 'X' =
+            (row.treatment_phase === 'B' || row.treatment_phase === 'A' || row.treatment_phase === 'X') ? row.treatment_phase : 'A';
+        if (patch.treatmentPhase !== undefined) {
+            if (patch.treatmentPhase !== 'B' && patch.treatmentPhase !== 'A' && patch.treatmentPhase !== 'X') {
+                await client.query('ROLLBACK');
+                return { success: false, error: '治療階段必須為治療前／治療後／治療前後' };
+            }
+            if (patch.treatmentPhase !== row.treatment_phase) {
+                treatmentPhaseChanged = true;
+                nextTreatmentPhase = patch.treatmentPhase;
+            }
+        }
+
         // ── Step f: diff & UPDATE ──────────────────────────────────────────
         const changedFields: string[] = [];
         const before: Record<string, unknown> = {};
@@ -709,6 +903,36 @@ export async function updateApplicationBasics(
             changedFields.push('applicantName');
             before.applicantName = oldApplicantName;
             after.applicantName = patch.applicantName!.trim();
+        }
+        if (phoneActuallyChanged) {
+            changedFields.push('applicantPhone');
+            before.applicantPhone = row.applicant_phone ?? null;
+            after.applicantPhone = nextPhone;
+        }
+        if (dobChanged) {
+            changedFields.push('applicantDob');
+            before.applicantDob = curDob || null;
+            after.applicantDob = nextDob;
+        }
+        if (cancerTypeChanged) {
+            changedFields.push('cancerType');
+            before.cancerType = row.cancer_type ?? null;
+            after.cancerType = nextCancerType;
+        }
+        if (cancerStageChanged) {
+            changedFields.push('cancerStage');
+            before.cancerStage = row.cancer_stage ?? null;
+            after.cancerStage = nextCancerStage;
+        }
+        if (applicationFormChanged) {
+            changedFields.push('applicationForm');
+            before.applicationForm = row.application_form ?? null;
+            after.applicationForm = nextApplicationForm;
+        }
+        if (treatmentPhaseChanged) {
+            changedFields.push('treatmentPhase');
+            before.treatmentPhase = row.treatment_phase ?? null;
+            after.treatmentPhase = nextTreatmentPhase;
         }
         if (patch.applicationWay !== undefined && nextWay !== row.application_way) {
             changedFields.push('applicationWay');
@@ -720,6 +944,32 @@ export async function updateApplicationBasics(
             changedFields.push('referralUnitId');
             before.referralUnitId = currentUnitIdStr;
             after.referralUnitId = nextReferralUnitId;
+        }
+
+        // 轉介聯絡欄位處理：保留資料策略
+        //   - way='2'：以 patch 提供的值寫入；patch 未提供（undefined）= 不動
+        //   - way='1'：保留先前轉介資料於 DB（patch 通常不含；若有送 null 則覆蓋）
+        //     原因：使用者切到自提後再切回轉介時可保留先前填寫的內容
+        const norm = (v: string | null | undefined): string | null | undefined => {
+            if (v === undefined) return undefined; // 不變
+            const t = (v ?? '').trim();
+            return t === '' ? null : t;
+        };
+        const nextReferralFields: { col: string; key: string; cur: string | null; next: string | null | undefined }[] = [
+            { col: 'referral_unit_name',     key: 'referralUnitName',     cur: row.referral_unit_name ?? null,     next: norm(patch.referralUnitName) },
+            { col: 'referral_contact_name',  key: 'referralContactName',  cur: row.referral_contact_name ?? null,  next: norm(patch.referralContactName) },
+            { col: 'referral_contact_title', key: 'referralContactTitle', cur: row.referral_contact_title ?? null, next: norm(patch.referralContactTitle) },
+            { col: 'referral_contact_phone', key: 'referralContactPhone', cur: row.referral_contact_phone ?? null, next: norm(patch.referralContactPhone) },
+        ];
+        const referralColUpdates: { col: string; val: string | null }[] = [];
+        for (const f of nextReferralFields) {
+            if (f.next === undefined) continue;  // 不變
+            if (f.next !== f.cur) {
+                changedFields.push(f.key);
+                before[f.key] = f.cur;
+                after[f.key] = f.next;
+                referralColUpdates.push({ col: f.col, val: f.next });
+            }
         }
 
         // No-op: commit and return without audit
@@ -741,13 +991,41 @@ export async function updateApplicationBasics(
         // 不會更新 application_type（維持與 case_number 首字母一致）
         const appChangedCols = changedFields.filter(f => f !== 'applicantName');
         if (appChangedCols.length > 0) {
+            // 動態組欄位
+            const sets: string[] = ['application_way = $1', 'referral_unit_id = $2::bigint', 'updated_at = NOW()'];
+            const params: unknown[] = [nextWay, nextReferralUnitId];
+            for (const u of referralColUpdates) {
+                params.push(u.val);
+                sets.push(`${u.col} = $${params.length}`);
+            }
+            if (phoneActuallyChanged) {
+                params.push(nextPhone);
+                sets.push(`applicant_phone = $${params.length}`);
+            }
+            if (dobChanged) {
+                params.push(nextDob);
+                sets.push(`applicant_dob = $${params.length}::date`);
+            }
+            if (cancerTypeChanged) {
+                params.push(nextCancerType);
+                sets.push(`cancer_type = $${params.length}`);
+            }
+            if (cancerStageChanged) {
+                params.push(nextCancerStage);
+                sets.push(`cancer_stage = $${params.length}`);
+            }
+            if (applicationFormChanged) {
+                params.push(nextApplicationForm);
+                sets.push(`application_form = $${params.length}`);
+            }
+            if (treatmentPhaseChanged) {
+                params.push(nextTreatmentPhase);
+                sets.push(`treatment_phase = $${params.length}`);
+            }
+            params.push(applicationId);
             await client.query(
-                `UPDATE applications
-                 SET application_way  = $1,
-                     referral_unit_id = $2::bigint,
-                     updated_at       = NOW()
-                 WHERE id = $3::bigint`,
-                [nextWay, nextReferralUnitId, applicationId]
+                `UPDATE applications SET ${sets.join(', ')} WHERE id = $${params.length}::bigint`,
+                params
             );
         }
         // currentType 被保留以供未來除錯參考（目前未使用於 UPDATE）
@@ -768,6 +1046,100 @@ export async function updateApplicationBasics(
         try { await client.query('ROLLBACK'); } catch { /* ignore */ }
         console.error('updateApplicationBasics error:', err);
         return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── 家訪人員指派（#11） ────────────────────────────────────────────────
+
+/**
+ * 列出可被指派去家訪的人員（volunteer + case_officer，皆 active）。
+ * 回傳給 UI 顯示在「指派家訪」下拉選單。
+ */
+export async function fetchHomeVisitCandidates(): Promise<{ id: string; name: string; account: string; roleCodes: string[] }[]> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(`
+            SELECT u.id::text AS id, u.account, u.name_enc, u.name_iv,
+                   COALESCE(json_agg(r.code) FILTER (WHERE r.code IS NOT NULL), '[]') AS roles
+            FROM users u
+            LEFT JOIN user_roles ur ON ur.user_id = u.id
+            LEFT JOIN roles r ON r.id = ur.role_id
+            WHERE u.is_active = TRUE
+              AND u.id IN (
+                  SELECT ur2.user_id FROM user_roles ur2
+                  JOIN roles r2 ON r2.id = ur2.role_id
+                  WHERE r2.code IN ('volunteer', 'case_officer')
+              )
+            GROUP BY u.id, u.account, u.name_enc, u.name_iv
+            ORDER BY u.account ASC
+        `);
+        const { decryptAES } = await import('../../lib/crypto');
+        return res.rows.map((r: any) => ({
+            id: r.id,
+            account: r.account,
+            name: r.name_enc && r.name_iv ? (decryptAES(r.name_enc, r.name_iv) || r.account) : r.account,
+            roleCodes: r.roles as string[],
+        }));
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * 指派某使用者去家訪此案件（assignee = volunteer/case_officer）。
+ * 傳 null 為清除指派。
+ * 角色守門：case_officer / supervisor / admin 可指派。
+ */
+export async function assignHomeVisitor(
+    operatorUserId: string,
+    applicationId: string,
+    assigneeUserId: string | null,
+): Promise<{ success: boolean; error?: string }> {
+    if (!/^\d+$/.test(applicationId)) return { success: false, error: '無效的案件 ID' };
+    if (assigneeUserId !== null && !/^\d+$/.test(assigneeUserId)) {
+        return { success: false, error: '無效的指派人員 ID' };
+    }
+    const client = await pool.connect();
+    try {
+        // role gate
+        const roleRes = await client.query(
+            `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+             WHERE ur.user_id = $1::bigint AND r.code IN ('case_officer','supervisor','admin') LIMIT 1`,
+            [operatorUserId]
+        );
+        if ((roleRes.rowCount ?? 0) === 0) {
+            return { success: false, error: '權限不足' };
+        }
+        // 若有指定 assignee：驗證該 user 為 volunteer 或 case_officer
+        if (assigneeUserId !== null) {
+            const checkRes = await client.query(
+                `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = $1::bigint AND r.code IN ('volunteer','case_officer') LIMIT 1`,
+                [assigneeUserId]
+            );
+            if ((checkRes.rowCount ?? 0) === 0) {
+                return { success: false, error: '指派對象必須是志工或承辦人員' };
+            }
+        }
+        const res = await client.query(
+            `UPDATE applications SET home_visit_assignee_id = $1, updated_at = NOW()
+             WHERE id = $2::bigint RETURNING id`,
+            [assigneeUserId, applicationId]
+        );
+        if (res.rowCount === 0) return { success: false, error: '案件不存在' };
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'application.basics_update',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { changedFields: ['home_visit_assignee_id'], assignee_user_id: assigneeUserId },
+        });
+        return { success: true };
+    } catch (err: any) {
+        console.error('assignHomeVisitor error:', err);
+        return { success: false, error: err.message ?? '指派失敗' };
     } finally {
         client.release();
     }

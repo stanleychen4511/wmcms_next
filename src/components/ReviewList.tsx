@@ -3,6 +3,7 @@ import { useState, useEffect, useRef, useCallback } from 'react';
 import { CheckCircle, XCircle, Upload, FileText, AlertCircle, Loader2, Eye, RotateCcw, ZoomIn, ZoomOut } from 'lucide-react';
 import dynamic from 'next/dynamic';
 import { WatermarkOverlay, WATERMARK_BG, usePreviewGuards } from './WatermarkOverlay';
+import { SecureImageViewer } from './SecureImageViewer';
 
 const PdfViewer = dynamic(
     () => import('./PdfViewer').then(m => m.PdfViewer),
@@ -14,6 +15,7 @@ const PdfViewer = dynamic(
 );
 import { DocumentEntry, uploadApplicationDocument, updateDocumentStatus, fetchApplicationDocuments } from '../app/actions/documentActions';
 import { writeAuditLog } from '../app/actions/auditActions';
+import { ModalEscapeListener } from '../hooks/useModalDismiss';
 
 function getPreviewUrl(fileUrl: string): string {
     return `/api/preview?path=${encodeURIComponent(fileUrl)}`;
@@ -255,6 +257,14 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
         return () => window.removeEventListener('keydown', handler);
     }, [preview]);
 
+    // 鎖背景捲動 — preview modal 開啟期間禁止 body 捲動，避免滾輪縮放時頁面跟著動
+    useEffect(() => {
+        if (!preview) return;
+        const prev = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => { document.body.style.overflow = prev; };
+    }, [preview]);
+
     const loadDocs = useCallback(async (silent = false) => {
         if (!silent) setLoading(true);
         try {
@@ -493,6 +503,7 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                     onClick={() => setPreview(null)}
                     onContextMenu={e => e.preventDefault()}
                 >
+                    <ModalEscapeListener onClose={() => setPreview(null)} />
                     <div
                         className="bg-white rounded-2xl shadow-2xl w-full max-w-5xl flex flex-col overflow-hidden"
                         style={{ height: '90vh', minHeight: '80vh' }}
@@ -553,18 +564,12 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                                 <DocxViewer fileUrl={preview.url} zoom={zoom} onZoomChange={handleZoomChange} />
                             )}
                             {isImageFile(preview.url) && (
-                                <div className="w-full h-full overflow-auto flex items-start justify-center p-4 select-none" onContextMenu={e => e.preventDefault()}>
-                                    <div className="relative inline-block" style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top center' }}>
-                                        {/* eslint-disable-next-line @next/next/no-img-element */}
-                                        <img
-                                            src={getPreviewUrl(preview.url)}
-                                            alt={preview.label}
-                                            draggable={false}
-                                            style={{ maxWidth: '100%', display: 'block', pointerEvents: 'none' }}
-                                        />
-                                        <WatermarkOverlay />
-                                    </div>
-                                </div>
+                                <SecureImageViewer
+                                    url={getPreviewUrl(preview.url)}
+                                    label={preview.label}
+                                    zoom={zoom}
+                                    onZoomChange={handleZoomChange}
+                                />
                             )}
                         </div>
 
@@ -577,8 +582,11 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
 
             {/* Reject reason modal */}
             {rejectModal && (
-                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md">
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+                    onClick={() => setRejectModal(null)}
+                >
+                    <ModalEscapeListener onClose={() => setRejectModal(null)} />
+                    <div className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md" onClick={e => e.stopPropagation()}>
                         <h4 className="font-bold text-slate-800 mb-3 text-lg">填寫退件原因</h4>
                         <textarea
                             className="w-full border border-slate-200 rounded-xl p-3 text-sm focus:outline-none focus:ring-2 focus:ring-red-300 h-28 resize-none"

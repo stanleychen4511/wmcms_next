@@ -16,7 +16,8 @@ interface CaseListPageProps {
     pendingAlertIds?: Set<string>;
     /** Map of applicationId → reminderCount, only includes cases at/over threshold */
     thresholdReminderCounts?: Map<string, number>;
-    maxApplyAmount?: number;
+    /** 各子類型補助上限（依 115 辦法）：'1'=經濟弱勢、'2'=小康家庭。每張 case 依 subsidySubtype 取對應值 */
+    subtypeMaxAmounts?: Record<'1' | '2', number>;
     onMount?: () => void;
     onAssign: (applicationIds: string[], officerUserId: string) => Promise<void>;
     onSelectCase: (caseId: string) => void;
@@ -85,7 +86,9 @@ function loadSavedFilters() {
 
 export function CaseListPage({
     username, userId, userRoles, cases, allOfficers, officersWithId,
-    isLoading, pendingAlertIds = new Set(), thresholdReminderCounts = new Map(), maxApplyAmount = 350000, onMount, onAssign, onSelectCase, onLogout, onGoHome,
+    isLoading, pendingAlertIds = new Set(), thresholdReminderCounts = new Map(),
+    subtypeMaxAmounts = { '1': 30000, '2': 350000 },
+    onMount, onAssign, onSelectCase, onLogout, onGoHome,
 }: CaseListPageProps) {
     const { first, last } = getMonthRange();
     const saved = loadSavedFilters();
@@ -96,6 +99,11 @@ export function CaseListPage({
     const isOfficer   = userRoles.includes('case_officer') && !canAssign;
     const lockAssign  = isOfficer || userRoles.includes('accountant') || userRoles.includes('volunteer');
     const lockOfficer = isOfficer;
+
+    // 🐛 DEBUG
+    console.log('[CaseListPage roles debug]', {
+        userRoles, canAssign, isOfficer, lockAssign, lockOfficer,
+    });
 
     useEffect(() => { onMount?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
@@ -189,7 +197,12 @@ export function CaseListPage({
                     case 'totalAmount':      cmp = (a.totalAmount ?? 0) - (b.totalAmount ?? 0); break;
                     case 'applicantName':    cmp = a.applicantName.localeCompare(b.applicantName, 'zh-TW'); break;
                     case 'applicationCount': cmp = (a.applicationCount ?? 0) - (b.applicationCount ?? 0); break;
-                    case 'remaining':        cmp = (maxApplyAmount - (a.totalAmount ?? 0)) - (maxApplyAmount - (b.totalAmount ?? 0)); break;
+                    case 'remaining': {
+                        const maxA = subtypeMaxAmounts[a.subsidySubtype as '1' | '2'] ?? Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2']);
+                        const maxB = subtypeMaxAmounts[b.subsidySubtype as '1' | '2'] ?? Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2']);
+                        cmp = (maxA - (a.totalAmount ?? 0)) - (maxB - (b.totalAmount ?? 0));
+                        break;
+                    }
                     case 'stage':            cmp = a.stage.localeCompare(b.stage); break;
                     case 'officer':          cmp = (a.officer ?? '').localeCompare(b.officer ?? '', 'zh-TW'); break;
                 }
@@ -197,7 +210,7 @@ export function CaseListPage({
             }
             return 0;
         });
-    }, [cases, nameQuery, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, thresholdOnly, thresholdReminderCounts, boardUnassignedOnly, sortStack, maxApplyAmount]);
+    }, [cases, nameQuery, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, thresholdOnly, thresholdReminderCounts, boardUnassignedOnly, sortStack, subtypeMaxAmounts]);
 
     const allFilteredSelected = filteredCases.length > 0 &&
         filteredCases.every(c => selectedIds.has(c.applicationId));
@@ -524,7 +537,8 @@ export function CaseListPage({
                                         selected={selectedIds.has(c.applicationId)}
                                         isPending={pendingAlertIds.has(c.applicationId)}
                                         thresholdReminderCount={thresholdReminderCounts.get(c.applicationId) ?? 0}
-                                        maxApplyAmount={maxApplyAmount}
+                                        maxApplyAmount={subtypeMaxAmounts[c.subsidySubtype as '1' | '2']
+                                            ?? Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2'])}
                                         onToggle={() => toggleOne(c.applicationId)}
                                         onClick={() => onSelectCase(c.id)}
                                     />

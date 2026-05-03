@@ -46,24 +46,37 @@ const s = StyleSheet.create({
         fontWeight: 'bold',
         backgroundColor: '#f1f5f9',
         borderRightWidth: 1, borderRightColor: '#0f172a',
+        // 水平 + 垂直置中（標題欄）
+        alignItems: 'center',
+        justifyContent: 'center',
+        textAlign: 'center',
     },
-    cellValue: { flex: 1, padding: 6 },
+    cellValue: { flex: 1, padding: 6, justifyContent: 'center', alignItems: 'flex-start' },
     cellLabel: {
         width: 75,
         padding: 6,
         fontWeight: 'bold',
         backgroundColor: '#f1f5f9',
+        borderLeftWidth: 1, borderLeftColor: '#0f172a',
         borderRightWidth: 1, borderRightColor: '#0f172a',
+        alignItems: 'center',
+        justifyContent: 'center',
+        textAlign: 'center',
     },
-    fullRowValue: { flex: 1, padding: 6 },
+    fullRowValue: { flex: 1, padding: 6, justifyContent: 'center' },
     inline: { flexDirection: 'row', alignItems: 'center' },
     checkbox: {
-        width: 10, height: 10,
+        width: 12, height: 12,
         borderWidth: 1, borderColor: '#0f172a',
         marginRight: 4,
         alignItems: 'center', justifyContent: 'center',
     },
-    checkMark: { fontSize: 8, lineHeight: 1 },
+    checkboxFilled: {
+        width: 12, height: 12,
+        borderWidth: 1, borderColor: '#0f172a',
+        backgroundColor: '#0f172a',
+        marginRight: 4,
+    },
     underline: {
         borderBottomWidth: 1, borderColor: '#0f172a',
         minWidth: 70, marginHorizontal: 4,
@@ -71,7 +84,8 @@ const s = StyleSheet.create({
     },
     smallUnderline: {
         borderBottomWidth: 1, borderColor: '#0f172a',
-        minWidth: 30, marginHorizontal: 4,
+        // 給足寬度讓 textAlign:center 視覺上明顯（115 三字 ~18pt，餘 22pt 平分兩側 = 11pt 邊距）
+        minWidth: 40, marginHorizontal: 4,
         textAlign: 'center',
     },
     categoryGrid: { flexDirection: 'row', flexWrap: 'wrap' },
@@ -100,11 +114,8 @@ function qrAbsolute(qrUrl: string): string | null {
 }
 
 function Checkbox({ checked }: { checked: boolean }) {
-    return (
-        <View style={s.checkbox}>
-            {checked ? <Text style={s.checkMark}>✓</Text> : null}
-        </View>
-    );
+    // 勾選時整格填滿，避免印列出來的 ✓ 太小看不清
+    return <View style={checked ? s.checkboxFilled : s.checkbox} />;
 }
 
 interface Props {
@@ -153,7 +164,7 @@ export function PaymentReceiptPdf({ data }: Props) {
 
                 {/* Main table */}
                 <View style={s.table}>
-                    {/* 此欄由基金會填寫 — 自動帶入今日民國日期 */}
+                    {/* 此欄由基金會填寫 — 水平靠左、垂直置中（fullRowValue 自帶 justifyContent:center） */}
                     <View style={s.row}>
                         <View style={{ ...s.fullRowValue, backgroundColor: '#f1f5f9' }}>
                             <View style={s.inline}>
@@ -166,7 +177,7 @@ export function PaymentReceiptPdf({ data }: Props) {
                                 <Text style={s.smallUnderline}>{today?.day ?? ''}</Text>
                                 <Text>日　</Text>
                                 <Text style={{ fontWeight: 'bold' }}>收據編號：</Text>
-                                <Text style={s.underline}> </Text>
+                                <Text style={s.underline}>{data.externalCode ?? ' '}</Text>
                             </View>
                         </View>
                     </View>
@@ -239,25 +250,31 @@ export function PaymentReceiptPdf({ data }: Props) {
                         <View style={s.cellHeader}><Text>領款方式</Text></View>
                         <View style={s.fullRowValue}>
                             <View style={s.payeeLine}>
-                                <Checkbox checked={false} />
+                                <Checkbox checked={data.paymentMethod === '匯款'} />
                                 <Text style={{ fontWeight: 'bold' }}>匯款</Text>
                                 <Text>（檢附存摺封面影本）</Text>
                             </View>
                             <View style={{ ...s.inline, paddingLeft: 14 }}>
                                 <Text>金融機構名稱：</Text>
-                                <Text style={s.underline}> </Text>
+                                <Text style={s.underline}>{data.bankName ?? ' '}</Text>
                                 <Text>銀行</Text>
-                                <Text style={s.underline}> </Text>
+                                <Text style={s.underline}>{data.bankBranch ?? ' '}</Text>
                                 <Text>分行</Text>
                             </View>
                             <View style={{ ...s.inline, paddingLeft: 14 }}>
                                 <Text>帳號：</Text>
-                                <Text style={s.underline}> </Text>
+                                <Text style={s.underline}>{data.bankAccount ?? ' '}</Text>
                             </View>
                             <View style={s.payeeLine}>
-                                <Checkbox checked={false} />
+                                <Checkbox checked={data.paymentMethod === '代付醫院'} />
                                 <Text>萬美基金會代為支付醫療費用予醫院</Text>
                             </View>
+                            {(data.paymentMethod === '現金' || data.paymentMethod === '其他') && (
+                                <View style={s.payeeLine}>
+                                    <Checkbox checked />
+                                    <Text>{data.paymentMethod}</Text>
+                                </View>
+                            )}
                         </View>
                     </View>
 
@@ -266,15 +283,21 @@ export function PaymentReceiptPdf({ data }: Props) {
                         <View style={{ ...s.cellValue, flex: 1, borderRightWidth: 1, borderRightColor: '#0f172a' }}>
                             <Text style={{ fontWeight: 'bold' }}>具領人與申請人之關係：</Text>
                             <View style={{ ...s.payeeLine, paddingLeft: 10 }}>
-                                <Checkbox checked={false} />
+                                <Checkbox checked={data.payeeRelation === '本人'} />
                                 <Text>本人，以下無需填寫</Text>
                             </View>
                             <View style={{ ...s.payeeLine, paddingLeft: 10 }}>
-                                <Checkbox checked={false} />
+                                <Checkbox checked={!!data.payeeRelation && data.payeeRelation !== '本人'} />
                                 <Text>非本人，與申請人關係</Text>
-                                <Text style={s.underline}> </Text>
+                                <Text style={s.underline}>
+                                    {data.payeeRelation && data.payeeRelation !== '本人'
+                                        ? (data.payeeRelation === '其他'
+                                            ? `其他${data.payeeRelationOther ? `：${data.payeeRelationOther}` : ''}`
+                                            : data.payeeRelation)
+                                        : ' '}
+                                </Text>
                             </View>
-                            <Text style={{ marginTop: 6 }}>具領人姓名：_________________</Text>
+                            <Text style={{ marginTop: 6 }}>具領人姓名：{data.payeeName ?? '_________________'}</Text>
                             <Text style={{ marginTop: 2 }}>具領人身分證字號：_______________</Text>
                             <Text style={{ marginTop: 2 }}>具領人電話：_________________</Text>
                             <Text style={{ marginTop: 2 }}>具領人戶籍住址：___________________</Text>
@@ -282,7 +305,7 @@ export function PaymentReceiptPdf({ data }: Props) {
                         <View style={{ ...s.cellValue, flex: 1 }}>
                             <Text style={{ fontWeight: 'bold' }}>具領人簽名（親筆簽名）：</Text>
                             <View style={{ height: 60 }} />
-                            <View style={s.inline}>
+                            <View style={{ ...s.inline, justifyContent: 'center' }}>
                                 <Text>中華民國</Text>
                                 <Text style={s.smallUnderline}> </Text>
                                 <Text>年</Text>

@@ -1,13 +1,18 @@
 'use client';
 
 import { useState, useRef, useCallback, useEffect } from 'react';
-import { CheckCircle, XCircle, Loader2, Upload, X, FileText, ChevronRight, ArrowLeft } from 'lucide-react';
+import {
+    CheckCircle, CheckCircle2, XCircle, Loader2, Upload, X, FileText, ChevronRight, ArrowLeft,
+    AlertTriangle, ShieldQuestion, Lock,
+} from 'lucide-react';
 import { clsx } from 'clsx';
 import { ApplicationForm } from './ApplicationForm';
+import { fetchEligibilityRules } from '../app/actions/eligibilityRulesActions';
+import { fetchSetting } from '../app/actions/settingsActions';
+import { checkEligibility, type ApplicantData } from '../utils/eligibility';
 import { ApplicantFormValues } from '../schemas/applicant';
 import { queryApplicantEligibility, submitExternalApplication } from '../app/actions/intakeActions';
 import { twIdError } from '../lib/validateTwId';
-import { fetchSetting } from '../app/actions/settingsActions';
 import { fetchDocumentTypeConfigs } from '../app/actions/documentActions';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -24,7 +29,8 @@ interface DocFile {
 }
 
 const DEFAULT_QUALIFICATION: ApplicantFormValues = {
-    type: 'single',
+    subsidyType: undefined,
+    type: '3',  // 預設單身（115 編碼）
     age: 0,
     hasChildren: false,
     underageChildrenCount: 0,
@@ -32,6 +38,8 @@ const DEFAULT_QUALIFICATION: ApplicantFormValues = {
     annualIncome: 0,
     movableAssets: 0,
     realEstateValue: 0,
+    econDeposit: undefined,
+    econMonthlyIncome: undefined,
 };
 
 // ─── Step Indicator ───────────────────────────────────────────────────────────
@@ -125,13 +133,27 @@ function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (file: File |
 export function ExternalIntake() {
     const [step, setStep] = useState<Step>('landing');
     const [email, setEmail] = useState('');
+    const [applicantPhone, setApplicantPhone] = useState('');
+    const [applicantPhoneError, setApplicantPhoneError] = useState('');
+    const [applicantDob, setApplicantDob] = useState('');
+    const [applicantDobError, setApplicantDobError] = useState('');
+    const [cancerType, setCancerType] = useState('');
+    const [cancerTypeError, setCancerTypeError] = useState('');
+    const [cancerStage, setCancerStage] = useState('');
+    const [cancerStageError, setCancerStageError] = useState('');
+    const [treatmentPhase, setTreatmentPhase] = useState<'B' | 'A' | 'X' | ''>('');
+    const [treatmentPhaseError, setTreatmentPhaseError] = useState('');
     const [idNumber, setIdNumber] = useState('');
     const [name, setName] = useState('');
     const [applyAmount, setApplyAmount] = useState<number | ''>('');
     const [applyAmountError, setApplyAmountError] = useState('');
-    const [maxApplyAmount, setMaxApplyAmount] = useState<number>(350000);
+    /** 各子類型補助上限（依 115 辦法）；未選子類型時 UI 顯示用兩者較大值 */
+    const [subtypeMaxAmounts, setSubtypeMaxAmounts] = useState<Record<'1' | '2', number>>({ '1': 30000, '2': 350000 });
     useEffect(() => {
-        fetchSetting('max_apply_amount', '350000').then(v => setMaxApplyAmount(Number(v) || 350000));
+        import('../app/actions/eligibilityRulesActions')
+            .then(m => m.fetchSubsidyAmountLimitsMap())
+            .then(setSubtypeMaxAmounts)
+            .catch(err => console.error('fetchSubsidyAmountLimitsMap error:', err));
     }, []);
     useEffect(() => {
         fetchDocumentTypeConfigs().then(configs => {
@@ -157,10 +179,71 @@ export function ExternalIntake() {
     const [docs, setDocs] = useState<DocFile[]>([]);
     const [quota, setQuota] = useState<{ cumulativeApproved: number; maxAmount: number; remaining: number } | null>(null);
 
+    /** 資格判定狀態：null = 尚未執行；checked + eligible 兩段式 */
+    const [eligibilityCheck, setEligibilityCheck] =
+        useState<{ checked: boolean; eligible: boolean; reasons: string[] } | null>(null);
+    const [eligibilityChecking, setEligibilityChecking] = useState(false);
+
+    /** 不符合資格時顯示的萬美聯絡方式（LINE 官方帳號 + 電話） */
+    const [orgContact, setOrgContact] = useState<{ lineId: string; phone: string }>({ lineId: '', phone: '' });
+    useEffect(() => {
+        Promise.all([
+            fetchSetting('line_official_account_id', ''),
+            fetchSetting('org_phone', ''),
+        ]).then(([lineId, phone]) => setOrgContact({ lineId, phone }));
+    }, []);
+
+    /** 動態計算當前 form 適用的最大值：選了子類型就用該值，否則取較大者 */
+    const maxApplyAmount = (() => {
+        const st = qualFormValues?.subsidyType;
+        if (st === '1' || st === '2') return subtypeMaxAmounts[st];
+        return Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2']);
+    })();
+
     const handleQualValidation = useCallback((isValid: boolean, values: ApplicantFormValues) => {
         setQualFormValid(isValid);
         setQualFormValues(values);
+        // 表單一變動就作廢先前的資格判定，強制使用者重新執行
+        setEligibilityCheck(null);
     }, []);
+
+    /** 執行資格判定 — 抓 DB 規則 snapshot + 呼叫 checkEligibility */
+    const handleRunEligibilityCheck = useCallback(async () => {
+        if (eligibilityChecking) return;
+        if (!qualFormValues.subsidyType) {
+            setEligibilityCheck({ checked: true, eligible: false, reasons: ['請先選擇補助子類型（經濟弱勢／小康家庭）'] });
+            return;
+        }
+        setEligibilityChecking(true);
+        try {
+            const rules = await fetchEligibilityRules();
+            const f = qualFormValues;
+            const maritalStatus = (f.type === '1' || f.type === '2' || f.type === '3') ? f.type : '3';
+            const hasUnderage = Number(f.underageChildrenCount ?? 0) > 0;
+            const childrenStatus = !f.hasChildren ? '3' : hasUnderage ? '1' : '2';
+            const data: ApplicantData = {
+                subsidyType: f.subsidyType as '1' | '2',  // 上方已守門 subtype 存在
+                age: Number(f.age ?? 0),
+                realEstateValue: Number(f.realEstateValue ?? 0),
+                maritalStatus,
+                childrenStatus,
+                annualIncome:  Number(f.annualIncome ?? 0),
+                movableAssets: Number(f.movableAssets ?? 0),
+                deposit:       f.econDeposit       != null ? Number(f.econDeposit)       : undefined,
+                monthlyIncome: f.econMonthlyIncome != null ? Number(f.econMonthlyIncome) : undefined,
+            };
+            const result = checkEligibility(data, rules);
+            setEligibilityCheck({ checked: true, eligible: result.isEligible, reasons: result.reasons });
+        } catch (e) {
+            setEligibilityCheck({
+                checked: true,
+                eligible: false,
+                reasons: [e instanceof Error ? e.message : '資格判定失敗，請稍後重試'],
+            });
+        } finally {
+            setEligibilityChecking(false);
+        }
+    }, [qualFormValues, eligibilityChecking]);
 
     const updateDoc = (field: string, file: File | null) => {
         setDocs(prev => prev.map(d => d.field === field ? { ...d, file } : d));
@@ -171,77 +254,99 @@ export function ExternalIntake() {
 
     // ── Step: Landing ─────────────────────────────────────────────────────────
     if (step === 'landing') {
-        const mustAttach   = docs.filter(d => d.required && !d.allowSupplement);
-        const canSupp      = docs.filter(d => d.required && d.allowSupplement);
-        const optional     = docs.filter(d => !d.required);
-
+        const econMax = subtypeMaxAmounts['1'] ?? 30000;
+        const midMax  = subtypeMaxAmounts['2'] ?? 350000;
+        const startApplication = (subtype: '1' | '2') => {
+            setQualFormValues(prev => ({ ...prev, subsidyType: subtype }));
+            setStep('query');
+        };
         return (
-            <div className="max-w-2xl mx-auto text-center py-8 px-4">
-                <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-6">
-                    <FileText className="w-8 h-8 text-blue-600" />
-                </div>
-                <h2 className="text-2xl font-bold text-gray-800 mb-3">線上補助申請</h2>
-                <p className="text-gray-500 mb-4 leading-relaxed">
-                    歡迎使用萬美基金會線上補助申請系統。<br />
-                    請準備好以下文件後再開始填寫：
-                </p>
-
-                {docs.length === 0 ? (
-                    <div className="text-sm text-gray-400 mb-8">載入文件清單中…</div>
-                ) : (
-                    <div className="text-left inline-block mb-8 space-y-4 w-full max-w-md mx-auto">
-                        {mustAttach.length > 0 && (
-                            <div>
-                                <p className="text-xs font-semibold text-red-500 uppercase tracking-wider mb-1.5">送出前必須上傳</p>
-                                <ul className="space-y-1">
-                                    {mustAttach.map(d => (
-                                        <li key={d.docId} className="flex items-center gap-2 text-sm text-gray-700">
-                                            <CheckCircle className="w-4 h-4 text-red-400 shrink-0" />
-                                            {d.label}
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-                        )}
-                        {canSupp.length > 0 && (
-                            <div>
-                                <p className="text-xs font-semibold text-amber-500 uppercase tracking-wider mb-1.5">可於送出後補件（建議事先準備）</p>
-                                <ul className="space-y-1">
-                                    {canSupp.map(d => (
-                                        <li key={d.docId} className="flex items-center gap-2 text-sm text-gray-600">
-                                            <CheckCircle className="w-4 h-4 text-amber-400 shrink-0" />
-                                            {d.label}
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-                        )}
-                        {optional.length > 0 && (
-                            <div>
-                                <p className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-1.5">選填文件</p>
-                                <ul className="space-y-1">
-                                    {optional.map(d => (
-                                        <li key={d.docId} className="flex items-center gap-2 text-sm text-gray-500">
-                                            <CheckCircle className="w-4 h-4 text-gray-300 shrink-0" />
-                                            {d.label}
-                                        </li>
-                                    ))}
-                                </ul>
-                            </div>
-                        )}
+            <div className="max-w-3xl mx-auto py-8 px-4">
+                <div className="text-center mb-8">
+                    <div className="w-16 h-16 bg-blue-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                        <FileText className="w-8 h-8 text-blue-600" />
                     </div>
-                )}
-
-                <div className="bg-amber-50 border border-amber-200 rounded-lg p-4 mb-8 text-sm text-amber-700 text-left">
-                    <strong>注意事項：</strong>每位申請人僅限申請一次（進行中案件），累計補助上限為 35 萬元。
+                    <h2 className="text-2xl font-bold text-gray-800 mb-2">線上補助申請</h2>
+                    <p className="text-gray-500">萬美基金會自費醫療補助案 — 請點選您欲申請的類別開始填寫。</p>
                 </div>
-                <button
-                    onClick={() => setStep('query')}
-                    className="inline-flex items-center gap-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold px-8 py-3 rounded-lg transition shadow-sm"
-                >
-                    開始申請
-                    <ChevronRight className="w-5 h-5" />
-                </button>
+
+                {/* #1：兩種補助案說明卡（直接點擊進入申請流程） */}
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8">
+                    {/* 經濟弱勢 */}
+                    <button
+                        type="button"
+                        onClick={() => startApplication('1')}
+                        className="text-left border-2 border-rose-200 bg-rose-50/50 rounded-xl p-5 space-y-3 transition-all duration-150 hover:border-rose-400 hover:bg-rose-50 hover:shadow-md hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-rose-400 focus:ring-offset-2 cursor-pointer group"
+                    >
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-base font-bold text-rose-700">經濟弱勢</h3>
+                            <span className="text-xs px-2 py-0.5 bg-rose-100 text-rose-700 rounded-full">僅接受轉介</span>
+                        </div>
+                        <p className="text-2xl font-bold text-rose-700">NT${econMax.toLocaleString()}<span className="text-xs font-normal text-rose-500 ml-1">／人累計上限</span></p>
+                        <div className="text-xs text-slate-600 space-y-1">
+                            <p>‧ 申請人為癌症且持有重大傷病卡之 25–65 歲本國人</p>
+                            <p>‧ 存款（夫妻取平均）≤ 16 萬</p>
+                            <p>‧ 月收入（夫妻取平均）≤ 3 萬</p>
+                            <p>‧ 不動產上限（戶籍內直系合計）≤ 2,500 萬</p>
+                        </div>
+                        <div className="border-t border-rose-200 pt-2">
+                            <p className="text-[11px] font-semibold text-rose-600 mb-1">送出前必備文件</p>
+                            <p className="text-[11px] text-slate-600 leading-relaxed">
+                                申請表 / 身分證正反面 / 個資及肖像同意書 / 綜合所得稅清單 / 全戶戶籍謄本 / 重大傷病證明 / 診斷證明
+                            </p>
+                            <p className="text-[11px] font-semibold text-amber-600 mt-2 mb-1">可送出後補件</p>
+                            <p className="text-[11px] text-slate-600 leading-relaxed">
+                                醫療費收據正本 / 存摺封面影本
+                            </p>
+                        </div>
+                        <div className="flex items-center justify-end gap-1 pt-2 text-xs font-semibold text-rose-600 group-hover:text-rose-700">
+                            <span>點此申請經濟弱勢補助</span>
+                            <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+                        </div>
+                    </button>
+
+                    {/* 小康家庭 */}
+                    <button
+                        type="button"
+                        onClick={() => startApplication('2')}
+                        className="text-left border-2 border-blue-200 bg-blue-50/50 rounded-xl p-5 space-y-3 transition-all duration-150 hover:border-blue-400 hover:bg-blue-50 hover:shadow-md hover:-translate-y-0.5 focus:outline-none focus:ring-2 focus:ring-blue-400 focus:ring-offset-2 cursor-pointer group"
+                    >
+                        <div className="flex items-center justify-between">
+                            <h3 className="text-base font-bold text-blue-700">小康家庭</h3>
+                            <span className="text-xs px-2 py-0.5 bg-blue-100 text-blue-700 rounded-full">自提或轉介</span>
+                        </div>
+                        <p className="text-2xl font-bold text-blue-700">NT${midMax.toLocaleString()}<span className="text-xs font-normal text-blue-500 ml-1">／人累計上限</span></p>
+                        <div className="text-xs text-slate-600 space-y-1">
+                            <p>‧ 申請人為癌症且持有重大傷病卡之 25–65 歲本國人</p>
+                            <p>‧ 收入與動產上限依「婚姻 × 子女」矩陣判定</p>
+                            <p>‧ 不動產上限（戶籍內直系合計）≤ 2,500 萬</p>
+                            <p>‧ 詳細門檻請參 115 年辦法第四條</p>
+                        </div>
+                        <div className="border-t border-blue-200 pt-2">
+                            <p className="text-[11px] font-semibold text-blue-600 mb-1">送出前必備文件</p>
+                            <p className="text-[11px] text-slate-600 leading-relaxed">
+                                申請表 / 身分證 / 個資同意書 / 綜合所得稅清單 / 全國財產稅總歸戶清單 / 戶籍謄本 / 重大傷病證明 / 診斷證明
+                            </p>
+                            <p className="text-[11px] font-semibold text-amber-600 mt-2 mb-1">可送出後補件</p>
+                            <p className="text-[11px] text-slate-600 leading-relaxed">
+                                投資人有價證券餘額表 / 醫療費收據正本
+                            </p>
+                            <p className="text-[11px] font-semibold text-slate-500 mt-2 mb-1">選填</p>
+                            <p className="text-[11px] text-slate-600 leading-relaxed">
+                                購屋貸款利息單據 / 現職醫事人員在職工作證明
+                            </p>
+                        </div>
+                        <div className="flex items-center justify-end gap-1 pt-2 text-xs font-semibold text-blue-600 group-hover:text-blue-700">
+                            <span>點此申請小康家庭補助</span>
+                            <ChevronRight className="w-4 h-4 transition-transform group-hover:translate-x-0.5" />
+                        </div>
+                    </button>
+                </div>
+
+                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-6 text-sm text-amber-800">
+                    <strong>注意事項：</strong>每位申請人「同時間僅可有一個進行中案件」；累計補助上限依您選擇的子類型而定（如上）。
+                </div>
+
             </div>
         );
     }
@@ -283,11 +388,8 @@ export function ExternalIntake() {
                         remaining: result.remaining,
                     });
                 } else {
-                    // First-time applicant: no prior history
-                    fetchSetting('max_apply_amount', '350000').then(v => {
-                        const max = Number(v) || 350000;
-                        setQuota({ cumulativeApproved: 0, maxAmount: max, remaining: max });
-                    });
+                    // First-time applicant: no prior history — 顯示用兩者較大值
+                    setQuota({ cumulativeApproved: 0, maxAmount: maxApplyAmount, remaining: maxApplyAmount });
                 }
             }
         };
@@ -374,11 +476,14 @@ export function ExternalIntake() {
         const amountNum = applyAmount === '' ? 0 : Number(applyAmount);
         const effectiveMax = quota ? Math.min(quota.remaining, maxApplyAmount) : maxApplyAmount;
         const amountValid = amountNum > 0 && amountNum <= effectiveMax;
+        const eligibilityPassed = !!(eligibilityCheck?.checked && eligibilityCheck?.eligible);
+        const canUpload = eligibilityPassed;
         const canSubmit =
             name.trim() !== '' &&
             applicationType !== '' &&
             qualFormValid &&
             amountValid &&
+            eligibilityPassed &&
             requiredDocsMissing.length === 0;
 
         const handleSubmit = async () => {
@@ -388,6 +493,16 @@ export function ExternalIntake() {
                 setApplyAmountError(amountNum <= 0 ? '請輸入申請金額' : `申請金額不可超過 ${effectiveMax.toLocaleString()} 元`);
                 return;
             }
+            // 申請人電話 / 出生年月日 / 癌別 / 期數 必填
+            let formOk = true;
+            if (!applicantPhone.trim()) { setApplicantPhoneError('請填寫聯絡電話'); formOk = false; } else setApplicantPhoneError('');
+            if (!/^\d{4}-\d{2}-\d{2}$/.test(applicantDob.trim())) { setApplicantDobError('請選擇出生年月日'); formOk = false; } else setApplicantDobError('');
+            if (!cancerType.trim()) { setCancerTypeError('請填寫癌別'); formOk = false; } else setCancerTypeError('');
+            if (!cancerStage.trim()) { setCancerStageError('請填寫癌症期數'); formOk = false; } else setCancerStageError('');
+            if (treatmentPhase !== 'B' && treatmentPhase !== 'A' && treatmentPhase !== 'X') {
+                setTreatmentPhaseError('請選擇治療階段'); formOk = false;
+            } else setTreatmentPhaseError('');
+            if (!formOk) return;
             setErrorMsg('');
             setStep('submitting');
 
@@ -395,10 +510,16 @@ export function ExternalIntake() {
             fd.append('name', name.trim());
             fd.append('idNumber', idNumber);
             fd.append('email', email);
+            fd.append('applicant_phone', applicantPhone.trim());
+            fd.append('applicant_dob', applicantDob.trim());
+            fd.append('cancer_type', cancerType.trim());
+            fd.append('cancer_stage', cancerStage.trim());
+            fd.append('treatment_phase', treatmentPhase);
             fd.append('apply_amount', String(amountNum));
             // Qualification fields
             fd.append('application_type', applicationType);
-            fd.append('marital_status', qualFormValues.type === 'married' ? '2' : '1');
+            // 婚姻狀態：form.type 已是 '1'/'2'/'3'（115 編碼）
+            fd.append('marital_status', qualFormValues.type ?? '3');
             fd.append('age', String(qualFormValues.age ?? 0));
             fd.append('annual_income', String(qualFormValues.annualIncome ?? 0));
             fd.append('moveable_property', String(qualFormValues.movableAssets ?? 0));
@@ -410,6 +531,16 @@ export function ExternalIntake() {
             fd.append('adult_children_count', String(
                 qualFormValues.hasChildren ? (qualFormValues.adultChildrenCount ?? 0) : 0
             ));
+            // 補助子類型 + 經濟弱勢專屬欄位
+            if (qualFormValues.subsidyType) {
+                fd.append('subsidy_subtype', qualFormValues.subsidyType);
+            }
+            if (qualFormValues.econDeposit != null) {
+                fd.append('econ_deposit', String(qualFormValues.econDeposit));
+            }
+            if (qualFormValues.econMonthlyIncome != null) {
+                fd.append('econ_monthly_income', String(qualFormValues.econMonthlyIncome));
+            }
 
             for (const doc of docs) {
                 if (doc.file) fd.append(doc.field, doc.file);
@@ -465,6 +596,119 @@ export function ExternalIntake() {
                                     readOnly
                                     className="w-full border border-gray-200 bg-gray-50 rounded-md px-3 py-2 text-sm text-gray-500 cursor-not-allowed"
                                 />
+                            </div>
+                            <div className="md:col-span-2">
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    聯絡電話 <span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="tel"
+                                    value={applicantPhone}
+                                    onChange={e => { setApplicantPhone(e.target.value); setApplicantPhoneError(''); }}
+                                    maxLength={50}
+                                    placeholder="例：0912-345-678"
+                                    className={[
+                                        'w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
+                                        applicantPhoneError
+                                            ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                            : 'border-gray-300 focus:ring-blue-500',
+                                    ].join(' ')}
+                                />
+                                {applicantPhoneError && (
+                                    <p className="text-xs text-red-500 mt-1">{applicantPhoneError}</p>
+                                )}
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    出生年月日（西元）<span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="date"
+                                    value={applicantDob}
+                                    onChange={e => { setApplicantDob(e.target.value); setApplicantDobError(''); }}
+                                    className={[
+                                        'w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
+                                        applicantDobError ? 'border-red-400 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500',
+                                    ].join(' ')}
+                                />
+                                {applicantDobError && <p className="text-xs text-red-500 mt-1">{applicantDobError}</p>}
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    癌別 <span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    value={cancerType}
+                                    onChange={e => { setCancerType(e.target.value); setCancerTypeError(''); }}
+                                    placeholder="例：肺腺癌"
+                                    maxLength={100}
+                                    className={[
+                                        'w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
+                                        cancerTypeError ? 'border-red-400 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500',
+                                    ].join(' ')}
+                                />
+                                {cancerTypeError && <p className="text-xs text-red-500 mt-1">{cancerTypeError}</p>}
+                            </div>
+                            <div className="md:col-span-2">
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    癌症期數 <span className="text-red-500">*</span>
+                                </label>
+                                <input
+                                    type="text"
+                                    value={cancerStage}
+                                    onChange={e => { setCancerStage(e.target.value); setCancerStageError(''); }}
+                                    placeholder="例：第三期、IIIA"
+                                    maxLength={50}
+                                    className={[
+                                        'w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
+                                        cancerStageError ? 'border-red-400 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500',
+                                    ].join(' ')}
+                                />
+                                {cancerStageError && <p className="text-xs text-red-500 mt-1">{cancerStageError}</p>}
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    申請形式 <span className="text-red-500">*</span>
+                                </label>
+                                <div className="flex gap-2">
+                                    <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-gray-200 bg-gray-50 text-gray-400 cursor-not-allowed text-sm flex-1 justify-center">
+                                        <input type="radio" disabled className="accent-gray-400" />
+                                        紙本
+                                    </label>
+                                    <label className="inline-flex items-center gap-1.5 px-3 py-2 rounded-md border border-blue-300 bg-blue-50 text-blue-700 text-sm flex-1 justify-center">
+                                        <input type="radio" checked readOnly className="accent-blue-600" />
+                                        電子郵件
+                                    </label>
+                                </div>
+                                <p className="text-xs text-slate-400 mt-1">線上收件一律為電子郵件</p>
+                            </div>
+                            <div>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    治療階段 <span className="text-red-500">*</span>
+                                </label>
+                                <div className="flex gap-2">
+                                    {([
+                                        { v: 'B', label: '治療前' },
+                                        { v: 'A', label: '治療後' },
+                                        { v: 'X', label: '治療前後' },
+                                    ] as const).map(opt => (
+                                        <label key={opt.v} className={`inline-flex items-center gap-1 px-2 py-2 rounded-md border cursor-pointer text-sm flex-1 justify-center ${
+                                            treatmentPhase === opt.v
+                                                ? 'bg-blue-50 border-blue-300 text-blue-700'
+                                                : 'bg-white border-gray-300 text-gray-600 hover:bg-gray-50'
+                                        }`}>
+                                            <input
+                                                type="radio"
+                                                checked={treatmentPhase === opt.v}
+                                                onChange={() => { setTreatmentPhase(opt.v); setTreatmentPhaseError(''); }}
+                                                className="accent-blue-600"
+                                            />
+                                            {opt.label}
+                                        </label>
+                                    ))}
+                                </div>
+                                {treatmentPhaseError && <p className="text-xs text-red-500 mt-1">{treatmentPhaseError}</p>}
                             </div>
                             <div className="md:col-span-2">
                                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -538,14 +782,97 @@ export function ExternalIntake() {
                             {applyAmountError && <p className="text-xs text-red-500 mt-1">{applyAmountError}</p>}
                         </div>
                         <ApplicationForm
-                            initialValues={DEFAULT_QUALIFICATION}
+                            // 帶入 landing 卡片預選的子類型（qualFormValues.subsidyType）
+                            initialValues={qualFormValues}
                             onValidation={handleQualValidation}
                             readOnly={step === 'submitting'}
+                            subtypeMaxAmounts={subtypeMaxAmounts}
                         />
+                        {/* #4：手動「資格判定」按鈕 + 結果顯示（必須通過才能上傳文件） */}
+                        <div className="mt-4 space-y-2">
+                            <div className="flex items-center justify-between gap-2">
+                                <p className="text-xs text-slate-500 flex items-center gap-1">
+                                    <ShieldQuestion className="w-3.5 h-3.5" />
+                                    完成填寫上方資料後，點選「執行資格判定」確認是否符合 115 年辦法資格。
+                                </p>
+                                <button
+                                    type="button"
+                                    onClick={handleRunEligibilityCheck}
+                                    disabled={eligibilityChecking || step === 'submitting'}
+                                    className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-xs font-medium rounded-lg disabled:opacity-50 shrink-0"
+                                >
+                                    {eligibilityChecking
+                                        ? <Loader2 className="w-3.5 h-3.5 animate-spin" />
+                                        : <ShieldQuestion className="w-3.5 h-3.5" />}
+                                    執行資格判定
+                                </button>
+                            </div>
+
+                            {/* 結果卡 */}
+                            {!eligibilityCheck && (
+                                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-sm text-slate-600 flex items-start gap-2">
+                                    <ShieldQuestion className="w-4 h-4 mt-0.5 text-slate-400 shrink-0" />
+                                    <span>尚未執行資格判定 — 須通過判定後才能上傳文件與送出申請。</span>
+                                </div>
+                            )}
+                            {eligibilityCheck?.eligible && (
+                                <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-700 flex items-start gap-2">
+                                    <CheckCircle2 className="w-4 h-4 mt-0.5 shrink-0" />
+                                    <div>
+                                        <p className="font-medium">符合 115 年辦法之申請資格</p>
+                                        <p className="text-xs text-emerald-600 mt-0.5">最終仍須由承辦人覆核與文件查驗。</p>
+                                    </div>
+                                </div>
+                            )}
+                            {eligibilityCheck && !eligibilityCheck.eligible && (
+                                <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800 space-y-2">
+                                    <div className="flex items-start gap-2">
+                                        <AlertTriangle className="w-4 h-4 mt-0.5 text-amber-600 shrink-0" />
+                                        <p className="font-medium">不符合 115 年辦法之申請資格 — 暫不可上傳文件與送出</p>
+                                    </div>
+                                    <ul className="list-disc list-inside space-y-1 text-xs ml-1">
+                                        {eligibilityCheck.reasons.map((r, i) => <li key={i}>{r}</li>)}
+                                    </ul>
+                                    <p className="text-[11px] text-amber-700">請調整上方資料後再次按「執行資格判定」。</p>
+                                    {(orgContact.lineId || orgContact.phone) && (
+                                        <div className="border-t border-amber-200 pt-2 mt-2 text-xs text-amber-800 space-y-1">
+                                            <p className="font-semibold">如有疑問或特殊狀況請聯繫萬美基金會：</p>
+                                            {orgContact.lineId && (
+                                                <p>
+                                                    ‧ 官方 LINE：
+                                                    <a
+                                                        href={`https://line.me/R/ti/p/${encodeURIComponent(orgContact.lineId)}`}
+                                                        target="_blank"
+                                                        rel="noopener noreferrer"
+                                                        className="ml-1 font-mono text-amber-900 underline hover:text-amber-950"
+                                                    >
+                                                        {orgContact.lineId}
+                                                    </a>
+                                                </p>
+                                            )}
+                                            {orgContact.phone && (
+                                                <p>
+                                                    ‧ 聯絡電話：
+                                                    <a
+                                                        href={`tel:${orgContact.phone.replace(/[^0-9+]/g, '')}`}
+                                                        className="ml-1 font-mono text-amber-900 underline hover:text-amber-950"
+                                                    >
+                                                        {orgContact.phone}
+                                                    </a>
+                                                </p>
+                                            )}
+                                        </div>
+                                    )}
+                                </div>
+                            )}
+                        </div>
                     </div>
 
-                    {/* Document Upload */}
-                    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                    {/* Document Upload — 必須通過資格判定才開放 */}
+                    <div className={clsx(
+                        'bg-white rounded-xl border shadow-sm p-6 relative',
+                        canUpload ? 'border-gray-200' : 'border-slate-200'
+                    )}>
                         <h3 className="text-base font-bold text-gray-800 mb-1">文件上傳</h3>
                         <p className="text-xs text-gray-400 mb-4">
                             接受 PDF、Word、圖片格式（.pdf .doc .docx .jpg .jpeg .png）。
@@ -553,7 +880,7 @@ export function ExternalIntake() {
                             <span className="mx-1 inline-flex items-center text-xs font-medium text-amber-600 bg-amber-50 border border-amber-200 rounded-full px-1.5 py-0.5 leading-none">可補件</span>
                             者可於送出後補交。
                         </p>
-                        <div>
+                        <div className={clsx(!canUpload && 'pointer-events-none select-none opacity-40')}>
                             {docs.map(doc => (
                                 <DocUploadRow
                                     key={doc.field}
@@ -562,12 +889,23 @@ export function ExternalIntake() {
                                 />
                             ))}
                         </div>
-                        {requiredDocsMissing.length > 0 && (
+                        {!canUpload && (
+                            <div className="absolute inset-0 rounded-xl bg-slate-50/70 backdrop-blur-[1px] flex items-center justify-center">
+                                <div className="bg-white border border-slate-200 rounded-lg shadow-sm px-4 py-3 flex items-start gap-2 max-w-sm">
+                                    <Lock className="w-4 h-4 mt-0.5 text-slate-500 shrink-0" />
+                                    <div className="text-xs text-slate-700">
+                                        <p className="font-semibold">請先通過資格判定</p>
+                                        <p className="text-slate-500 mt-0.5">完成上方「資格預審資料」並點選「執行資格判定」。判定為符合資格後才能上傳文件。</p>
+                                    </div>
+                                </div>
+                            </div>
+                        )}
+                        {canUpload && requiredDocsMissing.length > 0 && (
                             <p className="text-xs text-red-500 mt-2">
                                 送出前必須上傳：{requiredDocsMissing.map(d => d.label).join('、')}
                             </p>
                         )}
-                        {docs.some(d => d.required && d.allowSupplement && !d.file) && (
+                        {canUpload && docs.some(d => d.required && d.allowSupplement && !d.file) && (
                             <p className="text-xs text-amber-600 mt-1.5">
                                 標示「可補件」的文件可於送出後補交，建議盡早提供以利審核。
                             </p>

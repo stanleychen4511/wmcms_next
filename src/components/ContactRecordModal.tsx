@@ -1,0 +1,586 @@
+'use client';
+
+/**
+ * 來電 / 關懷紀錄 Modal（#14，取代舊 CareRecordModal）
+ *
+ * 模式：
+ * - mode='create'：建立新紀錄；上方 record_type 切換（來電 / 關懷）
+ * - mode='edit'：編輯既有紀錄；record_type 不可變
+ *
+ * 來電模式：caller_name / caller_gender / caller_phone（含歷史檢索）+ 3 組 enum + summary
+ * 關懷模式：applicant_user_id（用 prop 傳入鎖定）+ summary + media_urls
+ * 兩者皆可選 application_id（簡化：先以文字輸入，未來改下拉）
+ */
+
+import { useEffect, useState } from 'react';
+import { X, Plus, Trash2, Save, Loader2, Phone, History, User, Search } from 'lucide-react';
+import { useToast } from './FloatingToast';
+import {
+    createContactRecord,
+    updateContactRecord,
+    fetchPhoneHistory,
+    type ContactRecord,
+    type ContactRecordInput,
+    type ApplicantSearchResult,
+} from '../app/actions/contactRecordActions';
+import { ApplicantPickerModal } from './ApplicantPickerModal';
+import { useModalDismiss } from '../hooks/useModalDismiss';
+import {
+    RECORD_TYPE_LABEL,
+    GENDER_LABEL,
+    FROM_SOURCE_OPTIONS,
+    CONSULTANT_TYPE_OPTIONS,
+    CONSULT_PROGRAM_OPTIONS,
+    REJECT_REASON_OPTIONS,
+    REJECT_REASON_LABEL,
+    type Gender,
+    type RecordType,
+} from '../lib/contactRecordConstants';
+
+interface ApplicationOption {
+    id: string;
+    caseNumber: string;
+    status: string;          // '1'/'2'/'3'/'4'
+}
+
+interface Props {
+    mode: 'create' | 'edit';
+    operatorUserId: string;
+    /** 預設 record_type；create 模式可變、edit 模式鎖死 */
+    defaultRecordType?: RecordType;
+    /** 已是申請人時可直接綁定（關懷紀錄常見） */
+    applicantUserId?: string | null;
+    applicantName?: string;
+    /** edit 模式：傳入既有紀錄 */
+    existingRecord?: ContactRecord;
+    /** 關懷模式（recordType='2'）時可綁定的案件清單；傳入後 modal 顯示案件下拉 */
+    applications?: ApplicationOption[];
+    onSaved: () => void;
+    onClose: () => void;
+}
+
+function todayIsoDate(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+}
+
+export function ContactRecordModal({
+    mode, operatorUserId, defaultRecordType,
+    applicantUserId, applicantName, existingRecord, applications, onSaved, onClose,
+}: Props) {
+    useModalDismiss(onClose);
+    const { push: pushToast } = useToast();
+    // ─── form state ──────────────────────────────────────────────────────
+    const [recordType, setRecordType] = useState<RecordType>(
+        existingRecord?.recordType ?? defaultRecordType ?? '1'
+    );
+    const [contactDate, setContactDate] = useState<string>(
+        existingRecord?.contactDate ?? todayIsoDate()
+    );
+    const [callerName, setCallerName] = useState(existingRecord?.callerName ?? '');
+    const [callerGender, setCallerGender] = useState<Gender | ''>(existingRecord?.callerGender ?? '');
+    const [callerPhone, setCallerPhone] = useState(existingRecord?.callerPhone ?? '');
+    const [fromSource, setFromSource] = useState(existingRecord?.fromSource ?? '');
+    const [consultantType, setConsultantType] = useState(existingRecord?.consultantType ?? '');
+    const [consultProgram, setConsultProgram] = useState(existingRecord?.consultProgram ?? '');
+    const [rejectReasons, setRejectReasons] = useState<string[]>(existingRecord?.rejectReasons ?? []);
+    const [summary, setSummary] = useState(existingRecord?.summary ?? '');
+    const [mediaUrls, setMediaUrls] = useState<string[]>(() => {
+        if (existingRecord && existingRecord.mediaUrls.length > 0) return [...existingRecord.mediaUrls];
+        return [''];
+    });
+    // 關懷專屬欄位
+    const [applicationId, setApplicationId] = useState<string>(existingRecord?.applicationId ?? '');
+    const [contactedParty, setContactedParty] = useState<'1' | '2' | '9' | ''>(existingRecord?.contactedParty ?? '');
+    const [contactedPartyOther, setContactedPartyOther] = useState(existingRecord?.contactedPartyOther ?? '');
+
+    // 來電紀錄的「申請人關聯」(選填) — 若 props 已傳 applicantUserId/Name 則鎖定
+    //   開啟方式：歷史申請紀錄頁 / 申請流程「關懷紀錄」按鈕 → 已知申請人，鎖定不可改
+    //              首頁 + 新增來電 → 可選擇關聯申請人
+    const isApplicantLocked = !!applicantUserId;
+    const [linkedApplicant, setLinkedApplicant] = useState<{ userId: string; name: string } | null>(
+        applicantUserId ? { userId: applicantUserId, name: applicantName ?? '' } : null
+    );
+    const [pickerOpen, setPickerOpen] = useState(false);
+
+    const [saving, setSaving] = useState(false);
+
+    // ─── 電話歷史檢索 ────────────────────────────────────────────────────
+    //   觸發時機：使用者停打字 400ms 後自動查（debounced）
+    //   電話 ≥ 7 碼才查避免雜訊；不分申請人，全系統 phone 比對（方案 A）
+    const [phoneHistory, setPhoneHistory] = useState<ContactRecord[]>([]);
+    const [phoneHistoryLoading, setPhoneHistoryLoading] = useState(false);
+    // 自動 debounce 查詢 — 停打字 400ms 後觸發
+    useEffect(() => {
+        if (recordType !== '1') { setPhoneHistory([]); return; }  // 只在來電模式查
+        const id = setTimeout(() => { void lookupPhoneHistory(callerPhone); }, 400);
+        return () => clearTimeout(id);
+        // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [callerPhone, recordType]);
+
+    const lookupPhoneHistory = async (phone: string) => {
+        const digits = phone.replace(/[^0-9]/g, '');
+        if (digits.length < 7) {
+            setPhoneHistory([]);
+            return;
+        }
+        setPhoneHistoryLoading(true);
+        try {
+            // edit 模式下排除自己，避免「過往紀錄」把當前這筆也列出
+            const res = await fetchPhoneHistory(operatorUserId, phone, existingRecord?.id ?? null);
+            setPhoneHistory(res.success ? res.data : []);
+        } finally {
+            setPhoneHistoryLoading(false);
+        }
+    };
+
+    // 重設 useEffect 當 existingRecord 切換
+    useEffect(() => {
+        if (mode === 'edit' && existingRecord) {
+            setRecordType(existingRecord.recordType);
+            setContactDate(existingRecord.contactDate);
+            setCallerName(existingRecord.callerName ?? '');
+            setCallerGender(existingRecord.callerGender ?? '');
+            setCallerPhone(existingRecord.callerPhone ?? '');
+            setFromSource(existingRecord.fromSource ?? '');
+            setConsultantType(existingRecord.consultantType ?? '');
+            setConsultProgram(existingRecord.consultProgram ?? '');
+            setRejectReasons(existingRecord.rejectReasons);
+            setSummary(existingRecord.summary ?? '');
+            setMediaUrls(existingRecord.mediaUrls.length > 0 ? [...existingRecord.mediaUrls] : ['']);
+            setApplicationId(existingRecord.applicationId ?? '');
+            setContactedParty(existingRecord.contactedParty ?? '');
+            setContactedPartyOther(existingRecord.contactedPartyOther ?? '');
+            // 編輯既有來電紀錄：若有 applicant_user_id 則顯示為已關聯
+            if (existingRecord.applicantUserId) {
+                setLinkedApplicant({
+                    userId: existingRecord.applicantUserId,
+                    name: existingRecord.applicantName ?? '（未知）',
+                });
+            }
+        }
+    }, [mode, existingRecord]);
+
+    // ─── handlers ────────────────────────────────────────────────────────
+    const toggleRejectReason = (code: string) => {
+        setRejectReasons(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
+    };
+
+    const addMediaUrl = () => setMediaUrls(prev => [...prev, '']);
+    const removeMediaUrl = (idx: number) => setMediaUrls(prev => prev.filter((_, i) => i !== idx));
+    const setMediaUrl = (idx: number, val: string) =>
+        setMediaUrls(prev => prev.map((u, i) => i === idx ? val : u));
+
+    const handleSave = async () => {
+        // 關懷模式必填驗證
+        if (recordType === '2') {
+            if (!applicationId) {
+                pushToast({ type: 'error', msg: '請選擇對應案件' });
+                return;
+            }
+            if (!contactedParty) {
+                pushToast({ type: 'error', msg: '請選擇聯絡對象' });
+                return;
+            }
+            if (!summary.trim()) {
+                pushToast({ type: 'error', msg: '請填寫關懷摘要' });
+                return;
+            }
+        }
+        setSaving(true);
+        try {
+            // 關懷強制使用 prop 傳入的 applicantUserId；
+            // 來電則使用使用者選擇的（linkedApplicant），若已鎖定亦會反映
+            const effectiveApplicantId = recordType === '2'
+                ? (applicantUserId ?? null)
+                : (linkedApplicant?.userId ?? null);
+            const input: ContactRecordInput = {
+                recordType,
+                contactDate,
+                applicantUserId: effectiveApplicantId,
+                callerName: callerName.trim() || null,
+                callerGender: callerGender || null,
+                callerPhone: callerPhone.trim() || null,
+                applicationId: recordType === '2' ? (applicationId || null) : null,
+                fromSource: fromSource || null,
+                consultantType: consultantType || null,
+                consultProgram: consultProgram || null,
+                rejectReasons,
+                summary: summary.trim() || null,
+                mediaUrls: mediaUrls.map(u => u.trim()).filter(u => u),
+                contactedParty: recordType === '2' ? (contactedParty || null) : null,
+                contactedPartyOther: recordType === '2' && contactedParty === '9'
+                    ? (contactedPartyOther.trim() || null) : null,
+            };
+            const res = mode === 'create'
+                ? await createContactRecord(operatorUserId, input)
+                : await updateContactRecord(operatorUserId, existingRecord!.id, input);
+            if (res.success) {
+                pushToast({ type: 'success', msg: mode === 'create' ? '已新增' : '已儲存' });
+                onSaved();
+                onClose();
+            } else {
+                pushToast({ type: 'error', msg: res.error ?? '儲存失敗' });
+            }
+        } finally {
+            setSaving(false);
+        }
+    };
+
+    const isPhone = recordType === '1';
+    // 類型由 caller 決定（兩顆按鈕分別開不同類型 modal），modal 內不允許切換
+
+    return (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4 overflow-y-auto" onClick={onClose}>
+            <div className="bg-white rounded-xl shadow-2xl w-full max-w-2xl my-8 flex flex-col max-h-[90vh]" onClick={e => e.stopPropagation()}>
+                {/* Header — 類型由標題反映（取代既有的 radio；類型決定權在外部 caller，modal 內不可改） */}
+                <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
+                    <h3 className="text-lg font-bold text-slate-800">
+                        {mode === 'create' ? '新增' : '編輯'}{RECORD_TYPE_LABEL[recordType]}
+                    </h3>
+                    <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+
+                {/* Body */}
+                <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+                    {applicantName && recordType === '2' && (
+                        <p className="text-xs text-slate-500">
+                            關懷對象：<span className="font-medium text-slate-700">{applicantName}</span>
+                        </p>
+                    )}
+
+                    {/* 共同：日期 */}
+                    <div>
+                        <label className="text-xs font-medium text-slate-600">日期 <span className="text-red-500">*</span></label>
+                        <input
+                            type="date"
+                            value={contactDate}
+                            onChange={e => setContactDate(e.target.value)}
+                            className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                        />
+                    </div>
+
+                    {/* 關懷專屬：對應案件 + 聯絡對象 */}
+                    {!isPhone && (
+                        <>
+                            <div>
+                                <label className="text-xs font-medium text-slate-600">
+                                    對應案件 <span className="text-red-500">*</span>
+                                </label>
+                                {applications && applications.length > 0 ? (
+                                    <select
+                                        value={applicationId}
+                                        onChange={e => setApplicationId(e.target.value)}
+                                        className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                    >
+                                        <option value="">— 請選擇 —</option>
+                                        {applications.map(app => (
+                                            <option key={app.id} value={app.id}>
+                                                {app.caseNumber}
+                                                {app.status === '4' ? '（核銷完成）'
+                                                    : app.status === '2' ? '（審核未通過）'
+                                                    : app.status === '3' ? '（待核銷）'
+                                                    : '（審核中）'}
+                                            </option>
+                                        ))}
+                                    </select>
+                                ) : (
+                                    <p className="text-xs text-slate-400 mt-1">此申請人尚無案件可關聯</p>
+                                )}
+                            </div>
+                            <div>
+                                <label className="text-xs font-medium text-slate-600">
+                                    聯絡對象 <span className="text-red-500">*</span>
+                                </label>
+                                <div className="flex gap-3 mt-1">
+                                    {([
+                                        { v: '1', label: '本人' },
+                                        { v: '2', label: '配偶' },
+                                        { v: '9', label: '其他' },
+                                    ] as const).map(opt => (
+                                        <label key={opt.v} className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg border cursor-pointer text-sm ${
+                                            contactedParty === opt.v
+                                                ? 'bg-rose-50 border-rose-300 text-rose-700'
+                                                : 'bg-white border-slate-200 text-slate-600'
+                                        }`}>
+                                            <input
+                                                type="radio"
+                                                checked={contactedParty === opt.v}
+                                                onChange={() => setContactedParty(opt.v)}
+                                                className="accent-rose-600"
+                                            />
+                                            {opt.label}
+                                        </label>
+                                    ))}
+                                </div>
+                                {contactedParty === '9' && (
+                                    <input
+                                        type="text"
+                                        maxLength={50}
+                                        value={contactedPartyOther}
+                                        onChange={e => setContactedPartyOther(e.target.value)}
+                                        placeholder="關係描述（選填，例：兒子、社工）"
+                                        className="mt-2 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                    />
+                                )}
+                            </div>
+                        </>
+                    )}
+
+                    {/* 來電專屬 */}
+                    {isPhone && (
+                        <>
+                            {/* 關聯申請人（選填） — 用以將此通來電與特定申請人連結，
+                                之後在「歷史申請紀錄／申請流程的關懷紀錄」清單會看到此筆 */}
+                            <div>
+                                <label className="text-xs font-medium text-slate-600 flex items-center gap-1">
+                                    <User className="w-3 h-3" />
+                                    關聯申請人 <span className="text-slate-400 font-normal">（選填）</span>
+                                </label>
+                                {linkedApplicant ? (
+                                    <div className="mt-1 flex items-center gap-2 px-3 py-2 border border-emerald-200 bg-emerald-50 rounded-lg text-sm">
+                                        <User className="w-3.5 h-3.5 text-emerald-700" />
+                                        <span className="font-medium text-emerald-800">{linkedApplicant.name || '（未知姓名）'}</span>
+                                        {isApplicantLocked ? (
+                                            <span className="ml-auto text-[10px] px-1.5 py-0.5 rounded bg-slate-100 text-slate-500">
+                                                自動關聯
+                                            </span>
+                                        ) : (
+                                            <button
+                                                type="button"
+                                                onClick={() => setLinkedApplicant(null)}
+                                                className="ml-auto text-slate-400 hover:text-rose-600"
+                                                title="取消關聯"
+                                            >
+                                                <X className="w-3.5 h-3.5" />
+                                            </button>
+                                        )}
+                                    </div>
+                                ) : (
+                                    <button
+                                        type="button"
+                                        onClick={() => setPickerOpen(true)}
+                                        className="mt-1 w-full flex items-center justify-center gap-1.5 px-3 py-2 border border-dashed border-slate-300 rounded-lg text-sm text-slate-500 hover:bg-slate-50 hover:text-slate-700 transition"
+                                    >
+                                        <Search className="w-3.5 h-3.5" />
+                                        選擇申請人（若此通來電與特定申請人有關）
+                                    </button>
+                                )}
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+                                <div>
+                                    <label className="text-xs font-medium text-slate-600 flex items-center gap-1 h-4">姓名</label>
+                                    <input
+                                        type="text" maxLength={50}
+                                        value={callerName}
+                                        onChange={e => setCallerName(e.target.value)}
+                                        className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                        placeholder="例：王小姐"
+                                    />
+                                </div>
+                                <div>
+                                    <label className="text-xs font-medium text-slate-600 flex items-center gap-1 h-4">性別</label>
+                                    <select
+                                        value={callerGender}
+                                        onChange={e => setCallerGender(e.target.value as Gender | '')}
+                                        className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                    >
+                                        <option value="">— 未填 —</option>
+                                        {(['M', 'F', 'U'] as Gender[]).map(g => (
+                                            <option key={g} value={g}>{GENDER_LABEL[g]}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="text-xs font-medium text-slate-600 flex items-center gap-1 h-4">
+                                        <Phone className="w-3 h-3" />聯絡方式
+                                    </label>
+                                    <input
+                                        type="text" maxLength={50}
+                                        value={callerPhone}
+                                        onChange={e => setCallerPhone(e.target.value)}
+                                        className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                        placeholder="電話 / LINE / Email"
+                                    />
+                                </div>
+                            </div>
+
+                            {/* 電話歷史檢索結果 — 重新查詢時保留舊清單避免閃爍，僅淡化 + 旁邊小 spinner */}
+                            {phoneHistory.length > 0 && (
+                                <div className={`bg-amber-50 border border-amber-200 rounded-lg p-3 space-y-1.5 transition-opacity ${phoneHistoryLoading ? 'opacity-60' : 'opacity-100'}`}>
+                                    <p className="text-xs font-bold text-amber-700 flex items-center gap-1">
+                                        <History className="w-3.5 h-3.5" />
+                                        此電話過去有 {phoneHistory.length} 筆紀錄
+                                        {phoneHistoryLoading && (
+                                            <Loader2 className="w-3 h-3 animate-spin text-amber-600 ml-1" />
+                                        )}
+                                    </p>
+                                    <ul className="text-xs text-slate-600 space-y-0.5 max-h-32 overflow-y-auto">
+                                        {phoneHistory.slice(0, 10).map(r => (
+                                            <li key={r.id} className="border-l-2 border-amber-300 pl-2">
+                                                <span className="font-mono">{r.contactDate}</span>
+                                                {' · '}
+                                                {RECORD_TYPE_LABEL[r.recordType]}
+                                                {' · '}
+                                                {r.callerName ?? r.applicantUserId ?? '—'}
+                                                {r.summary && <span className="text-slate-500"> — {r.summary.slice(0, 30)}{r.summary.length > 30 ? '…' : ''}</span>}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                </div>
+                            )}
+
+                            {/* 從何得知本補助 */}
+                            <div>
+                                <label className="text-xs font-medium text-slate-600">從何得知本補助</label>
+                                <select
+                                    value={fromSource}
+                                    onChange={e => setFromSource(e.target.value)}
+                                    className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                >
+                                    <option value="">— 未填 —</option>
+                                    {FROM_SOURCE_OPTIONS.map(o => (
+                                        <option key={o.value} value={o.value}>{o.label}</option>
+                                    ))}
+                                </select>
+                            </div>
+
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                <div>
+                                    <label className="text-xs font-medium text-slate-600">諮詢人</label>
+                                    <select
+                                        value={consultantType}
+                                        onChange={e => setConsultantType(e.target.value)}
+                                        className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                    >
+                                        <option value="">— 未填 —</option>
+                                        {CONSULTANT_TYPE_OPTIONS.map(o => (
+                                            <option key={o.value} value={o.value}>{o.label}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                                <div>
+                                    <label className="text-xs font-medium text-slate-600">諮詢方案</label>
+                                    <select
+                                        value={consultProgram}
+                                        onChange={e => setConsultProgram(e.target.value)}
+                                        className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                    >
+                                        <option value="">— 未填 —</option>
+                                        {CONSULT_PROGRAM_OPTIONS.map(o => (
+                                            <option key={o.value} value={o.value}>{o.label}</option>
+                                        ))}
+                                    </select>
+                                </div>
+                            </div>
+
+                            {/* 無法申請原因（多選） */}
+                            <div>
+                                <label className="text-xs font-medium text-slate-600">無法申請原因（可複選）</label>
+                                <div className="mt-1 grid grid-cols-2 md:grid-cols-3 gap-1.5">
+                                    {REJECT_REASON_OPTIONS.map(o => (
+                                        <label key={o.value} className="inline-flex items-center gap-1.5 text-xs cursor-pointer">
+                                            <input
+                                                type="checkbox"
+                                                checked={rejectReasons.includes(o.value)}
+                                                onChange={() => toggleRejectReason(o.value)}
+                                                className="accent-indigo-600"
+                                            />
+                                            <span>{REJECT_REASON_LABEL[o.value]}</span>
+                                        </label>
+                                    ))}
+                                </div>
+                            </div>
+                        </>
+                    )}
+
+                    {/* 共同：備註 */}
+                    <div>
+                        <label className="text-xs font-medium text-slate-600">
+                            {isPhone ? '備註 / 追蹤摘要' : '關懷摘要'}
+                            {!isPhone && <span className="text-red-500 ml-1">*</span>}
+                        </label>
+                        <textarea
+                            value={summary}
+                            onChange={e => setSummary(e.target.value)}
+                            rows={4}
+                            className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm resize-y"
+                            placeholder={isPhone ? '需追蹤的摘要、特殊狀況等…' : '紀錄關懷對話內容…'}
+                        />
+                    </div>
+
+                    {/* 關懷專屬：媒體 URL */}
+                    {!isPhone && (
+                        <div className="space-y-1.5">
+                            <label className="text-xs font-medium text-slate-600">媒體連結（圖片/影片 URL）</label>
+                            {mediaUrls.map((url, idx) => (
+                                <div key={idx} className="flex items-center gap-2">
+                                    <input
+                                        type="url"
+                                        value={url}
+                                        onChange={e => setMediaUrl(idx, e.target.value)}
+                                        placeholder="https://photos.google.com/..."
+                                        className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                    />
+                                    {mediaUrls.length > 1 && (
+                                        <button
+                                            type="button"
+                                            onClick={() => removeMediaUrl(idx)}
+                                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                                        >
+                                            <Trash2 className="w-4 h-4" />
+                                        </button>
+                                    )}
+                                </div>
+                            ))}
+                            <button
+                                type="button"
+                                onClick={addMediaUrl}
+                                className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800"
+                            >
+                                <Plus className="w-3.5 h-3.5" />新增連結
+                            </button>
+                        </div>
+                    )}
+
+                </div>
+
+                {/* Footer */}
+                <div className="flex justify-end gap-2 px-5 py-4 border-t border-slate-200">
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        disabled={saving}
+                        className="px-4 py-2 text-sm text-slate-600 border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50"
+                    >
+                        取消
+                    </button>
+                    <button
+                        type="button"
+                        onClick={handleSave}
+                        disabled={saving}
+                        className="inline-flex items-center gap-1.5 px-4 py-2 text-sm bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50"
+                    >
+                        {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
+                        儲存
+                    </button>
+                </div>
+            </div>
+
+            {/* 申請人選擇 modal（巢狀） */}
+            {pickerOpen && (
+                <ApplicantPickerModal
+                    operatorUserId={operatorUserId}
+                    onPick={(picked: ApplicantSearchResult) => {
+                        setLinkedApplicant({ userId: picked.userId, name: picked.name });
+                        setPickerOpen(false);
+                    }}
+                    onClose={() => setPickerOpen(false)}
+                />
+            )}
+        </div>
+    );
+}

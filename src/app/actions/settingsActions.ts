@@ -33,9 +33,10 @@ export async function ensureDefaultSettings(): Promise<void> {
         { key: 'pending_doc_alert_days', value: '7',      description: '收件後超過此天數且仍有必備文件未上傳的案件，將於首頁顯示未補件提示' },
         { key: 'pending_doc_notification_threshold', value: '3', description: '同案件累計發送幾次未補件提醒後，於 UI 提示承辦人考慮以不通過結案' },
         { key: 'board_auto_assign',      value: 'false',  description: '董事審核階段自動派案開關（true/false）：true 時案件進 board_review 自動派給當前案件最少、priority 最小的組別' },
+        { key: 'board_opinion_min_chars', value: '50',    description: '【董事審核】審核意見最少字數（0 = 不限制）' },
         { key: 'line_official_account_id', value: '',     description: 'LINE 官方帳號 ID（@xxxxxx 格式）；使用者個人設定頁的「加好友」連結會用此值組成 https://line.me/R/ti/p/{@id}' },
         { key: 'notification_dispatcher_enabled', value: 'false', description: '事件通知派送總開關（true/false）：開啟後事件觸發時才會發送 Email/LINE 通知；關閉時事件仍發生但不通知（不影響業務）' },
-        { key: 'max_apply_amount',       value: '350000', description: '每筆申請案件的申請金額上限（元）' },
+        // 註：max_apply_amount 已移除（#2/#3 重構），改由 subsidy_amount_limits 表依子類型動態查詢
         // 組織基本資料（核銷階段列印的領款收據 header）
         { key: 'org_full_name',       value: '財團法人萬美基金會',                          description: '基金會全名（列印 header）' },
         { key: 'org_license_no',      value: '衛部醫字第 1121668099 號',                     description: '主管機關核准立案字號' },
@@ -45,6 +46,14 @@ export async function ensureDefaultSettings(): Promise<void> {
         { key: 'org_phone',           value: '(02) 2321-2777',                               description: '聯絡電話' },
         { key: 'org_fax',             value: '(02) 2321-3828',                               description: '傳真' },
         { key: 'org_line_qr_url',     value: '/org-line-qr.png',                             description: 'LINE 加入志工 QR code 圖片路徑（相對於 public/，或外部 URL）' },
+        // 資格判定門檻（115 年辦法）—— 共同條件 + 經濟弱勢專屬
+        // 注意：小康家庭矩陣與補助金額上限放在獨立資料表
+        // （mid_class_eligibility_matrix、subsidy_amount_limits），不走這個 KV。
+        { key: 'elig_age_min',                  value: '25',   description: '【115 辦法】申請人年齡下限（歲）' },
+        { key: 'elig_age_max',                  value: '65',   description: '【115 辦法】申請人年齡上限（歲）' },
+        { key: 'elig_real_estate_max',          value: '2500', description: '【115 辦法】不動產上限：戶籍內直系合計（萬元）' },
+        { key: 'elig_econ_deposit_max',         value: '16',   description: '【115 辦法-經濟弱勢】存款上限（夫妻取平均，萬元）' },
+        { key: 'elig_econ_monthly_income_max',  value: '3',    description: '【115 辦法-經濟弱勢】每月收入上限（夫妻取平均，萬元）' },
     ];
     const client = await pool.connect();
     try {
@@ -127,3 +136,8 @@ export async function updateSetting(
         client.release();
     }
 }
+
+
+// 註：fetchEligibilityCriteria 已移除（依 #2/#3 重構）。
+// 改用 src/app/actions/eligibilityRulesActions.ts 的 fetchEligibilityRules()
+// 取得結構化 snapshot（包含子類型補助上限、共同條件、小康家庭矩陣）。

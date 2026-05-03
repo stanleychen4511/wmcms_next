@@ -360,6 +360,7 @@ export async function sendNotificationEmail(
     senderUserId: string,
     isPendingDocReminder: boolean = false,
     attachments?: EmailAttachment[],
+    disbursementId?: string | null,
 ): Promise<ActionResult> {
     // 1. Load SMTP config
     const cfgRes = await loadSmtpConfig();
@@ -401,8 +402,8 @@ export async function sendNotificationEmail(
     try {
         const logRes = await client.query(
             `INSERT INTO notification_logs
-                (application_id, channel, sender_id, recipients, subject, body, template_id, status, error_message, is_pending_doc_reminder)
-             VALUES ($1, 'email', $2::bigint, $3, $4, $5, $6, $7, $8, $9)
+                (application_id, channel, sender_id, recipients, subject, body, template_id, status, error_message, is_pending_doc_reminder, disbursement_id)
+             VALUES ($1, 'email', $2::bigint, $3, $4, $5, $6, $7, $8, $9, $10)
              RETURNING id`,
             [
                 applicationId,
@@ -414,6 +415,7 @@ export async function sendNotificationEmail(
                 sendError ? 'failed' : 'sent',
                 sendError,
                 isPendingDocReminder,
+                disbursementId ?? null,
             ]
         );
 

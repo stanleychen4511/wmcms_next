@@ -10,6 +10,8 @@ import {
     disableStorageLocation,
     enableStorageLocation,
 } from '../app/actions/storageLocationActions';
+import { useToast } from './FloatingToast';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 // ─── Tree helpers ────────────────────────────────────────────────────────────
 
@@ -61,6 +63,7 @@ interface ModalProps {
 }
 
 function LocationModal({ mode, node, parentOptions, onClose, onSaved }: ModalProps) {
+    useModalDismiss(onClose);
     const [locationName, setLocationName] = useState(node?.location_name ?? '');
     const [parentId, setParentId] = useState<number | null>(node?.parent_id ?? null);
     const [description, setDescription] = useState(node?.description ?? '');
@@ -86,8 +89,8 @@ function LocationModal({ mode, node, parentOptions, onClose, onSaved }: ModalPro
     };
 
     return (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center justify-between px-6 py-4 border-b border-slate-200">
                     <h3 className="text-lg font-bold text-slate-800">
                         {mode === 'add' ? '新增位置' : '編輯位置'}
@@ -209,14 +212,15 @@ function ActiveDescendantTree({ nodes, indent = 0 }: { nodes: StorageLocation[];
 }
 
 function DisableBlockedDialog({ node, onClose }: DisableDialogProps) {
+    useModalDismiss(onClose);
     // Count all active descendants
     const countActive = (nodes: StorageLocation[]): number =>
         nodes.reduce((sum, n) => sum + (n.status === 1 ? 1 : 0) + countActive(n.children ?? []), 0);
     const total = countActive(node.children ?? []);
 
     return (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4">
-            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md">
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+            <div className="bg-white rounded-2xl shadow-xl w-full max-w-md" onClick={e => e.stopPropagation()}>
                 <div className="flex items-center gap-3 px-6 py-4 border-b border-slate-200">
                     <AlertTriangle className="w-5 h-5 text-amber-500 shrink-0" />
                     <h3 className="text-lg font-bold text-slate-800">無法停用</h3>
@@ -329,6 +333,7 @@ function TreeNodeRow({ node, expanded, onToggleExpand, onEdit, onToggleStatus }:
 // ─── Main Component ──────────────────────────────────────────────────────────
 
 export function StorageLocationManager() {
+    const { push: pushToast } = useToast();
     const [tree, setTree] = useState<StorageLocation[]>([]);
     const [flatAll, setFlatAll] = useState<StorageLocation[]>([]);
     const [loading, setLoading] = useState(true);
@@ -401,7 +406,7 @@ export function StorageLocationManager() {
                     const treeNode = findInTree(tree, node.id) ?? node;
                     setDisableDialog(treeNode);
                 } else {
-                    alert(res.error ?? '停用失敗');
+                    pushToast({ type: 'error', msg: res.error ?? '停用失敗' });
                 }
             } else {
                 await loadData();
@@ -409,7 +414,7 @@ export function StorageLocationManager() {
         } else {
             // Enabling
             const res = await enableStorageLocation(node.id);
-            if (!res.success) alert(res.error ?? '啟用失敗');
+            if (!res.success) pushToast({ type: 'error', msg: res.error ?? '啟用失敗' });
             else await loadData();
         }
     };

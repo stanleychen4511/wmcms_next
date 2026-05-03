@@ -67,10 +67,20 @@ export type AuditAction =
     | 'notification.event_dispatched'
     | 'notification.payment_receipt_sent'
     | 'user.notification_channels_updated'
-    | 'care_record.created'
-    | 'care_record.updated'
-    | 'care_record.deleted'
-    | 'case_statistics.viewed';
+    | 'contact_record.created'
+    | 'contact_record.updated'
+    | 'contact_record.deleted'
+    | 'case_statistics.viewed'
+    | 'payment_disbursement.created'
+    | 'payment_disbursement.updated'
+    | 'payment_disbursement.received_marked'
+    | 'payment_disbursement.deleted'
+    | 'payment_disbursement.submitted'
+    | 'payment_disbursement.completed'
+    | 'payment_disbursement.rejected'
+    | 'payment_disbursement.receipt_generated'
+    | 'payment_disbursement.receipt_email_sent'
+    | 'payment_disbursement.print_merged';
 
 export type AuditTargetType =
     | 'application'
@@ -89,7 +99,8 @@ export type AuditTargetType =
     | 'board_group'
     | 'board_assignment'
     | 'event'
-    | 'care_record';
+    | 'contact_record'
+    | 'payment_disbursement';
 
 export interface WriteAuditLogParams {
     userId: string | null;

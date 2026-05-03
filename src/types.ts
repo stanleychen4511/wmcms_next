@@ -1,4 +1,4 @@
-export type Role = 'applicant' | 'case_officer' | 'social_worker' | 'supervisor' | 'accountant' | 'board_member' | 'admin' | 'volunteer';
+export type Role = 'applicant' | 'case_officer' | 'supervisor' | 'accountant' | 'board_member' | 'admin' | 'volunteer' | 'chairman' | 'executive';
 export interface UserAccount {
     id: string;
     account: string; // The login account
@@ -25,12 +25,15 @@ export interface CaseSummary {
     officerId: string | null;    // null = 未派案
     /** Board group id if case is currently in board_review with an assignment; null otherwise. */
     assignedBoardGroupId?: string | null;
+    /** 補助子類型（115 年辦法）：'1'=經濟弱勢, '2'=小康家庭；NULL = 舊資料未分類 */
+    subsidySubtype?: '1' | '2' | null;
 }
 
 export type ApplicationStatus = 'active' | 'closed';
 
 export interface ApplicationRecord {
     id: string;             // unique application id
+    caseNumber?: string;    // 案件編號（A115001 等）
     applicantId: string;    // links to CaseSummary.id (the person)
     applicantName: string;
     appliedAt: string;

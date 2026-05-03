@@ -23,6 +23,8 @@ import { useEffect, useRef, useState } from 'react';
 import dynamic from 'next/dynamic';
 import { FileText, ZoomIn, ZoomOut, XCircle, Loader2 } from 'lucide-react';
 import { WatermarkOverlay, usePreviewGuards } from './WatermarkOverlay';
+import { SecureImageViewer } from './SecureImageViewer';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 const PdfViewer = dynamic(
     () => import('./PdfViewer').then(m => m.PdfViewer),
@@ -183,14 +185,8 @@ interface Props {
 }
 
 export function SecureFilePreviewModal({ url, label, onClose }: Props) {
+    useModalDismiss(onClose);
     const [zoom, setZoom] = useState(100);
-
-    // ESC 關閉
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-        window.addEventListener('keydown', handler);
-        return () => window.removeEventListener('keydown', handler);
-    }, [onClose]);
 
     // 開新檔案時重設縮放
     useEffect(() => { setZoom(100); }, [url]);
@@ -263,18 +259,12 @@ export function SecureFilePreviewModal({ url, label, onClose }: Props) {
                         <DocxViewer fileUrl={url} zoom={zoom} onZoomChange={handleZoomChange} />
                     )}
                     {isImageFile(url) && (
-                        <div className="w-full h-full overflow-auto flex items-start justify-center p-4 select-none" onContextMenu={e => e.preventDefault()}>
-                            <div className="relative inline-block" style={{ transform: `scale(${zoom / 100})`, transformOrigin: 'top center' }}>
-                                {/* eslint-disable-next-line @next/next/no-img-element */}
-                                <img
-                                    src={getPreviewUrl(url)}
-                                    alt={label}
-                                    draggable={false}
-                                    style={{ maxWidth: '100%', display: 'block', pointerEvents: 'none' }}
-                                />
-                                <WatermarkOverlay />
-                            </div>
-                        </div>
+                        <SecureImageViewer
+                            url={getPreviewUrl(url)}
+                            label={label}
+                            zoom={zoom}
+                            onZoomChange={handleZoomChange}
+                        />
                     )}
                     {!isPdfFile(url) && !isWordFile(url) && !isImageFile(url) && (
                         <div className="flex items-center justify-center h-full text-slate-400 text-sm">

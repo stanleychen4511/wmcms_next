@@ -11,13 +11,16 @@ import { applyPlaceholders } from '../../lib/notificationUtils';
 export type NotificationEventType =
     | 'case_entered_board_review'
     | 'case_assigned_to_board_group'
-    | 'case_payment_receipt_to_applicant';
+    | 'case_payment_receipt_to_applicant'
+    | 'disbursement_completed';
 
 type Channel = 'email' | 'line';
 
 interface EventContext {
     applicationId: string;
     groupId?: string;
+    /** 若事件與特定撥款關聯（個管寄領款收據、撥款完成），帶入 payment_disbursements.id */
+    disbursementId?: string;
 }
 
 /**
@@ -65,6 +68,25 @@ async function resolveRecipients(eventType: NotificationEventType, ctx: EventCon
                  WHERE a.id = $1::bigint AND u.is_active = TRUE
                  LIMIT 1`,
                 [ctx.applicationId]
+            );
+            return res.rows.map(r => r.id);
+        }
+        if (eventType === 'disbursement_completed') {
+            // 收件人 = 該撥款的個管／主管／會計（站內 + email/line per user pref）+ 申請人（依 channels）
+            // 執行長本人（操作者）不另發通知（依 spec）
+            if (!ctx.disbursementId) return [];
+            const res = await client.query(
+                `SELECT DISTINCT u.id::text AS id
+                 FROM payment_disbursements pd
+                 LEFT JOIN users u ON u.id IN (pd.created_by, pd.supervisor_user_id, pd.accountant_user_id)
+                 WHERE pd.id = $1::bigint AND u.id IS NOT NULL AND u.is_active = TRUE
+                 UNION
+                 SELECT u.id::text AS id
+                 FROM payment_disbursements pd
+                 JOIN applications a ON a.id = pd.application_id
+                 JOIN users u ON u.id = a.applicant_id
+                 WHERE pd.id = $1::bigint AND u.is_active = TRUE`,
+                [ctx.disbursementId]
             );
             return res.rows.map(r => r.id);
         }
@@ -131,6 +153,24 @@ async function loadPlaceholderVars(eventType: NotificationEventType, ctx: EventC
         }
         const systemUrl = process.env.NEXT_PUBLIC_SYSTEM_URL ?? '';
         const caseLink = systemUrl ? `${systemUrl.replace(/\/$/, '')}/?case=${ctx.applicationId}` : '';
+
+        // disbursement_completed 額外查詢本次/累計金額
+        let thisAmount = '—';
+        let cumulativeAmount = '—';
+        if (eventType === 'disbursement_completed' && ctx.disbursementId) {
+            const dr = await client.query(
+                `SELECT pd.amount,
+                        COALESCE((SELECT SUM(amount) FROM payment_disbursements
+                                  WHERE application_id = pd.application_id AND review_stage = '9'), 0) AS total_completed
+                 FROM payment_disbursements pd WHERE pd.id = $1::bigint LIMIT 1`,
+                [ctx.disbursementId]
+            );
+            if (dr.rowCount && dr.rowCount > 0) {
+                thisAmount = Number(dr.rows[0].amount).toLocaleString();
+                cumulativeAmount = Number(dr.rows[0].total_completed).toLocaleString();
+            }
+        }
+
         return {
             '案號': row.case_number ?? '',
             '申請人': applicantName,
@@ -138,6 +178,8 @@ async function loadPlaceholderVars(eventType: NotificationEventType, ctx: EventC
             '核定金額': approvedAmount,
             '組別名稱': groupName,
             '系統連結': caseLink,
+            '本次撥款金額': thisAmount,
+            '累計撥款金額': cumulativeAmount,
         };
     } finally {
         client.release();
@@ -248,12 +290,40 @@ async function dispatchToRecipient(
     let caseNumberForFilename = vars['案號'] || context.applicationId;
     if (eventType === 'case_payment_receipt_to_applicant') {
         try {
-            // 使用申請人本身的 userId 通過 fetchPaymentReceiptPrintData 的 admin/accountant 守門 — 不行
-            // 改傳系統管理員或繞過守門：實作上 generatePaymentReceiptPdf 會 throw 權限不足
-            // → 用第一個 admin 帳號當 operator
             const adminId = await fetchFirstAdminUserId();
             if (!adminId) {
                 pdfError = '系統內無 admin 帳號，無法產生 PDF';
+            } else if (context.disbursementId) {
+                // refine-disbursement-flow：個管手動觸發時，用該筆撥款的所有欄位產生 PDF
+                const dRes = await pool.query(
+                    `SELECT amount, external_code,
+                            payment_method, bank_name, bank_branch, bank_account,
+                            payee_name, payee_relation, payee_relation_other
+                     FROM payment_disbursements WHERE id = $1::bigint LIMIT 1`,
+                    [context.disbursementId]
+                );
+                if (dRes.rowCount === 0) {
+                    pdfError = '撥款不存在';
+                } else {
+                    const row = dRes.rows[0];
+                    const { generateDisbursementPaymentReceiptPdf } =
+                        await import('../../lib/pdf/generateDisbursementPaymentReceiptPdf');
+                    pdfBuffer = await generateDisbursementPaymentReceiptPdf(
+                        context.applicationId,
+                        adminId,
+                        {
+                            amount: Number(row.amount),
+                            externalCode: row.external_code ?? undefined,
+                            paymentMethod: row.payment_method,
+                            bankName: row.bank_name,
+                            bankBranch: row.bank_branch,
+                            bankAccount: row.bank_account,
+                            payeeName: row.payee_name,
+                            payeeRelation: row.payee_relation,
+                            payeeRelationOther: row.payee_relation_other,
+                        },
+                    );
+                }
             } else {
                 const { generatePaymentReceiptPdf } = await import('../../lib/pdf/generatePaymentReceiptPdf');
                 pdfBuffer = await generatePaymentReceiptPdf(context.applicationId, adminId);
@@ -320,6 +390,7 @@ async function dispatchToRecipient(
                     '',  // senderUserId empty = system
                     false,
                     attachments,
+                    context.disbursementId ?? null,
                 );
                 statusPerChannel[channel] = r.success ? 'sent' : 'failed';
             } else if (channel === 'line') {

@@ -47,6 +47,33 @@ Changes can be parked（暫存）— temporarily moved out of `openspec/changes/
 - **加密**：Node.js `crypto` — AES-256-CBC（欄位加密）+ HMAC-SHA256（密碼與 blind index）
 - **主要套件**：`pg` (PostgreSQL client)、`@vercel/blob` (檔案儲存)、`react-pdf`、`docx-preview`、`react-hook-form`、`zod`、`nodemailer`、`framer-motion`、`lucide-react`
 
+## 文件存放規則
+
+**所有文件類檔案（修改計畫、設計筆記、操作手冊、規格說明等 .md／.pdf／.docx）一律放在 `docs/`，不要放在專案根目錄。** 根目錄只保留 `README.md`、`CLAUDE.md`、`AGENTS.md`、`FEATURES.md`、`database_schema.md` 這幾個既有的核心文件。
+
+## UI 互動規則
+
+**儲存／編輯／刪除等動作完成後，禁止讓頁面捲動回頂端。** 常見地雷：
+1. `load()` 函式同時負責「初次載入」與「儲存後重整」，且把 `loading` 設為 `true` → 整個面板被換成「載入中…」spinner → React unmount 既有 DOM tree → 瀏覽器把 scroll 位置丟回頂端。
+   - **修法**：`load(silent: boolean)` 兩個模式；初次載入用 `silent=false`（要顯示 spinner）、儲存後重整用 `silent=true`（背景刷新、保留 DOM）。
+2. `<button>` 沒寫 `type="button"`，誤觸發 form submit。
+   - **修法**：所有非 submit 的 `<button>` 一律加 `type="button"`。
+3. 儲存成功後 `router.refresh()` 或 `router.push(...)` —— 改用「就地更新 state」。
+
+**儲存／錯誤提示一律使用浮動 toast，不要在 layout 中插入新的 row。** 原因：inline 提示 box 會把後面內容往下推、造成捲頁與內容跳動；浮動 toast 用 `position: fixed` 不影響 document flow。
+
+- 共用元件：`src/components/FloatingToast.tsx`
+- 用法：
+  ```ts
+  const { toasts, push, dismiss } = useFloatingToast();
+  push({ type: 'success', msg: '已儲存' });
+  // JSX 末尾加：
+  <FloatingToastStack toasts={toasts} onDismiss={dismiss} />
+  ```
+- 預設右下角顯示、2.5 秒自動消失、多筆垂直堆疊；可傳 `durationMs` 調整或設為 0 不自動消失。
+
+新增任何儲存／編輯流程時，請主動套用上述原則。
+
 ## 目錄結構
 
 ```

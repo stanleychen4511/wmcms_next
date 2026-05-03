@@ -8,6 +8,7 @@ import {
     updateDocumentTypeConfig,
 } from '../app/actions/documentActions';
 import { StorageLocation, fetchAllStorageLocations } from '../app/actions/storageLocationActions';
+import { useToast } from './FloatingToast';
 
 const PHASE_LABEL: Record<string, string> = {
     apply: '申請階段',
@@ -15,12 +16,12 @@ const PHASE_LABEL: Record<string, string> = {
 };
 
 export function DocumentTypeManager() {
+    const { push: pushToast } = useToast();
     const [configs, setConfigs] = useState<DocumentTypeConfig[]>([]);
     const [locations, setLocations] = useState<StorageLocation[]>([]);
     const [editingId, setEditingId] = useState<number | null>(null);
     const [editData, setEditData] = useState<Partial<DocumentTypeConfig>>({});
     const [saving, setSaving] = useState(false);
-    const [error, setError] = useState<string | null>(null);
 
     const load = useCallback(async () => {
         const [cfgs, locsRes] = await Promise.all([
@@ -44,22 +45,19 @@ export function DocumentTypeManager() {
             sort_order: cfg.sort_order,
             is_active: cfg.is_active,
         });
-        setError(null);
     }
 
     function cancelEdit() {
         setEditingId(null);
         setEditData({});
-        setError(null);
     }
 
     async function saveEdit(id: number) {
         setSaving(true);
-        setError(null);
         const res = await updateDocumentTypeConfig(id, editData);
         setSaving(false);
         if (!res.success) {
-            setError(res.error ?? '儲存失敗');
+            pushToast({ type: 'error', msg: res.error ?? '儲存失敗' });
             return;
         }
         setEditingId(null);
@@ -101,10 +99,6 @@ export function DocumentTypeManager() {
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                {error && (
-                    <div className="bg-red-50 border border-red-200 text-red-700 text-sm px-4 py-2 rounded-lg">{error}</div>
-                )}
-
                 {Object.entries(grouped).map(([phase, items]) => (
                     <div key={phase}>
                         <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">

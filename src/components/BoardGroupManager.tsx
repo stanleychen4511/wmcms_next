@@ -11,6 +11,7 @@ import {
     deleteBoardGroup,
     fetchBoardMemberCandidates,
 } from '../app/actions/boardGroupActions';
+import { useToast } from './FloatingToast';
 
 interface Props {
     operatorUserId: string;
@@ -24,10 +25,10 @@ interface Candidate {
 }
 
 export function BoardGroupManager({ operatorUserId }: Props) {
+    const { push: pushToast } = useToast();
     const [groups, setGroups] = useState<BoardGroup[]>([]);
     const [candidates, setCandidates] = useState<Candidate[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
 
     // Add form
@@ -46,7 +47,7 @@ export function BoardGroupManager({ operatorUserId }: Props) {
         if (!silent) setLoading(true);
         const [gRes, cRes] = await Promise.all([fetchAllBoardGroups(), fetchBoardMemberCandidates()]);
         if (gRes.success && gRes.data) setGroups(gRes.data);
-        else setError(gRes.error ?? '載入組別失敗');
+        else pushToast({ type: 'error', msg: gRes.error ?? '載入組別失敗' });
         if (cRes.success && cRes.data) setCandidates(cRes.data);
         if (!silent) setLoading(false);
     }, []);
@@ -58,12 +59,12 @@ export function BoardGroupManager({ operatorUserId }: Props) {
     }
 
     async function handleAdd() {
-        if (!newName.trim()) { setError('組別名稱為必填'); return; }
-        if (newMemberIds.size === 0) { setError('至少需指定一位董事成員'); return; }
-        setSaving(true); setError(null);
+        if (!newName.trim()) { pushToast({ type: 'error', msg: '組別名稱為必填' }); return; }
+        if (newMemberIds.size === 0) { pushToast({ type: 'error', msg: '至少需指定一位董事成員' }); return; }
+        setSaving(true);
         const res = await createBoardGroup(newName.trim(), newPriority, Array.from(newMemberIds), operatorUserId);
         setSaving(false);
-        if (!res.success) { setError(res.error ?? '新增失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '新增失敗' }); return; }
         resetAddForm();
         await load(true);
     }
@@ -73,37 +74,33 @@ export function BoardGroupManager({ operatorUserId }: Props) {
         setEditName(g.name);
         setEditPriority(g.priority);
         setEditMemberIds(new Set(g.members.map(m => m.userId)));
-        setError(null);
     }
 
     function cancelEdit() {
         setEditingId(null);
-        setError(null);
     }
 
     async function saveEdit(id: string) {
-        if (!editName.trim()) { setError('組別名稱為必填'); return; }
-        if (editMemberIds.size === 0) { setError('至少需保留一位董事成員'); return; }
-        setSaving(true); setError(null);
+        if (!editName.trim()) { pushToast({ type: 'error', msg: '組別名稱為必填' }); return; }
+        if (editMemberIds.size === 0) { pushToast({ type: 'error', msg: '至少需保留一位董事成員' }); return; }
+        setSaving(true);
         const res = await updateBoardGroup(id, editName.trim(), editPriority, Array.from(editMemberIds), operatorUserId);
         setSaving(false);
-        if (!res.success) { setError(res.error ?? '更新失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '更新失敗' }); return; }
         setEditingId(null);
         await load(true);
     }
 
     async function handleToggle(g: BoardGroup) {
-        setError(null);
         const res = await toggleBoardGroupActive(g.id, !g.isActive, operatorUserId);
-        if (!res.success) { setError(res.error ?? '操作失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '操作失敗' }); return; }
         await load(true);
     }
 
     async function handleDelete(g: BoardGroup) {
         if (!confirm(`確定刪除組別「${g.name}」？此動作不可復原。`)) return;
-        setError(null);
         const res = await deleteBoardGroup(g.id, operatorUserId);
-        if (!res.success) { setError(res.error ?? '刪除失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '刪除失敗' }); return; }
         await load(true);
     }
 
@@ -129,19 +126,13 @@ export function BoardGroupManager({ operatorUserId }: Props) {
                 </h2>
                 <button
                     type="button"
-                    onClick={() => { setShowAdd(s => !s); setError(null); }}
+                    onClick={() => { setShowAdd(s => !s); }}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition cursor-pointer"
                 >
                     <Plus className="w-4 h-4" />
                     {showAdd ? '取消新增' : '新增組別'}
                 </button>
             </div>
-
-            {error && (
-                <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-                    {error}
-                </div>
-            )}
 
             {showAdd && (
                 <div className="border border-slate-200 rounded-lg p-4 bg-slate-50 space-y-3">

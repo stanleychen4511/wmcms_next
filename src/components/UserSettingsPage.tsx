@@ -1,7 +1,8 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, MessageSquare, Copy, Check, Unlink, AlertTriangle, ExternalLink, Bell, Save } from 'lucide-react';
+import { ArrowLeft, MessageSquare, Copy, Check, Unlink, ExternalLink, Bell, Save } from 'lucide-react';
 import { AppHeader } from './AppHeader';
+import { useToast } from './FloatingToast';
 import {
     fetchLineLinkStatus,
     generateLineLinkCode,
@@ -27,9 +28,9 @@ interface LinkStatus {
 }
 
 export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) {
+    const { push: pushToast } = useToast();
     const [status, setStatus] = useState<LinkStatus | null>(null);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
     const [busy, setBusy] = useState(false);
     const [copied, setCopied] = useState(false);
     const [botAtId, setBotAtId] = useState<string>('');
@@ -39,8 +40,6 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
     const [channels, setChannels] = useState<Set<string>>(new Set(['email']));
     const [initialChannels, setInitialChannels] = useState<Set<string>>(new Set(['email']));
     const [channelsBusy, setChannelsBusy] = useState(false);
-    const [channelsError, setChannelsError] = useState<string | null>(null);
-    const [channelsSaved, setChannelsSaved] = useState(false);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -49,7 +48,7 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
             fetchSetting('line_official_account_id', ''),
             fetchUserNotificationChannels(userId),
         ]);
-        if (res.success && res.data) setStatus(res.data); else setError(res.error ?? '載入失敗');
+        if (res.success && res.data) setStatus(res.data); else pushToast({ type: 'error', msg: res.error ?? '載入失敗' });
         setBotAtId(atId ?? '');
         if (prefs.success && prefs.data) {
             const set = new Set(prefs.data.channels);
@@ -70,20 +69,18 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
 
     async function handleGenerate() {
         setBusy(true);
-        setError(null);
         const res = await generateLineLinkCode(userId);
         setBusy(false);
-        if (!res.success) { setError(res.error ?? '產生失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '產生失敗' }); return; }
         await load();
     }
 
     async function handleUnlink() {
         if (!confirm('確定解除 LINE 綁定？解除後系統將無法透過 LINE 通知您。')) return;
         setBusy(true);
-        setError(null);
         const res = await unlinkLine(userId);
         setBusy(false);
-        if (!res.success) { setError(res.error ?? '解除失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '解除失敗' }); return; }
         await load();
     }
 
@@ -127,13 +124,6 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
                         <MessageSquare className="w-5 h-5 text-green-600" />
                         LINE 帳號綁定
                     </h2>
-
-                    {error && (
-                        <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
-                            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                            <span>{error}</span>
-                        </div>
-                    )}
 
                     {loading || !status ? (
                         <p className="text-sm text-slate-400">載入中…</p>
@@ -245,15 +235,8 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
                         通知接收方式
                     </h2>
                     <p className="text-xs text-slate-500">
-                        系統事件（例如案件進入董事審選、派組完成等）發生時會透過以下方式通知您。至少需選擇一個。
+                        系統事件（例如案件進入董事審核、派組完成等）發生時會透過以下方式通知您。至少需選擇一個。
                     </p>
-
-                    {channelsError && (
-                        <div className="text-sm text-red-700 bg-red-50 border border-red-200 rounded-lg px-3 py-2 flex items-start gap-2">
-                            <AlertTriangle className="w-4 h-4 shrink-0 mt-0.5" />
-                            <span>{channelsError}</span>
-                        </div>
-                    )}
 
                     <div className="space-y-2">
                         <label className="flex items-center gap-2 cursor-pointer p-2 rounded-lg hover:bg-slate-50">
@@ -264,8 +247,6 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
                                     const next = new Set(channels);
                                     if (e.target.checked) next.add('email'); else next.delete('email');
                                     setChannels(next);
-                                    setChannelsError(null);
-                                    setChannelsSaved(false);
                                 }}
                                 className="w-4 h-4 accent-amber-600"
                             />
@@ -283,8 +264,6 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
                                     const next = new Set(channels);
                                     if (e.target.checked) next.add('line'); else next.delete('line');
                                     setChannels(next);
-                                    setChannelsError(null);
-                                    setChannelsSaved(false);
                                 }}
                                 className="w-4 h-4 accent-amber-600"
                             />
@@ -304,25 +283,21 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
                             }
                             onClick={async () => {
                                 if (channels.size < 1) {
-                                    setChannelsError('請至少選擇一個通知方式');
+                                    pushToast({ type: 'error', msg: '請至少選擇一個通知方式' });
                                     return;
                                 }
                                 setChannelsBusy(true);
-                                setChannelsError(null);
-                                setChannelsSaved(false);
                                 const res = await updateUserNotificationChannels(userId, Array.from(channels));
                                 setChannelsBusy(false);
-                                if (!res.success) { setChannelsError(res.error ?? '儲存失敗'); return; }
+                                if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '儲存失敗' }); return; }
                                 setInitialChannels(new Set(channels));
-                                setChannelsSaved(true);
-                                setTimeout(() => setChannelsSaved(false), 2500);
+                                pushToast({ type: 'success', msg: '已儲存' });
                             }}
                             className="inline-flex items-center gap-1 px-4 py-2 bg-amber-600 text-white text-sm font-medium rounded-lg hover:bg-amber-700 transition disabled:opacity-40 cursor-pointer"
                         >
                             <Save className="w-4 h-4" />
                             {channelsBusy ? '儲存中…' : '儲存'}
                         </button>
-                        {channelsSaved && <span className="text-sm text-emerald-600">✓ 已儲存</span>}
                     </div>
                 </section>
             </main>

@@ -6,6 +6,12 @@ const ALLOWED_EXTS: Record<string, string> = {
     '.pdf':  'application/pdf',
     '.doc':  'application/msword',
     '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    // 圖片 — 行政初審 / 撥款流程的紙本掃描常用
+    '.jpg':  'image/jpeg',
+    '.jpeg': 'image/jpeg',
+    '.png':  'image/png',
+    '.gif':  'image/gif',
+    '.webp': 'image/webp',
 };
 
 export async function GET(req: NextRequest) {

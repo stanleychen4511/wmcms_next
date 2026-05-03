@@ -32,21 +32,23 @@ const DEFAULT_EMAIL    = 'stanley.chen4511@gmail.com';
 
 // 帳號清單。新增請追加一筆；註解掉某行可暫時跳過該帳號。
 // roles 必須對應 init_db.sql 中 roles 表的 code：
-//   case_officer / supervisor / social_worker / accountant / board_member / volunteer / admin / applicant
+//   case_officer / supervisor / social_worker / accountant / board_member /
+//   chairman / executive / volunteer / admin / applicant
 const USERS = [
-    { account: 'supervisor_01', name: '主管一', roles: ['supervisor']    },
-    { account: 'officer_01',    name: '承辦一', roles: ['case_officer']  },
-    { account: 'officer_02',    name: '承辦二', roles: ['case_officer']  },
-    { account: 'officer_03',    name: '承辦三', roles: ['case_officer']  },
-    { account: 'officer_04',    name: '承辦四', roles: ['case_officer']  },
-    { account: 'social_01',     name: '社工一', roles: ['social_worker'] },
-    { account: 'social_02',     name: '社工二', roles: ['social_worker'] },
-    { account: 'board_01',      name: '董事一', roles: ['board_member']  },
-    { account: 'board_02',      name: '董事二', roles: ['board_member']  },
-    { account: 'board_03',      name: '董事三', roles: ['board_member']  },
-    { account: 'board_04',      name: '董事四', roles: ['board_member']  },
-    { account: 'accountant_01', name: '會計一', roles: ['accountant']    },
-	{ account: 'chairman_01', name: '董事長', roles: ['chairman']    },
+    { account: 'supervisor_01', name: '主管一',   roles: ['supervisor']    },
+    { account: 'officer_01',    name: '承辦一',   roles: ['case_officer']  },
+    { account: 'officer_02',    name: '承辦二',   roles: ['case_officer']  },
+    { account: 'officer_03',    name: '承辦三',   roles: ['case_officer']  },
+    { account: 'officer_04',    name: '承辦四',   roles: ['case_officer']  },
+    { account: 'volunteer_01',  name: '志工一',   roles: ['volunteer']     },
+    { account: 'volunteer_02',  name: '志工二',   roles: ['volunteer']     },
+    { account: 'board_01',      name: '董事一',   roles: ['board_member']  },
+    { account: 'board_02',      name: '董事二',   roles: ['board_member']  },
+    { account: 'board_03',      name: '董事三',   roles: ['board_member']  },
+    { account: 'board_04',      name: '董事四',   roles: ['board_member']  },
+    { account: 'accountant_01', name: '會計一',   roles: ['accountant']    },
+    { account: 'chairman_01',   name: '董事長',   roles: ['chairman']      },
+    { account: 'executive_01',  name: '執行長',   roles: ['executive']     },
 ];
 // ─────────────────────────────────────────────────────────────────────────────
 

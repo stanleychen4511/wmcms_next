@@ -8,6 +8,7 @@ import {
     fetchBoardReviewSignatures,
     submitBoardSignature,
 } from '../app/actions/boardSignatureActions';
+import { ModalEscapeListener } from '../hooks/useModalDismiss';
 
 interface Props {
     applicationId: string;
@@ -165,8 +166,11 @@ export function BoardSignaturePanel({ applicationId, currentUserId, refreshKey, 
 
             {/* Signature Modal */}
             {showModal && (
-                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4">
-                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 space-y-4">
+                <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                    onClick={() => setShowModal(false)}
+                >
+                    <ModalEscapeListener onClose={() => setShowModal(false)} />
+                    <div className="bg-white rounded-xl shadow-2xl w-full max-w-md p-5 space-y-4" onClick={e => e.stopPropagation()}>
                         <div className="flex items-start gap-2">
                             <FileSignature className="w-5 h-5 text-purple-600 shrink-0 mt-0.5" />
                             <div>

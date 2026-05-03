@@ -1,7 +1,8 @@
-import { useState, useEffect } from 'react';
+import { useState } from 'react';
 import { Mail, MessageSquare, Smartphone, Send, FileText, X, Bell } from 'lucide-react';
 import { clsx } from 'clsx';
 import { twMerge } from 'tailwind-merge';
+import { useModalDismiss } from '../hooks/useModalDismiss';
 
 interface NotificationModalProps {
     applicantName: string;
@@ -53,15 +54,9 @@ interface ModalProps extends NotificationModalProps {
 }
 
 function NotificationModal({ applicantName, stageName, onSend, onClose }: ModalProps) {
+    useModalDismiss(onClose);
     const [selected, setSelected] = useState<string[]>(['mail']);
     const [message, setMessage] = useState('');
-
-    // Close on Escape
-    useEffect(() => {
-        const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
-        window.addEventListener('keydown', handler);
-        return () => window.removeEventListener('keydown', handler);
-    }, [onClose]);
 
     const toggleChannel = (channel: string) => {
         setSelected(prev =>

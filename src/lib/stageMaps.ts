@@ -9,7 +9,7 @@
 // application_workflow.stage VARCHAR(20) — DB 儲存的英文 key:
 //   'admin_review'  = 行政初審
 //   'home_visit'    = 家庭訪視
-//   'board_review'  = 董事審選
+//   'board_review'  = 董事審核
 //   'reimbursement' = 核銷撥款
 //
 // Front-end WorkflowStage keys (App.tsx STAGES array):
@@ -47,7 +47,7 @@ export const FRONTEND_TO_DB_STAGE: Record<string, string> = {
 export const ADVANCE_STAGE_TO_STATUS: Record<string, string> = {
     'admin_review': '1', // 行政初審 → 審核中
     'visit':        '1', // 家庭訪視 → 審核中
-    'board_review': '1', // 董事審選 → 仍為審核中
+    'board_review': '1', // 董事審核 → 仍為審核中
     'reimbursement':'3', // 進入核銷撥款 → 待核銷（由 closeCase 才設為 '4'）
 };
 
@@ -66,7 +66,7 @@ export const STATUS_LABEL: Record<string, string> = {
 export const STAGE_LABEL: Record<string, string> = {
     'admin_review': '行政初審',
     'visit':        '家庭訪視',
-    'board_review': '董事審選',
+    'board_review': '董事審核',
     'reimbursement':'核銷撥款',
 };
 

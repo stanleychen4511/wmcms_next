@@ -1,7 +1,8 @@
 "use client";
 import { useState, useEffect, useCallback } from 'react';
-import { Home, Save, Loader2, CheckCircle2, ChevronDown } from 'lucide-react';
+import { Home, Save, Loader2, ChevronDown, Plus, Trash2 } from 'lucide-react';
 import { fetchHomeVisit, saveHomeVisit, HomeVisitData } from '../app/actions/homeVisitActions';
+import { useToast } from './FloatingToast';
 
 interface HomeVisitFormProps {
     applicationId: string;
@@ -120,11 +121,10 @@ const RECOMMENDATION_OPTS = [
 // ── Main Component ─────────────────────────────────────────────────────────────
 
 export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }: HomeVisitFormProps) {
+    const { push: pushToast } = useToast();
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
-    const [saved, setSaved] = useState(false);
     const [form, setForm] = useState<HomeVisitData>({});
-    const [error, setError] = useState('');
 
     const loadData = useCallback(async () => {
         setLoading(true);
@@ -141,23 +141,74 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }
     const set = (field: keyof HomeVisitData) => (value: string) =>
         setForm(prev => ({ ...prev, [field]: value }));
 
+    /** 全欄位必填驗證；缺項回傳第一個缺漏的中文欄位名稱，否則 null */
+    const validateRequired = (data: HomeVisitData): string | null => {
+        const isEmpty = (v: any) => v == null || (typeof v === 'string' && v.trim() === '');
+        if (isEmpty(data.visit_date))                return '家訪日期';
+        if (isEmpty(data.visitor_title))             return '訪視者職稱';
+        if (isEmpty(data.visitor_name))              return '訪視者姓名';
+        // 至少一張照片
+        const photos = (data.visit_photo_urls ?? []).filter(u => u && u.trim() !== '');
+        if (photos.length === 0)                     return '家訪照片（至少一張連結）';
+        if (isEmpty(data.self_reported_condition))   return '自述病情';
+        if (isEmpty(data.disease_reaction_status))   return '對疾病的反應';
+        if (data.disease_reaction_status === '6' && isEmpty(data.disease_reaction_other)) return '對疾病的反應-其他說明';
+        if (isEmpty(data.treatment_attitude_status)) return '對疾病治療的態度';
+        if (data.treatment_attitude_status === '4' && isEmpty(data.treatment_attitude_other)) return '對疾病治療的態度-其他說明';
+        if (isEmpty(data.other_status_notes))        return '其他身、心、想法等';
+        if (isEmpty(data.primary_caregiver))         return '主要照顧者';
+        if (data.primary_caregiver === '6' && isEmpty(data.primary_caregiver_other)) return '主要照顧者-其他說明';
+        if (isEmpty(data.family_interaction_status)) return '家庭互動';
+        if (data.family_interaction_status === '5' && isEmpty(data.family_interaction_other)) return '家庭互動-其他說明';
+        if (isEmpty(data.impacted_party_thoughts))   return '對個案與其病情的想法';
+        if (isEmpty(data.treatment_support_status))  return '對個案疾病治療的支持';
+        if (data.treatment_support_status === '4' && isEmpty(data.treatment_support_other)) return '對個案疾病治療的支持-其他說明';
+        if (isEmpty(data.subsidy_need_reason))       return '個案需求評估';
+        if (isEmpty(data.visitor_recommendations))   return '訪視者建議事項';
+        if (data.visitor_recommendations === '3' && isEmpty(data.visitor_recommendations_other)) return '訪視者建議事項-其他說明';
+        return null;
+    };
+
     const handleSave = async () => {
+        const missing = validateRequired(form);
+        if (missing) {
+            pushToast({ type: 'error', msg: `請填寫：${missing}` });
+            return;
+        }
         setSaving(true);
-        setError('');
         try {
-            const res = await saveHomeVisit(applicationId, visitorUserId ?? null, form);
+            // 過濾掉空 URL 後再存
+            const cleaned: HomeVisitData = {
+                ...form,
+                visit_photo_urls: (form.visit_photo_urls ?? []).map(u => u.trim()).filter(u => u !== ''),
+            };
+            const res = await saveHomeVisit(applicationId, visitorUserId ?? null, cleaned);
             if (res.success) {
-                setSaved(true);
-                setTimeout(() => setSaved(false), 3000);
+                setForm(cleaned);
+                pushToast({ type: 'success', msg: '已成功儲存至資料庫' });
             } else {
-                setError(res.error ?? '儲存失敗');
+                pushToast({ type: 'error', msg: res.error ?? '儲存失敗' });
             }
         } catch {
-            setError('系統錯誤，請重試');
+            pushToast({ type: 'error', msg: '系統錯誤，請重試' });
         } finally {
             setSaving(false);
         }
     };
+
+    /** 媒體 URL 列表：新增/移除/修改 */
+    const addPhoto = () =>
+        setForm(prev => ({ ...prev, visit_photo_urls: [...(prev.visit_photo_urls ?? []), ''] }));
+    const removePhoto = (idx: number) =>
+        setForm(prev => ({
+            ...prev,
+            visit_photo_urls: (prev.visit_photo_urls ?? []).filter((_, i) => i !== idx),
+        }));
+    const setPhoto = (idx: number, value: string) =>
+        setForm(prev => ({
+            ...prev,
+            visit_photo_urls: (prev.visit_photo_urls ?? []).map((u, i) => (i === idx ? value : u)),
+        }));
 
     if (loading) {
         return (
@@ -182,16 +233,93 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }
             </div>
 
             <div className="p-6 space-y-6">
-                {/* Visit date */}
-                <div className="space-y-1.5">
-                    <label className="block text-sm font-semibold text-slate-700">家訪日期</label>
-                    <input
-                        type="date"
-                        value={form.visit_date ?? ''}
-                        onChange={e => set('visit_date')(e.target.value)}
-                        disabled={readOnly}
-                        className="bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white disabled:opacity-60"
-                    />
+                {/* Visitor info: 日期 / 職稱 / 姓名（皆必填） */}
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                    <div className="space-y-1.5">
+                        <label className="block text-sm font-semibold text-slate-700">
+                            家訪日期 <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                            type="date"
+                            value={form.visit_date ?? ''}
+                            onChange={e => set('visit_date')(e.target.value)}
+                            disabled={readOnly}
+                            required
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white disabled:opacity-60"
+                        />
+                    </div>
+                    <div className="space-y-1.5">
+                        <label className="block text-sm font-semibold text-slate-700">
+                            訪視者職稱 <span className="text-red-500">*</span>
+                        </label>
+                        <select
+                            value={form.visitor_title ?? ''}
+                            onChange={e => set('visitor_title')(e.target.value)}
+                            disabled={readOnly}
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white disabled:opacity-60"
+                        >
+                            <option value="">請選擇</option>
+                            <option value="志工">志工</option>
+                            <option value="個管師">個管師</option>
+                        </select>
+                    </div>
+                    <div className="space-y-1.5">
+                        <label className="block text-sm font-semibold text-slate-700">
+                            訪視者姓名 <span className="text-red-500">*</span>
+                        </label>
+                        <input
+                            type="text"
+                            value={form.visitor_name ?? ''}
+                            onChange={e => set('visitor_name')(e.target.value)}
+                            disabled={readOnly}
+                            placeholder="如：王小明"
+                            className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white disabled:opacity-60"
+                        />
+                    </div>
+                </div>
+
+                {/* 家訪照片連結（至少一張，必填） */}
+                <div className="space-y-2">
+                    <label className="block text-sm font-semibold text-slate-700">
+                        家訪照片連結 <span className="text-red-500">*（至少一張）</span>
+                    </label>
+                    <p className="text-xs text-slate-400">將照片上傳至 Google Photos / Drive 等雲端後，把分享連結貼進來。</p>
+                    {(form.visit_photo_urls && form.visit_photo_urls.length > 0
+                        ? form.visit_photo_urls
+                        : ['']
+                    ).map((url, idx) => (
+                        <div key={idx} className="flex items-center gap-2">
+                            <input
+                                type="url"
+                                value={url}
+                                onChange={e => setPhoto(idx, e.target.value)}
+                                disabled={readOnly}
+                                placeholder="https://photos.google.com/... 或其他雲端連結"
+                                className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white disabled:opacity-60"
+                            />
+                            {!readOnly && (
+                                <button
+                                    type="button"
+                                    onClick={() => removePhoto(idx)}
+                                    disabled={(form.visit_photo_urls?.length ?? 0) <= 1 && !url}
+                                    className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition disabled:opacity-30"
+                                    title="移除此連結"
+                                >
+                                    <Trash2 className="w-4 h-4" />
+                                </button>
+                            )}
+                        </div>
+                    ))}
+                    {!readOnly && (
+                        <button
+                            type="button"
+                            onClick={addPhoto}
+                            className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 transition"
+                        >
+                            <Plus className="w-3.5 h-3.5" />
+                            新增照片連結
+                        </button>
+                    )}
                 </div>
 
                 {/* 目前狀態 */}
@@ -307,14 +435,7 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }
 
                 {/* Save row */}
                 {!readOnly && (
-                    <div className="flex items-center justify-between border-t border-slate-100 pt-4">
-                        {error && <p className="text-sm text-red-500">{error}</p>}
-                        {!error && saved && (
-                            <p className="text-sm text-green-600 flex items-center gap-1">
-                                <CheckCircle2 className="w-4 h-4" /> 已成功儲存至資料庫
-                            </p>
-                        )}
-                        {!error && !saved && <span />}
+                    <div className="flex items-center justify-end border-t border-slate-100 pt-4">
                         <button
                             onClick={handleSave}
                             disabled={saving}

@@ -9,15 +9,16 @@ import {
     updateReferralUnit,
     toggleReferralUnitActive,
 } from '../app/actions/referralUnitActions';
+import { useToast } from './FloatingToast';
 
 interface ReferralUnitManagerProps {
     operatorUserId: string;
 }
 
 export function ReferralUnitManager({ operatorUserId }: ReferralUnitManagerProps) {
+    const { push: pushToast } = useToast();
     const [units, setUnits] = useState<ReferralUnit[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState<string | null>(null);
     const [saving, setSaving] = useState(false);
 
     // New-unit form
@@ -36,20 +37,19 @@ export function ReferralUnitManager({ operatorUserId }: ReferralUnitManagerProps
         if (!silent) setLoading(true);
         const res = await fetchAllReferralUnits();
         if (res.success && res.data) setUnits(res.data);
-        else setError(res.error ?? '載入失敗');
+        else pushToast({ type: 'error', msg: res.error ?? '載入失敗' });
         if (!silent) setLoading(false);
-    }, []);
+    }, [pushToast]);
 
     useEffect(() => { void load(); }, [load]);
 
     async function handleAdd() {
         const name = newName.trim();
-        if (!name) { setError('單位名稱為必填'); return; }
+        if (!name) { pushToast({ type: 'error', msg: '單位名稱為必填' }); return; }
         setSaving(true);
-        setError(null);
         const res = await createReferralUnit(name, newContact.trim() || null, newSort, operatorUserId);
         setSaving(false);
-        if (!res.success) { setError(res.error ?? '新增失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '新增失敗' }); return; }
         setNewName(''); setNewContact(''); setNewSort(0); setShowAdd(false);
         await load(true);
     }
@@ -59,30 +59,26 @@ export function ReferralUnitManager({ operatorUserId }: ReferralUnitManagerProps
         setEditName(u.name);
         setEditContact(u.contactInfo ?? '');
         setEditSort(u.sortOrder);
-        setError(null);
     }
 
     function cancelEdit() {
         setEditingId(null);
-        setError(null);
     }
 
     async function saveEdit(id: string) {
         const name = editName.trim();
-        if (!name) { setError('單位名稱為必填'); return; }
+        if (!name) { pushToast({ type: 'error', msg: '單位名稱為必填' }); return; }
         setSaving(true);
-        setError(null);
         const res = await updateReferralUnit(id, name, editContact.trim() || null, editSort, operatorUserId);
         setSaving(false);
-        if (!res.success) { setError(res.error ?? '更新失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '更新失敗' }); return; }
         setEditingId(null);
         await load(true);
     }
 
     async function handleToggle(u: ReferralUnit) {
-        setError(null);
         const res = await toggleReferralUnitActive(u.id, !u.isActive, operatorUserId);
-        if (!res.success) { setError(res.error ?? '操作失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '操作失敗' }); return; }
         await load(true);
     }
 
@@ -95,19 +91,13 @@ export function ReferralUnitManager({ operatorUserId }: ReferralUnitManagerProps
                 </h2>
                 <button
                     type="button"
-                    onClick={() => { setShowAdd(s => !s); setError(null); }}
+                    onClick={() => { setShowAdd(s => !s); }}
                     className="flex items-center gap-1.5 px-3 py-1.5 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition cursor-pointer"
                 >
                     <Plus className="w-4 h-4" />
                     {showAdd ? '取消新增' : '新增單位'}
                 </button>
             </div>
-
-            {error && (
-                <div className="text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-3 py-2">
-                    {error}
-                </div>
-            )}
 
             {showAdd && (
                 <div className="border border-slate-200 rounded-lg p-4 bg-slate-50 space-y-3">

@@ -2,6 +2,7 @@ import { useState, useEffect, useRef } from 'react';
 import { Plus, Pencil, Trash2, Eye, EyeOff, Check, X, Image as ImageIcon, Link, AlertTriangle } from 'lucide-react';
 import { fetchAllBanners, upsertBanner, deleteBanner, toggleBannerActive, Banner } from '../app/actions/bannerActions';
 import { clsx } from 'clsx';
+import { useToast } from './FloatingToast';
 
 interface BannerManagerProps {
     userId?: string;
@@ -28,9 +29,9 @@ const EMPTY_FORM: FormState = {
 };
 
 export function BannerManager({ userId }: BannerManagerProps) {
+    const { push: pushToast } = useToast();
     const [banners, setBanners] = useState<Banner[]>([]);
     const [loading, setLoading] = useState(true);
-    const [error, setError] = useState('');
 
     // Editing state: null = no form open, 0 = new, >0 = editing existing id
     const [editingId, setEditingId] = useState<number | null>(null);
@@ -45,7 +46,7 @@ export function BannerManager({ userId }: BannerManagerProps) {
             const data = await fetchAllBanners();
             setBanners(data);
         } catch (e: any) {
-            setError(e.message);
+            pushToast({ type: 'error', msg: e.message });
         } finally {
             setLoading(false);
         }
@@ -140,13 +141,13 @@ export function BannerManager({ userId }: BannerManagerProps) {
     const handleDelete = async (id: number) => {
         if (!window.confirm('確定要刪除此 Banner？')) return;
         const res = await deleteBanner(id, userId);
-        if (!res.success) { setError(res.error ?? '刪除失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '刪除失敗' }); return; }
         await load();
     };
 
     const handleToggle = async (b: Banner) => {
         const res = await toggleBannerActive(b.id, !b.is_active, userId);
-        if (!res.success) { setError(res.error ?? '操作失敗'); return; }
+        if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '操作失敗' }); return; }
         await load();
     };
 
@@ -166,14 +167,6 @@ export function BannerManager({ userId }: BannerManagerProps) {
                     新增 Banner
                 </button>
             </div>
-
-            {error && (
-                <div className="flex items-center gap-2 text-sm text-red-600 bg-red-50 border border-red-200 rounded-lg px-4 py-3">
-                    <AlertTriangle className="w-4 h-4 shrink-0" />
-                    {error}
-                    <button onClick={() => setError('')} className="ml-auto"><X className="w-4 h-4" /></button>
-                </div>
-            )}
 
             {/* Add / Edit Form */}
             {editingId !== null && (

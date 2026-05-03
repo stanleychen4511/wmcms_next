@@ -39,6 +39,16 @@ export interface PaymentReceiptPrintData {
     category: 'A' | 'B' | 'C' | 'D' | null;
     applicationType: string | null;
     approvedAmount: number | null;
+    /** 對外露出的撥款隱碼（取代內部 receipt_number；單筆撥款時由 caller 帶入） */
+    externalCode?: string;
+    /** 撥款層級欄位（單筆撥款時由 caller 帶入；case-level fetch 時為 undefined） */
+    paymentMethod?: string | null;       // '匯款' | '代付醫院' | '現金' | '其他'
+    bankName?: string | null;
+    bankBranch?: string | null;
+    bankAccount?: string | null;
+    payeeName?: string | null;
+    payeeRelation?: string | null;       // '本人' | '配偶' | '子女' | '父母' | '其他'
+    payeeRelationOther?: string | null;  // 當 payeeRelation='其他' 時的補充
     org: {
         full_name: string;
         license_no: string;
@@ -265,14 +275,14 @@ export async function fetchReviewOpinionPrintData(
 
     const client = await pool.connect();
     try {
-        // 一次 JOIN 抓回案件 + 申請人姓名 + 家訪 subsidy_need_reason
-        // home_visit 可能有多筆（不同 visit_date），取最新一筆的 subsidy_need_reason
+        // 一次 JOIN 抓回案件 + 申請人姓名 + 個管師案件說明（fallback 到家訪 subsidy_need_reason）
         const caseRes = await client.query(
             `SELECT
                 a.case_number,
                 a.application_type,
                 a.approved_amount,
                 a.board_review_comments,
+                a.officer_case_summary,
                 u.name_enc AS app_name_enc,
                 u.name_iv  AS app_name_iv,
                 (SELECT subsidy_need_reason
@@ -336,7 +346,9 @@ export async function fetchReviewOpinionPrintData(
                 applicantName: decryptName(row.app_name_enc, row.app_name_iv),
                 category,
                 applicationType: type,
-                caseDescription: row.subsidy_need_reason ?? null,
+                // #17 案件說明優先取 applications.officer_case_summary（個管師填寫）；
+                // 舊資料 fallback 到 home_visit.subsidy_need_reason
+                caseDescription: row.officer_case_summary ?? row.subsidy_need_reason ?? null,
                 boardComments: row.board_review_comments ?? null,
                 approvedAmount: row.approved_amount != null ? Number(row.approved_amount) : null,
                 isApproved: row.wf_is_approved,

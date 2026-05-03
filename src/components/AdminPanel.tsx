@@ -18,9 +18,11 @@ import {
 } from 'lucide-react';
 import { Role } from '../types';
 import { AuditLogViewer } from './AuditLogViewer';
+import { ModalEscapeListener } from '../hooks/useModalDismiss';
 import { StorageLocationManager } from './StorageLocationManager';
 import { TemplateFileManager } from './TemplateFileManager';
 import { SettingsPanel } from './SettingsPanel';
+import { EligibilityRulesPanel } from './EligibilityRulesPanel';
 import { DocumentTypeManager } from './DocumentTypeManager';
 import { BannerManager } from './BannerManager';
 import { AnnouncementManager } from './AnnouncementManager';
@@ -30,6 +32,7 @@ import { clsx } from 'clsx';
 import { getUsers, createUser, updateUserRoles, resetUserPassword, updateUserEmail, deleteUserAccount, fetchRoles, toggleUserActive, reassignOfficer, fetchCaseOfficersWithId, AdminUserView, RoleOption } from '../app/actions/userActions';
 import { twIdError } from '../lib/validateTwId';
 import { AppHeader } from './AppHeader';
+import { useToast } from './FloatingToast';
 
 interface AdminPanelProps {
     userRoles: Role[];
@@ -40,12 +43,13 @@ interface AdminPanelProps {
 }
 
 export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: AdminPanelProps) {
+    const { push: pushToast } = useToast();
     // Default tab: admin → accounts; chairman-only → board_groups; otherwise first allowed tab
-    const initialTab: 'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'referral_units' | 'board_groups' | 'logs' | 'settings' =
+    const initialTab: 'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'referral_units' | 'board_groups' | 'logs' | 'settings' | 'eligibility' =
         userRoles.includes('admin') ? 'accounts'
         : userRoles.includes('chairman' as Role) ? 'board_groups'
         : 'logs';
-    const [activeTab, setActiveTab] = useState<'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'referral_units' | 'board_groups' | 'logs' | 'settings'>(initialTab);
+    const [activeTab, setActiveTab] = useState<'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'referral_units' | 'board_groups' | 'logs' | 'settings' | 'eligibility'>(initialTab);
     const [searchTerm, setSearchTerm] = useState('');
     const [showAddForm, setShowAddForm] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
@@ -108,12 +112,12 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
     const handleAddAccount = async (e: React.FormEvent) => {
         e.preventDefault();
         if (!newAccountName.trim() || !newPassword.trim() || !newRealName.trim() || newRoles.length === 0) {
-            alert('請填寫完整資料並至少選擇一個角色');
+            pushToast({ type: 'error', msg: '請填寫完整資料並至少選擇一個角色' });
             return;
         }
         const trimmedEmail = newEmail.trim();
         if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-            alert('Email 格式不正確');
+            pushToast({ type: 'error', msg: 'Email 格式不正確' });
             return;
         }
         setIsLoading(true);
@@ -137,7 +141,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
             setShowAddForm(false);
             fetchAccounts(true);
         } else {
-            alert('新增失敗: ' + res.error);
+            pushToast({ type: 'error', msg: '新增失敗: ' + res.error });
         }
     };
 
@@ -148,7 +152,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
         if (res.success) {
             await fetchAccounts(true);
         } else {
-            alert('更新失敗：' + res.error);
+            pushToast({ type: 'error', msg: '更新失敗：' + res.error });
         }
     };
 
@@ -165,9 +169,9 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
         if (password !== null && password.trim() !== '') {
             const res = await resetUserPassword(id, password.trim());
             if (res.success) {
-                alert('密碼重設成功');
+                pushToast({ type: 'success', msg: '密碼重設成功' });
             } else {
-                alert('重設失敗: ' + res.error);
+                pushToast({ type: 'error', msg: '重設失敗: ' + res.error });
             }
         }
     };
@@ -186,7 +190,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
         if (res.success) {
             fetchAccounts(true);
         } else {
-            alert('權限更新失敗: ' + res.error);
+            pushToast({ type: 'error', msg: '權限更新失敗: ' + res.error });
         }
     };
 
@@ -196,7 +200,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
             if (res.success) {
                 fetchAccounts(true);
             } else {
-                alert('刪除失敗: ' + res.error);
+                pushToast({ type: 'error', msg: '刪除失敗: ' + res.error });
             }
         }
     };
@@ -218,7 +222,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
         } else if (res.success) {
             await fetchAccounts(true);
         } else {
-            alert(res.error || '停用失敗');
+            pushToast({ type: 'error', msg: res.error || '停用失敗' });
         }
     };
 
@@ -254,7 +258,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
         if (res.success) {
             await fetchAccounts(true);
         } else {
-            alert(res.error || '啟用失敗');
+            pushToast({ type: 'error', msg: res.error || '啟用失敗' });
         }
     };
 
@@ -407,6 +411,20 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                             >
                                 <SlidersHorizontal className="w-5 h-5 shrink-0" />
                                 <span>參數設定</span>
+                            </button>
+                        )}
+                        {isAdmin && (
+                            <button
+                                onClick={() => setActiveTab('eligibility')}
+                                className={clsx(
+                                    "whitespace-nowrap lg:whitespace-normal flex-1 lg:flex-none flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-left font-medium",
+                                    activeTab === 'eligibility'
+                                        ? "bg-blue-600 text-white shadow-lg shadow-blue-200"
+                                        : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                                )}
+                            >
+                                <SlidersHorizontal className="w-5 h-5 shrink-0" />
+                                <span>申請規則設定</span>
                             </button>
                         )}
                     </div>
@@ -691,6 +709,18 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                                     <SettingsPanel userId={userId} />
                                 </div>
                             </div>
+                        ) : activeTab === 'eligibility' ? (
+                            <div className="flex-1 flex flex-col min-h-0">
+                                <div className="p-6 border-b border-slate-200">
+                                    <h2 className="text-xl font-bold text-slate-800 flex items-center gap-2">
+                                        <SlidersHorizontal className="w-6 h-6 text-blue-600" />
+                                        申請規則設定（115 年辦法）
+                                    </h2>
+                                </div>
+                                <div className="flex-1 p-6 overflow-y-auto">
+                                    <EligibilityRulesPanel operatorUserId={userId} />
+                                </div>
+                            </div>
                         ) : (
                             <div className="flex-1 flex flex-col min-h-0">
                                 <div className="p-6 border-b border-slate-200">
@@ -710,8 +740,11 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
 
             {/* Deactivation / Reassignment Modal */}
             {deactivateModal && (
-                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4">
-                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg">
+                <div className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+                    onClick={() => setDeactivateModal(null)}
+                >
+                    <ModalEscapeListener onClose={() => setDeactivateModal(null)} />
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-lg" onClick={e => e.stopPropagation()}>
                         <div className="p-6 border-b border-slate-200">
                             <h3 className="text-lg font-bold text-slate-800">停用帳號：{deactivateModal.userName}</h3>
                             <p className="text-sm text-slate-500 mt-1">該帳號仍有進行中案件，請先指派新承辦人後才可停用。</p>

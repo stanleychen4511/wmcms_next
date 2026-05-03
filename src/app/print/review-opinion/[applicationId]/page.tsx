@@ -1,5 +1,6 @@
 import { redirect } from 'next/navigation';
 import { fetchReviewOpinionPrintData } from '../../../actions/printDocumentActions';
+import { fetchSetting } from '../../../actions/settingsActions';
 import { CATEGORY_LABEL, type CaseCategory } from '../../../../lib/caseCategory';
 import { numToChinese } from '../../../../lib/numToChinese';
 import { formatRocDate } from '../../../../lib/rocDate';
@@ -37,6 +38,9 @@ export default async function ReviewOpinionPrintPage({ params, searchParams }: P
     }
 
     const d = res.data;
+    const minCharsRaw = await fetchSetting('board_opinion_min_chars', '50');
+    const minChars = Number(minCharsRaw);
+    const minCharsValid = Number.isFinite(minChars) && minChars > 0 ? minChars : 0;
 
     return (
         <main className="mx-auto max-w-[210mm] p-8 text-slate-900 bg-white">
@@ -95,8 +99,8 @@ export default async function ReviewOpinionPrintPage({ params, searchParams }: P
                             </th>
                             <td className="p-3 whitespace-pre-wrap min-h-[3rem]">
                                 {d.caseDescription
-                                    ? `1. ${d.caseDescription}`
-                                    : <span className="text-slate-400">（無家訪紀錄或家訪未填寫）</span>}
+                                    ? d.caseDescription
+                                    : <span className="text-slate-400">（個管師尚未填寫案件說明）</span>}
                             </td>
                         </tr>
 
@@ -135,9 +139,11 @@ export default async function ReviewOpinionPrintPage({ params, searchParams }: P
                         </tr>
                         <tr className="border-b border-slate-900">
                             <td colSpan={2} className="p-3">
-                                <p className="text-xs text-slate-500 pb-2 border-b border-slate-300">
-                                    敬請委員敘明 50 個字以上之意見，以利了解本案通過與否之考量，感謝您。
-                                </p>
+                                {minCharsValid > 0 && (
+                                    <p className="text-xs text-slate-500 pb-2 border-b border-slate-300">
+                                        敬請委員敘明 {minCharsValid} 個字以上之意見，以利了解本案通過與否之考量，感謝您。
+                                    </p>
+                                )}
                                 <div className="min-h-[10rem] whitespace-pre-wrap pt-3">
                                     {d.boardComments
                                         ? d.boardComments

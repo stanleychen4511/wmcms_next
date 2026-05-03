@@ -25,7 +25,7 @@ export function RoleSwitcher({ currentRole, availableRoles, onChange }: RoleSwit
                 {availableRoles.includes('board_member') && <option value="board_member" className="text-black">董事/審核委員 (Board Member)</option>}
                 {availableRoles.includes('accountant') && <option value="accountant" className="text-black">會計 (Accountant)</option>}
                 {availableRoles.includes('applicant') && <option value="applicant" className="text-black">申請人 (Applicant)</option>}
-                {availableRoles.includes('social_worker') && <option value="social_worker" className="text-black">志工/社工 (Social Worker)</option>}
+                {availableRoles.includes('volunteer') && <option value="volunteer" className="text-black">志工 (Volunteer)</option>}
                 {availableRoles.includes('supervisor') && <option value="supervisor" className="text-black">主管 (Supervisor)</option>}
             </select>
         </div>
