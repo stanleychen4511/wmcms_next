@@ -138,6 +138,18 @@ export async function saveMemberReviewOpinion(
 ): Promise<ActionResult<{ contentHash: string }>> {
     if (!/^\d+$/.test(applicationId)) return { success: false, error: '無效的案件 ID' };
 
+    // 字數守門：若系統設定了 board_opinion_min_chars > 0，意見字數須達標
+    // （comments 為空也擋；強制董事一定要寫意見。若客戶想允許空白則把 min 設為 0）
+    const { fetchSetting } = await import('./settingsActions');
+    const minCharsRaw = await fetchSetting('board_opinion_min_chars', '50');
+    const minChars = Number.isFinite(Number(minCharsRaw)) ? Math.max(0, Number(minCharsRaw)) : 0;
+    if (minChars > 0) {
+        const len = (data.comments ?? '').length;
+        if (len < minChars) {
+            return { success: false, error: `審核意見至少需 ${minChars} 字（目前 ${len} 字）` };
+        }
+    }
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -322,6 +334,18 @@ export async function submitBoardSignature(
         if (memberApproved === null) {
             await client.query('ROLLBACK');
             return { success: false, error: '請先儲存個人審核結果（通過/不通過）後再簽章' };
+        }
+
+        // 字數守門：與 save draft 同樣的最少字數限制（防止 client 直接呼叫 submit 繞過）
+        const { fetchSetting } = await import('./settingsActions');
+        const minCharsRaw = await fetchSetting('board_opinion_min_chars', '50');
+        const minChars = Number.isFinite(Number(minCharsRaw)) ? Math.max(0, Number(minCharsRaw)) : 0;
+        if (minChars > 0) {
+            const len = (memberComments ?? '').length;
+            if (len < minChars) {
+                await client.query('ROLLBACK');
+                return { success: false, error: `審核意見至少需 ${minChars} 字（目前 ${len} 字），請先補齊後再簽章` };
+            }
         }
 
         const contentHash = memberHashFromValues(

@@ -1,6 +1,6 @@
 # See https://help.github.com/articles/ignoring-files/ for more about ignoring files.
 
-# dependencies
+# ─── Dependencies ────────────────────────────────────────────
 /node_modules
 /.pnp
 .pnp.*
@@ -10,34 +10,65 @@
 !.yarn/releases
 !.yarn/versions
 
-# testing
-/coverage
-
-# next.js
+# ─── Build / generated ──────────────────────────────────────
 /.next/
 /out/
-
-# production
 /build
+/coverage
+*.tsbuildinfo
+next-env.d.ts
 
-# misc
+# ─── Environment files (ABSOLUTELY DO NOT COMMIT) ───────────
+# 含 DATABASE_URL（Neon 密碼）/ LINE tokens / Blob token 等敏感資料
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# ─── User-uploaded files (local dev fallback for Vercel Blob) ─
+# /public/uploads/   ← 內部上傳的申請文件（個資）
+# /public/intake/    ← 外部收件上傳的檔案（個資）
+/public/uploads/
+/public/intake/
+
+# ─── Temp scripts / one-shot diagnostics ────────────────────
+/tmp/
+# 根目錄一次性 check 腳本（非正式 source）
+/check_*.js
+/check_*.ts
+
+# ─── IDE / editor ───────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ─── OS files ───────────────────────────────────────────────
 .DS_Store
-*.pem
+Thumbs.db
+desktop.ini
 
-# debug
+# ─── Debug logs ─────────────────────────────────────────────
 npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 .pnpm-debug.log*
 
-# env files (can opt-in for committing if needed)
-#.env*
+# ─── Secrets / certs ────────────────────────────────────────
+*.pem
+*.key
+*.p12
 
-# vercel
+# ─── Vercel ─────────────────────────────────────────────────
 .vercel
 
-# typescript
-*.tsbuildinfo
-next-env.d.ts
+# ─── Spectra（SDD 工具暫存資料） ───────────────────────────
 .spectra/
 openspec/.vector-search.db*
+
+# ─── Claude Code（個人化工具設定，可選擇分享） ─────────────
+# 取消下面註解 = 不分享個人化 Claude 設定
+# 若想保留 hooks/permissions 預設給其他 contributor 用，留著別 ignore
+# .claude/
+.claude/settings.local.json
+.claude/worktrees/

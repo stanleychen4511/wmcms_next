@@ -73,6 +73,7 @@ import {
 
 import { fetchCaseOfficers, fetchCaseOfficersWithId } from './app/actions/userActions';
 import { fetchSetting } from './app/actions/settingsActions';
+import { fetchSettingFresh } from './lib/settingClient';
 import { fetchActiveBanners, Banner } from './app/actions/bannerActions';
 import { fetchHomeAnnouncements, Announcement } from './app/actions/announcementActions';
 
@@ -338,6 +339,12 @@ function App() {
             loadAppDetail(selectedAppId);
             loadNotifLogs(selectedAppId);
             loadReminderStatus(selectedAppId);
+            // 重新抓 stage-dependent 設定，避免 admin 改完設定後其他頁面 keep 舊值
+            // （app-mount 只抓一次，使用者在 SettingsPanel 改完後不會自動同步到這裡）
+            fetchSettingFresh('board_opinion_min_chars', '50').then(v => {
+                const n = Number(v);
+                setBoardOpinionMinChars(Number.isFinite(n) && n >= 0 ? n : 50);
+            });
         }
     }, [view, selectedAppId, loadAppDetail, loadNotifLogs, loadReminderStatus]);
 
@@ -1272,37 +1279,59 @@ function App() {
                         </div>
 
                         {/* 4. 審核意見（最少字數依 system_settings.board_opinion_min_chars；0 = 不限制） */}
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">
-                                審核意見
-                                {boardOpinionMinChars > 0 && (
-                                    <span className="text-gray-400 font-normal ml-1">(至少 {boardOpinionMinChars} 字)</span>
-                                )}
-                            </label>
-                            <textarea
-                                className="w-full h-32 p-3 border border-gray-300 rounded-md focus:ring-2 focus:ring-purple-500 focus:border-transparent text-sm disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed"
-                                placeholder="請輸入審核意見..."
-                                value={displayOpinion}
-                                onChange={(e) => setBoardOpinion(e.target.value)}
-                                disabled={formReadOnly}
-                            />
-                            {boardOpinionMinChars > 0 && isOwnTab && (
-                                <div className="text-right text-xs text-gray-500 mt-1">
-                                    {displayOpinion.length} / {boardOpinionMinChars} 字
+                        {(() => {
+                            const opinionTooShort = boardOpinionMinChars > 0 && displayOpinion.length < boardOpinionMinChars && isOwnTab;
+                            return (
+                                <div>
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                                        審核意見
+                                        {boardOpinionMinChars > 0 && (
+                                            <span className="text-gray-400 font-normal ml-1">(至少 {boardOpinionMinChars} 字)</span>
+                                        )}
+                                    </label>
+                                    <textarea
+                                        className={`w-full h-32 p-3 border rounded-md focus:ring-2 focus:border-transparent text-sm disabled:bg-gray-50 disabled:text-gray-400 disabled:cursor-not-allowed ${
+                                            opinionTooShort
+                                                ? 'border-red-400 focus:ring-red-300 bg-red-50/40'
+                                                : 'border-gray-300 focus:ring-purple-500'
+                                        }`}
+                                        placeholder="請輸入審核意見..."
+                                        value={displayOpinion}
+                                        onChange={(e) => setBoardOpinion(e.target.value)}
+                                        disabled={formReadOnly}
+                                    />
+                                    {boardOpinionMinChars > 0 && isOwnTab && (
+                                        <div className={`flex items-center justify-between mt-1 text-xs ${
+                                            opinionTooShort ? 'text-red-600 font-medium' : 'text-gray-500'
+                                        }`}>
+                                            {opinionTooShort ? (
+                                                <span>⚠️ 字數不足，還差 {boardOpinionMinChars - displayOpinion.length} 字才能儲存／簽章</span>
+                                            ) : (
+                                                <span className="text-emerald-600">✓ 字數已達標</span>
+                                            )}
+                                            <span>{displayOpinion.length} / {boardOpinionMinChars} 字</span>
+                                        </div>
+                                    )}
                                 </div>
-                            )}
-                        </div>
+                            );
+                        })()}
 
                         {boardApproved === null && !boardReadOnly && isOwnTab && (
                             <p className="text-xs text-amber-600">請先選擇審核結果</p>
                         )}
 
                         {/* 共筆儲存按鈕 — 僅在自己 tab 顯示 */}
-                        {isOwnTab && !boardReadOnly && (
+                        {isOwnTab && !boardReadOnly && (() => {
+                            const opinionTooShort = boardOpinionMinChars > 0 && (boardOpinion ?? '').length < boardOpinionMinChars;
+                            const saveDisabled = savingBoardDraft || !boardDirty || opinionTooShort;
+                            const saveTitle = opinionTooShort
+                                ? `審核意見尚需 ${boardOpinionMinChars - (boardOpinion ?? '').length} 字`
+                                : (boardDirty ? '儲存當前編輯，讓同組成員看見' : '沒有變動');
+                            return (
                             <div className="flex items-center gap-3 pt-2 border-t border-gray-100">
                                 <button
                                     type="button"
-                                    disabled={savingBoardDraft || !boardDirty}
+                                    disabled={saveDisabled}
                                     onClick={async () => {
                                         if (!selectedAppId || !loggedInUser) return;
                                         // 個人簽章若已存在會因 hash 改變而失效（per-member 模式只影響自己）
@@ -1331,18 +1360,22 @@ function App() {
                                         setBoardRefreshKey(k => k + 1);
                                     }}
                                     className="px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-md hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition shadow-sm"
-                                    title={boardDirty ? '儲存當前編輯，讓同組成員看見' : '沒有變動'}
+                                    title={saveTitle}
                                 >
                                     {savingBoardDraft ? '儲存中…' : '儲存'}
                                 </button>
-                                {boardDirty && (
+                                {opinionTooShort && (
+                                    <span className="text-xs text-red-600 font-medium">⚠️ 審核意見字數不足，無法儲存</span>
+                                )}
+                                {!opinionTooShort && boardDirty && (
                                     <span className="text-xs text-amber-600">⚠️ 有未儲存的編輯，無法按「進入下一階段」</span>
                                 )}
                                 {boardDraftMsg && !boardDirty && (
                                     <span className="text-xs text-slate-500">{boardDraftMsg}</span>
                                 )}
                             </div>
-                        )}
+                            );
+                        })()}
 
                         </>)}
                     </div>
@@ -1837,7 +1870,14 @@ function App() {
                                     const isBoardReview  = stage === 'board_review';
                                     const isReimbursement = stage === 'reimbursement';
                                     const isVisit         = stage === 'visit';
-                                    const boardIncomplete = isBoardReview && (boardApproved === null || (boardOpinionMinChars > 0 && boardOpinion.length < boardOpinionMinChars));
+                                    // 董事審核「未完成」閘門：
+                                    //   - 派組成員本人的視角：必須選審核結果 + 達字數（會即時 disable 自己的「儲存草稿」按鈕）
+                                    //   - 非派組成員（supervisor 推進）：字數守門已由 server 端 submitBoardSignature 強制
+                                    //     此處只看 signaturesComplete（每位都簽且 hash 有效）；textarea 字數無意義
+                                    const boardIncomplete = isBoardReview && isAssignedGroupMember && (
+                                        boardApproved === null
+                                        || (boardOpinionMinChars > 0 && boardOpinion.length < boardOpinionMinChars)
+                                    );
                                     // 派組權限門檻（board_review 階段）：派組成員 / chairman / admin / 承辦人 / 主管 都可推進
                                     const boardPermBlocked = isBoardReview && !canAdvanceFromBoardReview;
                                     // Dirty-state guard: 未儲存的編輯阻擋推進
