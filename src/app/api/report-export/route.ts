@@ -39,6 +39,15 @@ function toRoc(s: string | null | undefined): string {
     return `${year}/${m[2]}/${m[3]}`;
 }
 
+/** 西元 YYYY-MM-DD HH:MM:SS → 民國 YYY/MM/DD HH:MM:SS */
+function toRocDateTime(s: string | null | undefined): string {
+    if (!s) return '';
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(s);
+    if (!m) return toRoc(s);
+    const year = Number(m[1]) - 1911;
+    return `${year}/${m[2]}/${m[3]} ${m[4]}:${m[5]}${m[6] ? ':' + m[6] : ''}`;
+}
+
 function applyHeaderStyle(row: ExcelJS.Row) {
     row.eachCell(cell => {
         cell.font = { bold: true };
@@ -86,8 +95,12 @@ async function buildSelfPay(wb: ExcelJS.Workbook, operatorUserId: string, filter
         { header: '申請形式', width: 10 },
         { header: '治療階段', width: 10 },
         { header: '癌症期數', width: 10 },
-        { header: '行政審核', width: 36 },
-        { header: '董事審核', width: 36 },
+        { header: '行政審核', width: 12 },
+        { header: '行政通過時間', width: 22 },
+        { header: '家訪時間', width: 22 },
+        { header: '董事收到時間', width: 22 },
+        { header: '董事通過時間', width: 22 },
+        { header: '董事審核', width: 12 },
         { header: '待收到的資料', width: 24 },
         { header: '案件狀態', width: 10 },
     ];
@@ -108,6 +121,10 @@ async function buildSelfPay(wb: ExcelJS.Workbook, operatorUserId: string, filter
             r.treatmentPhase ? PHASE_LABEL[r.treatmentPhase] ?? '' : '',
             r.cancerStage ?? '',
             r.adminReviewText ?? '',
+            toRocDateTime(r.adminReviewAt),
+            toRocDateTime(r.homeVisitAt),
+            toRocDateTime(r.boardReceivedAt),
+            toRocDateTime(r.boardReviewedAt),
             r.boardReviewText ?? '',
             r.pendingDocuments.length > 0 ? r.pendingDocuments.join('\n') : '已收齊',
             STATUS_LABEL[r.status] ?? r.status,
@@ -126,8 +143,8 @@ async function buildDisbursement(wb: ExcelJS.Workbook, operatorUserId: string, f
         { header: '申請者', width: 12 },
         { header: '身分證字號', width: 14 },
         { header: '申請日期（民國）', width: 16 },
-        { header: '給付方式', width: 12 },
         { header: '通過補助額度', width: 16 },
+        { header: '給付方式', width: 12 },
         { header: '收據編號', width: 14 },
         { header: '給付日期（民國）', width: 16 },
         { header: '給付費用', width: 16 },
@@ -165,15 +182,15 @@ async function buildDisbursement(wb: ExcelJS.Workbook, operatorUserId: string, f
             r.applicantName ?? '',
             r.idNumber ?? '',
             toRoc(r.applyAt),
-            r.paymentMethod ?? '',
             r.approvedAmount != null ? r.approvedAmount : '',
+            r.paymentMethod ?? '',
             r.receiptNo ?? '',
             toRoc(r.paidAt),
             r.amount != null ? r.amount : '',
             r.notes ?? '',
         ]);
-        // 通過額度（col 7）+ 給付費用（col 10）：千分位 + 靠左
-        const fmtCols = [7, 10];
+        // 通過額度（col 6）+ 給付費用（col 10）：千分位 + 靠左
+        const fmtCols = [6, 10];
         for (const c of fmtCols) {
             const cell = row.getCell(c);
             if (typeof cell.value === 'number') {
@@ -195,8 +212,8 @@ async function buildDisbursement(wb: ExcelJS.Workbook, operatorUserId: string, f
             if (cur !== null || i === data.length) {
                 const groupEnd = startRow + i - 1;
                 if (groupEnd > groupStart) {
-                    // 合併欄 1 案件編號、2 自行轉介、3 申請者、4 身分證、5 申請日期、7 通過補助額度
-                    [1, 2, 3, 4, 5, 7].forEach(colIdx => {
+                    // 合併欄 1 案件編號、2 自行轉介、3 申請者、4 身分證、5 申請日期、6 通過補助額度
+                    [1, 2, 3, 4, 5, 6].forEach(colIdx => {
                         ws.mergeCells(groupStart, colIdx, groupEnd, colIdx);
                     });
                 }
@@ -208,6 +225,14 @@ async function buildDisbursement(wb: ExcelJS.Workbook, operatorUserId: string, f
         void lastCase;
     }
 
+    // 合計列（給付費用總和；通過額度因為跨群組合併，這裡只總給付費用避免重複計算）
+    if (data.length > 0) {
+        const totalAmount = data.reduce((s, r) => s + (r.amount ?? 0), 0);
+        const totalRow = ws.addRow(['合計', '', '', '', '', '', '', '', '', totalAmount, '']);
+        totalRow.font = { bold: true };
+        totalRow.getCell(10).numFmt = '#,##0';
+        totalRow.getCell(10).alignment = { vertical: 'middle', horizontal: 'left' };
+    }
     applyDataBorders(ws, 2, ws.rowCount);
 }
 

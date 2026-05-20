@@ -19,7 +19,8 @@
  *   />
  */
 
-import { X } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { useModalDismiss } from '../hooks/useModalDismiss';
 
 export interface InfoSection {
@@ -42,6 +43,19 @@ interface Props {
 export function InfoSheetModal({ title, sections, images, headline, onClose }: Props) {
     useModalDismiss(onClose);
     const visibleSections = sections.filter(s => s.value && String(s.value).trim() !== '');
+    // Lightbox 預覽：null = 關閉
+    const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
+    const photos = images ?? [];
+    useEffect(() => {
+        if (lightboxIdx === null) return;
+        const handler = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setLightboxIdx(null);
+            else if (e.key === 'ArrowLeft') setLightboxIdx(i => i === null ? null : (i - 1 + photos.length) % photos.length);
+            else if (e.key === 'ArrowRight') setLightboxIdx(i => i === null ? null : (i + 1) % photos.length);
+        };
+        window.addEventListener('keydown', handler);
+        return () => window.removeEventListener('keydown', handler);
+    }, [lightboxIdx, photos.length]);
 
     return (
         <div
@@ -95,13 +109,20 @@ export function InfoSheetModal({ title, sections, images, headline, onClose }: P
                             <p className="text-sm font-medium text-slate-600 mb-2">家訪照片（{images.length}）：</p>
                             <div className="grid grid-cols-2 sm:grid-cols-3 gap-2">
                                 {images.map((url, i) => (
-                                    // eslint-disable-next-line @next/next/no-img-element
-                                    <img
+                                    <button
                                         key={i}
-                                        src={url}
-                                        alt={`家訪照片 ${i + 1}`}
-                                        className="w-full h-32 object-cover rounded border border-slate-200"
-                                    />
+                                        type="button"
+                                        onClick={() => setLightboxIdx(i)}
+                                        className="block w-full cursor-zoom-in border border-slate-200 rounded overflow-hidden"
+                                        title="點擊放大檢視"
+                                    >
+                                        {/* eslint-disable-next-line @next/next/no-img-element */}
+                                        <img
+                                            src={url}
+                                            alt={`家訪照片 ${i + 1}`}
+                                            className="w-full h-32 object-cover hover:opacity-90 transition"
+                                        />
+                                    </button>
                                 ))}
                             </div>
                         </div>
@@ -119,6 +140,53 @@ export function InfoSheetModal({ title, sections, images, headline, onClose }: P
                     </button>
                 </div>
             </div>
+
+            {/* Lightbox 放大檢視 — 點黑底或 X 關閉；左右鍵或左右按鈕切換 */}
+            {lightboxIdx !== null && photos[lightboxIdx] && (
+                <div
+                    className="fixed inset-0 z-[100] bg-black/90 flex items-center justify-center p-4"
+                    onClick={(e) => { e.stopPropagation(); setLightboxIdx(null); }}
+                >
+                    <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setLightboxIdx(null); }}
+                        className="absolute top-4 right-4 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition"
+                        title="關閉（ESC）"
+                    >
+                        <X className="w-6 h-6" />
+                    </button>
+                    {photos.length > 1 && (
+                        <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setLightboxIdx(i => i === null ? null : (i - 1 + photos.length) % photos.length); }}
+                            className="absolute left-4 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition"
+                            title="上一張（←）"
+                        >
+                            <ChevronLeft className="w-6 h-6" />
+                        </button>
+                    )}
+                    {photos.length > 1 && (
+                        <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setLightboxIdx(i => i === null ? null : (i + 1) % photos.length); }}
+                            className="absolute right-4 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition"
+                            title="下一張（→）"
+                        >
+                            <ChevronRight className="w-6 h-6" />
+                        </button>
+                    )}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                        src={photos[lightboxIdx]}
+                        alt={`照片 ${lightboxIdx + 1}`}
+                        className="max-w-full max-h-full object-contain shadow-2xl"
+                        onClick={(e) => e.stopPropagation()}
+                    />
+                    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1 bg-white/10 rounded-full text-white text-sm">
+                        {lightboxIdx + 1} / {photos.length}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

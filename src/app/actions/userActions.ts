@@ -102,8 +102,12 @@ export async function createUser(data: {
         await client.query('BEGIN');
 
         // 1. Prepare secure data
+        //    salt 一律以 32-byte Buffer 存入 BYTEA（與 seed_admin / CLAUDE.md 規定一致）；
+        //    hashPassword 用 saltBuffer 當 key — login 時讀回的 Buffer 直接傳 HMAC 才能對上。
+        //    bidx 仍用 hex string 當 key（generateBlindIndex 內部會 utf-8 encode，與 .toString('hex') 等價）。
         const searchSalt = generateSalt();
-        const passHash = hashPassword(data.plainPass, searchSalt);
+        const saltBuffer = Buffer.from(searchSalt, 'hex');
+        const passHash = hashPassword(data.plainPass, saltBuffer);
 
         const { enc: nameEnc, iv: nameIv } = encryptAES(data.plainName);
         const nameBidx = generateBlindIndex(data.plainName, searchSalt);
@@ -126,7 +130,7 @@ export async function createUser(data: {
         `;
 
         const res = await client.query(insertUserQuery, [
-            data.account, passHash, searchSalt,
+            data.account, passHash, saltBuffer,
             nameEnc, nameIv, nameBidx,
             idEnc, idIv, idBidx,
             trimmedEmail || null,
@@ -223,11 +227,30 @@ export async function deleteUserAccount(userId: string): Promise<{ success: bool
 export async function updateUserRoles(userId: string, targetRoles: Role[]): Promise<{ success: boolean; error?: string }> {
     const client = await pool.connect();
     try {
+        // 防呆：若要移除 board_member 角色，但該使用者仍是某個董事派組成員 → 阻擋並提示
+        const removingBoardMember = !targetRoles.includes('board_member' as Role);
+        if (removingBoardMember) {
+            const grpRes = await client.query(
+                `SELECT bg.name AS group_name
+                 FROM board_group_members bgm
+                 JOIN board_groups bg ON bg.id = bgm.group_id
+                 WHERE bgm.user_id = $1::bigint`,
+                [userId]
+            );
+            if ((grpRes.rowCount ?? 0) > 0) {
+                const groupNames = grpRes.rows.map(r => r.group_name).join('、');
+                return {
+                    success: false,
+                    error: `此人員仍隸屬於董事組別「${groupNames}」，無法移除董事身分；請先到「董事組別管理」將其從組別中移除後再操作。`,
+                };
+            }
+        }
+
         await client.query('BEGIN');
-        
+
         // 1. Delete old roles
         await client.query(`DELETE FROM user_roles WHERE user_id = $1`, [userId]);
-        
+
         // 2. Insert new ones
         if (targetRoles.length > 0) {
             const roleRes = await client.query(`SELECT id FROM roles WHERE code = ANY($1)`, [targetRoles]);
@@ -235,7 +258,7 @@ export async function updateUserRoles(userId: string, targetRoles: Role[]): Prom
                 await client.query(`INSERT INTO user_roles (user_id, role_id) VALUES ($1, $2)`, [userId, row.id]);
             }
         }
-        
+
         await client.query('COMMIT');
         void writeAuditLog({
             userId: null,

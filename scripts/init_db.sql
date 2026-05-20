@@ -308,9 +308,9 @@ ALTER TABLE applications
     ADD COLUMN IF NOT EXISTS econ_deposit         NUMERIC(12, 2),
     ADD COLUMN IF NOT EXISTS econ_monthly_income  NUMERIC(12, 2);
 COMMENT ON COLUMN applications.econ_deposit
-    IS '【經濟弱勢專屬】存款（夫妻取平均，萬元）— 115 年辦法第四條第三項第 1 款';
+    IS '【經濟弱勢專屬】存款（配偶取平均，萬元）— 115 年辦法第四條第三項第 1 款';
 COMMENT ON COLUMN applications.econ_monthly_income
-    IS '【經濟弱勢專屬】每月收入（夫妻取平均，萬元）— 115 年辦法第四條第三項第 1 款';
+    IS '【經濟弱勢專屬】每月收入（配偶取平均，萬元）— 115 年辦法第四條第三項第 1 款';
 
 -- 6b5. 補助金額上限表 + 小康家庭資格矩陣（#2 + #3, added 2026-04）
 CREATE TABLE IF NOT EXISTS subsidy_amount_limits (
@@ -339,7 +339,7 @@ CREATE TABLE IF NOT EXISTS mid_class_eligibility_matrix (
     PRIMARY KEY (marital_status, children_status)
 );
 COMMENT ON TABLE  mid_class_eligibility_matrix IS '小康家庭資格矩陣（115 年辦法第四條第三項第 2 款）— 單位：萬元';
-COMMENT ON COLUMN mid_class_eligibility_matrix.marital_status IS '婚姻狀態：1=已婚（收入夫妻合計）、2=單親（個人收入）、3=單身（個人收入）';
+COMMENT ON COLUMN mid_class_eligibility_matrix.marital_status IS '婚姻狀態：1=已婚（收入配偶合計）、2=單親（個人收入）、3=單身（個人收入）';
 COMMENT ON COLUMN mid_class_eligibility_matrix.children_status IS '子女狀態：1=未成年子女、2=已成年子女、3=無子女';
 COMMENT ON COLUMN mid_class_eligibility_matrix.income_min IS '年收入下限（萬）';
 COMMENT ON COLUMN mid_class_eligibility_matrix.income_max IS '年收入上限（萬）';
@@ -370,8 +370,8 @@ INSERT INTO system_settings (key, value, description) VALUES
     ('elig_age_min',                  '25',   '【115 辦法】申請人年齡下限（歲）'),
     ('elig_age_max',                  '65',   '【115 辦法】申請人年齡上限（歲）'),
     ('elig_real_estate_max',          '2500', '【115 辦法】不動產上限：戶籍內直系合計（萬元）'),
-    ('elig_econ_deposit_max',         '16',   '【115 辦法-經濟弱勢】存款上限（夫妻取平均，萬元）'),
-    ('elig_econ_monthly_income_max',  '3',    '【115 辦法-經濟弱勢】每月收入上限（夫妻取平均，萬元）')
+    ('elig_econ_deposit_max',         '16',   '【115 辦法-經濟弱勢】存款上限（配偶取平均，萬元）'),
+    ('elig_econ_monthly_income_max',  '3',    '【115 辦法-經濟弱勢】每月收入上限（配偶取平均，萬元）')
 ON CONFLICT (key) DO UPDATE SET description = EXCLUDED.description;
 
 -- 6b2. applications: 家訪指派（added 2026-04，#11）
@@ -435,6 +435,27 @@ BEGIN
     END IF;
 END$$;
 
+-- 6b12. applications: 戶籍地址 + 主管雙閘門（2026-05 user feedback round）
+--   applicant_address：領款收據需印戶籍地址
+--   supervisor_approved_for_*：主管雙審核 checkpoint
+--     - NULL  = 個管尚未送主管
+--     - true  = 主管已通過、允許進下一階段
+--     - false = 主管退件、個管要修正後重送
+ALTER TABLE applications
+    ADD COLUMN IF NOT EXISTS applicant_address                 TEXT,
+    ADD COLUMN IF NOT EXISTS supervisor_approved_for_board     BOOLEAN,
+    ADD COLUMN IF NOT EXISTS supervisor_approved_for_accounting BOOLEAN,
+    ADD COLUMN IF NOT EXISTS supervisor_review_note            TEXT;
+COMMENT ON COLUMN applications.applicant_address                  IS '申請人戶籍地址（領款收據用）';
+COMMENT ON COLUMN applications.supervisor_approved_for_board      IS '主管送董事閘門: NULL=未審, true=送董事, false=退個管';
+COMMENT ON COLUMN applications.supervisor_approved_for_accounting IS '主管送會計閘門: NULL=未審, true=送會計, false=退個管';
+COMMENT ON COLUMN applications.supervisor_review_note             IS '主管退件原因或通過備註';
+
+-- 8a. payment_disbursements: 捐贈者公開姓名意願（2026-05 user feedback round）
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS donor_disclosure_consent BOOLEAN;
+COMMENT ON COLUMN payment_disbursements.donor_disclosure_consent IS '是否同意公開捐贈者姓名（每筆撥款獨立記錄；NULL=未填；false 時需配套上傳聲明書）';
+
 -- 14. application_close_reasons: 結構化結案原因（2026-05）
 --   一個案件可勾多個原因；每個 reason_code 可帶 detail_value（金額/年齡/補助項目/取消原因）。
 CREATE TABLE IF NOT EXISTS application_close_reasons (
@@ -486,6 +507,13 @@ BEGIN
             FOREIGN KEY (referral_unit_id) REFERENCES referral_units(id) ON DELETE SET NULL;
     END IF;
 END$$;
+
+-- 9aa. home_visit: 不家訪選項 + 訪視員職稱/姓名（user feedback #8 #18, 2026-05）
+ALTER TABLE home_visit
+    ADD COLUMN IF NOT EXISTS visit_skipped BOOLEAN NOT NULL DEFAULT false,
+    ADD COLUMN IF NOT EXISTS skip_reason   TEXT;
+COMMENT ON COLUMN home_visit.visit_skipped IS '是否跳過家訪（經濟弱勢可選不家訪）';
+COMMENT ON COLUMN home_visit.skip_reason   IS '不家訪原因（visit_skipped=true 時必填）';
 
 -- 9a. home_visit: 允許一案多筆家訪（added 2026-04）
 --   舊表可能仍是 UNIQUE (application_id)；改為 UNIQUE (application_id, visit_date) 以允許同案多次訪視
@@ -960,16 +988,18 @@ VALUES
     ( 5, '現職醫事人員在職證明',           'apply', FALSE, NULL, 11, TRUE, FALSE, 'C'),
     ( 6, '綜所稅清單(配偶亦繳)',           'apply', TRUE,  NULL, 4,  TRUE, TRUE,  'C'),
     ( 8, '全戶戶籍謄本',                   'apply', TRUE,  NULL, 5,  TRUE, TRUE,  'C'),
-    ( 9, '集保結算所資料',                 'apply', FALSE, NULL, 9,  TRUE, FALSE, 'C'),
+    ( 9, '投資人有價證券餘額表',           'apply', FALSE, NULL, 9,  TRUE, FALSE, 'C'),  -- 2026-05 改名（原集保結算所資料）
     (10, '購屋貸款利息單據',               'apply', FALSE, NULL, 10, TRUE, FALSE, 'C'),
     (11, '診斷證明',                       'apply', TRUE,  NULL, 7,  TRUE, TRUE,  'C'),
-    (13, '醫療單據正本或與正本相符之影本', 'apply', TRUE,  NULL, 8,  TRUE, TRUE,  'C'),
+    (13, '醫療單據正本',                   'apply', FALSE, NULL, 8,  TRUE, TRUE,  'C'),  -- 2026-05 改名 + 非必填（治療前可預先申請）
+    (14, '全國財產稅總歸戶財產查詢清單',   'apply', TRUE,  NULL, 12, TRUE, TRUE,  'C'),  -- 2026-05 新增
 -- 核銷階段
     (17, '醫療收據',             'reimbursement', TRUE,  NULL, 1, TRUE, FALSE, 'D'),  -- 每筆撥款一份
     (18, '領款收據',             'reimbursement', TRUE,  NULL, 2, TRUE, FALSE, 'D'),  -- 每筆撥款一份
     (19, '保險給付通知單',       'reimbursement', FALSE, NULL, 3, TRUE, FALSE, 'C'),
     (20, '生命故事同意刊登截圖證明', 'reimbursement', FALSE, NULL, 4, TRUE, FALSE, 'C'),
-    (21, '存摺封面影本',         'reimbursement', TRUE,  NULL, 5, TRUE, TRUE,  'C')   -- refine-disbursement-flow：必備、可延後補件
+    (21, '存摺封面影本',         'reimbursement', TRUE,  NULL, 5, TRUE, TRUE,  'D'),  -- 2026-05 改為每次撥款必備
+    (22, '捐贈/受補助者聲明書（不同意公開姓名時必附）', 'reimbursement', FALSE, NULL, 6, TRUE, FALSE, 'D')  -- 2026-05 新增；UI conditionally required
 ON CONFLICT (id) DO UPDATE SET
     label               = EXCLUDED.label,
     phase               = EXCLUDED.phase,
@@ -1088,7 +1118,7 @@ COMMENT ON COLUMN applications.age                     IS '申請人年齡（資
 COMMENT ON COLUMN applications.moveable_property       IS '動產金額（元）';
 COMMENT ON COLUMN applications.immoveable_property     IS '不動產金額（元）';
 COMMENT ON COLUMN applications.annual_income           IS '年收入（元）';
-COMMENT ON COLUMN applications.marital_status          IS '婚姻狀態（115 年辦法）：1=已婚（夫妻合計收入）、2=單親（個人收入）、3=單身（個人收入）；NULL 為舊資料未填';
+COMMENT ON COLUMN applications.marital_status          IS '婚姻狀態（115 年辦法）：1=已婚（配偶合計收入）、2=單親（個人收入）、3=單身（個人收入）；NULL 為舊資料未填';
 COMMENT ON COLUMN applications.has_children            IS '是否有子女';
 COMMENT ON COLUMN applications.underage_children_count IS '未成年子女人數';
 COMMENT ON COLUMN applications.adult_children_count    IS '成年子女人數';

@@ -36,6 +36,9 @@ export interface PaymentReceiptPrintData {
     caseNumber: string;
     applicantName: string;
     applicantIdNumber: string | null;
+    /** user feedback #12：領款收據加上戶籍地址與電話 */
+    applicantAddress: string | null;
+    applicantPhone: string | null;
     category: 'A' | 'B' | 'C' | 'D' | null;
     applicationType: string | null;
     approvedAmount: number | null;
@@ -210,6 +213,8 @@ export async function fetchPaymentReceiptPrintData(
                     a.case_number,
                     a.application_type,
                     a.approved_amount,
+                    a.applicant_address,
+                    a.applicant_phone,
                     u.name_enc       AS app_name_enc,
                     u.name_iv        AS app_name_iv,
                     u.id_number_enc  AS id_enc,
@@ -251,6 +256,8 @@ export async function fetchPaymentReceiptPrintData(
                 caseNumber: row.case_number,
                 applicantName: decryptName(row.app_name_enc, row.app_name_iv),
                 applicantIdNumber,
+                applicantAddress: row.applicant_address ?? null,
+                applicantPhone: row.applicant_phone ?? null,
                 category,
                 applicationType: type,
                 approvedAmount: row.approved_amount != null ? Number(row.approved_amount) : null,
@@ -293,12 +300,13 @@ export async function fetchReviewOpinionPrintData(
                 (SELECT is_approved
                  FROM application_workflow
                  WHERE application_id = a.id
-                 LIMIT 1) AS wf_is_approved,
-                -- 審核日期：推進到 reimbursement 的 reviewed_at；若無則 null
+                 ORDER BY id DESC LIMIT 1) AS wf_is_approved,
+                -- 審核日期：首次推進到 reimbursement 的 reviewed_at；若無則 null
+                -- （append-only：可能有多列 stage='reimbursement'，取最早一筆＝董事核可進核銷的時間）
                 (SELECT reviewed_at
                  FROM application_workflow
                  WHERE application_id = a.id AND stage = 'reimbursement'
-                 LIMIT 1) AS review_date
+                 ORDER BY id ASC LIMIT 1) AS review_date
              FROM applications a
              LEFT JOIN users u ON u.id = a.applicant_id
              WHERE a.id = $1::bigint`,

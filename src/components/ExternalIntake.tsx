@@ -224,6 +224,15 @@ export function ExternalIntake() {
     const [errorMsg, setErrorMsg] = useState('');
     const [caseNumber, setCaseNumber] = useState('');
     const [applicationType, setApplicationType] = useState('');
+    // 轉介模式 + 轉介窗口（user feedback #1 + #6）
+    // 經濟弱勢 → 強制 way='2' 轉介；小康 → 預設 '1' 自提，可改 '2' 轉介
+    const [applicationWay, setApplicationWay] = useState<'1' | '2'>('1');
+    const [referralUnitName, setReferralUnitName] = useState('');
+    const [referralContactName, setReferralContactName] = useState('');
+    const [referralContactTitle, setReferralContactTitle] = useState('');
+    const [referralContactPhone, setReferralContactPhone] = useState('');
+    const [referralContactEmail, setReferralContactEmail] = useState('');
+    const [referralErrors, setReferralErrors] = useState<{ unit?: string; name?: string; title?: string; phone?: string }>({});
     const [qualFormValid, setQualFormValid] = useState(false);
     const [qualFormValues, setQualFormValues] = useState<ApplicantFormValues>(DEFAULT_QUALIFICATION);
     const [docs, setDocs] = useState<DocFile[]>([]);
@@ -375,9 +384,9 @@ export function ExternalIntake() {
                         <p className="text-2xl font-bold text-rose-700">NT${econMax.toLocaleString()}<span className="text-xs font-normal text-rose-500 ml-1">／人累計上限</span></p>
                         <div className="text-xs text-slate-600 space-y-1">
                             <p>‧ 申請人為癌症且持有重大傷病卡之 25–65 歲本國人</p>
-                            <p>‧ 存款（夫妻取平均）≤ 16 萬</p>
-                            <p>‧ 月收入（夫妻取平均）≤ 3 萬</p>
-                            <p>‧ 不動產上限（戶籍內直系合計）≤ 2,500 萬</p>
+                            <p>‧ 存款（配偶取平均）≤ 16 萬</p>
+                            <p>‧ 月收入（配偶取平均）≤ 3 萬</p>
+                            {/* 不動產：經濟弱勢不限制（user feedback #1） */}
                         </div>
                         <div className="border-t border-rose-200 pt-2">
                             <p className="text-[11px] font-semibold text-rose-600 mb-1">送出前必備文件</p>
@@ -594,6 +603,20 @@ export function ExternalIntake() {
             if (treatmentPhase !== 'B' && treatmentPhase !== 'A' && treatmentPhase !== 'X') {
                 setTreatmentPhaseError('請選擇治療階段'); formOk = false;
             } else setTreatmentPhaseError('');
+
+            // 轉介窗口驗證：經濟弱勢強制轉介，小康看 applicationWay
+            const isTransferRequired = qualFormValues.subsidyType === '1' || applicationWay === '2';
+            if (isTransferRequired) {
+                const refErrs: typeof referralErrors = {};
+                if (!referralUnitName.trim())     refErrs.unit  = '請填寫轉介單位';
+                if (!referralContactName.trim())  refErrs.name  = '請填寫轉介人姓名';
+                if (!referralContactTitle.trim()) refErrs.title = '請填寫轉介人職稱';
+                if (!referralContactPhone.trim()) refErrs.phone = '請填寫轉介人聯絡電話';
+                setReferralErrors(refErrs);
+                if (Object.keys(refErrs).length > 0) formOk = false;
+            } else {
+                setReferralErrors({});
+            }
             if (!formOk) return;
             setErrorMsg('');
             setStep('submitting');
@@ -632,6 +655,16 @@ export function ExternalIntake() {
             }
             if (qualFormValues.econMonthlyIncome != null) {
                 fd.append('econ_monthly_income', String(qualFormValues.econMonthlyIncome));
+            }
+            // 經濟弱勢強制 way='2'（user feedback #1）；小康依使用者選擇
+            const effectiveWay = qualFormValues.subsidyType === '1' ? '2' : applicationWay;
+            fd.append('application_way', effectiveWay);
+            if (effectiveWay === '2') {
+                fd.append('referral_unit_name', referralUnitName.trim());
+                fd.append('referral_contact_name', referralContactName.trim());
+                fd.append('referral_contact_title', referralContactTitle.trim());
+                fd.append('referral_contact_phone', referralContactPhone.trim());
+                if (referralContactEmail.trim()) fd.append('referral_contact_email', referralContactEmail.trim());
             }
 
             // 文件已在背景上傳到 Blob；此處只送 metadata + URL
@@ -827,6 +860,111 @@ export function ExternalIntake() {
                                     <option value="D">D 類－醫事人員進修補助</option>
                                 </select>
                             </div>
+                            {/* 申請方式 + 轉介窗口（user feedback #1 #6）
+                                經濟弱勢強制轉介；小康預設自提、可改轉介 */}
+                            {(() => {
+                                const isEcon = qualFormValues.subsidyType === '1';
+                                const showTransferForm = isEcon || applicationWay === '2';
+                                return (
+                                <div className="md:col-span-2 space-y-3">
+                                    <div>
+                                        <label className="block text-sm font-medium text-gray-700 mb-1">
+                                            申請方式 <span className="text-red-500">*</span>
+                                            {isEcon && <span className="text-xs text-rose-600 font-normal ml-2">（經濟弱勢僅接受轉介）</span>}
+                                        </label>
+                                        <div className="flex gap-2">
+                                            <label className={clsx(
+                                                'inline-flex items-center gap-1.5 px-3 py-2 rounded-md border cursor-pointer text-sm flex-1 justify-center',
+                                                isEcon ? 'bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed'
+                                                       : (applicationWay === '1' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-300 text-gray-600')
+                                            )}>
+                                                <input type="radio" checked={!isEcon && applicationWay === '1'}
+                                                    disabled={isEcon}
+                                                    onChange={() => !isEcon && setApplicationWay('1')}
+                                                    className="accent-blue-600" />
+                                                自行申請
+                                            </label>
+                                            <label className={clsx(
+                                                'inline-flex items-center gap-1.5 px-3 py-2 rounded-md border cursor-pointer text-sm flex-1 justify-center',
+                                                (isEcon || applicationWay === '2') ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-300 text-gray-600'
+                                            )}>
+                                                <input type="radio" checked={isEcon || applicationWay === '2'}
+                                                    onChange={() => setApplicationWay('2')}
+                                                    className="accent-blue-600" />
+                                                轉介（社工/醫師等代為申請）
+                                            </label>
+                                        </div>
+                                    </div>
+                                    {showTransferForm && (
+                                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-3">
+                                            <p className="text-xs text-blue-700 font-medium">
+                                                請填寫轉介窗口資訊（後續審核與通知會以下方資料聯繫）
+                                            </p>
+                                            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                                                <div>
+                                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                        轉介單位／機構 <span className="text-red-500">*</span>
+                                                    </label>
+                                                    <input type="text" value={referralUnitName}
+                                                        onChange={e => { setReferralUnitName(e.target.value); setReferralErrors(p => ({...p, unit: undefined})); }}
+                                                        placeholder="例：國泰綜合醫院 社工室"
+                                                        maxLength={100}
+                                                        className={clsx('w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
+                                                            referralErrors.unit ? 'border-red-400 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500')} />
+                                                    {referralErrors.unit && <p className="text-xs text-red-500 mt-0.5">{referralErrors.unit}</p>}
+                                                </div>
+                                                <div>
+                                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                        轉介人姓名 <span className="text-red-500">*</span>
+                                                    </label>
+                                                    <input type="text" value={referralContactName}
+                                                        onChange={e => { setReferralContactName(e.target.value); setReferralErrors(p => ({...p, name: undefined})); }}
+                                                        placeholder="例：王小明"
+                                                        maxLength={50}
+                                                        className={clsx('w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
+                                                            referralErrors.name ? 'border-red-400 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500')} />
+                                                    {referralErrors.name && <p className="text-xs text-red-500 mt-0.5">{referralErrors.name}</p>}
+                                                </div>
+                                                <div>
+                                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                        轉介人職稱 <span className="text-red-500">*</span>
+                                                    </label>
+                                                    <input type="text" value={referralContactTitle}
+                                                        onChange={e => { setReferralContactTitle(e.target.value); setReferralErrors(p => ({...p, title: undefined})); }}
+                                                        placeholder="例：社工師／個管師"
+                                                        maxLength={50}
+                                                        className={clsx('w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
+                                                            referralErrors.title ? 'border-red-400 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500')} />
+                                                    {referralErrors.title && <p className="text-xs text-red-500 mt-0.5">{referralErrors.title}</p>}
+                                                </div>
+                                                <div>
+                                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                        轉介人聯絡電話 <span className="text-red-500">*</span>
+                                                    </label>
+                                                    <input type="tel" value={referralContactPhone}
+                                                        onChange={e => { setReferralContactPhone(e.target.value); setReferralErrors(p => ({...p, phone: undefined})); }}
+                                                        placeholder="例：(03) 5278999 #1234"
+                                                        maxLength={30}
+                                                        className={clsx('w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
+                                                            referralErrors.phone ? 'border-red-400 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500')} />
+                                                    {referralErrors.phone && <p className="text-xs text-red-500 mt-0.5">{referralErrors.phone}</p>}
+                                                </div>
+                                                <div className="md:col-span-2">
+                                                    <label className="block text-xs font-medium text-gray-700 mb-1">
+                                                        轉介人 Email（選填）
+                                                    </label>
+                                                    <input type="email" value={referralContactEmail}
+                                                        onChange={e => setReferralContactEmail(e.target.value)}
+                                                        placeholder="若填寫，後續通知會同時寄轉介人"
+                                                        maxLength={100}
+                                                        className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                                                </div>
+                                            </div>
+                                        </div>
+                                    )}
+                                </div>
+                                );
+                            })()}
                         </div>
                     </div>
 

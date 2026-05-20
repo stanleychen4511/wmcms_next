@@ -47,7 +47,9 @@ async function readFileBuffer(filePath: string): Promise<Buffer | null> {
             if (!res.ok) return null;
             return Buffer.from(await res.arrayBuffer());
         }
-        if (/^\/uploads\/\d+\/[^/]+$/.test(filePath)) {
+        // 本地 dev：允許任意子目錄（撥款檔案放在 /uploads/{appId}/disb{id}/...），
+        // 但禁止 .. 跳脫上層
+        if (/^\/(uploads|intake)\//.test(filePath) && !filePath.includes('..')) {
             const abs = path.join(process.cwd(), 'public', filePath);
             return await fs.readFile(abs);
         }

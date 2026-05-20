@@ -17,6 +17,8 @@ import {
     BarChart3,
     Phone,
     FileSpreadsheet,
+    ListChecks,
+    DollarSign,
 } from 'lucide-react';
 import { PendingDocAlert, PendingDocThresholdAlert } from '../app/actions/pendingDocAlertActions';
 import { fetchActiveBanners, Banner } from '../app/actions/bannerActions';
@@ -39,6 +41,13 @@ interface HomePageProps {
     pendingAlerts?: PendingDocAlert[];
     thresholdAlerts?: PendingDocThresholdAlert[];
     unassignedCount?: number;
+    unassignedCases?: { applicationId: string; caseNumber: string; applicantName: string; appliedAt: string | null }[];
+    /** 可撥款但尚未建立撥款的案件（給 case_officer 看） */
+    disbursableCases?: { applicationId: string; caseNumber: string; applicantName: string; approvedAmount: number | null }[];
+    onUnassignedGoToList?: () => void;
+    onPendingDocGoToList?: () => void;
+    myTurnItems?: { applicationId: string; caseNumber: string; applicantName: string; reasonText: string }[];
+    onMyTurnGoToList?: () => void;
     onSelectCase?: (applicationId: string) => void;
     banners?: Banner[];
     announcements?: Announcement[];
@@ -242,14 +251,23 @@ function BannerCarousel({ banners }: { banners: Banner[] }) {
 
 const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
 
-export function HomePage({ username, userId, userRoles, activeRole, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onGoReports, onLogout, onSelectCase }: HomePageProps) {
+export function HomePage({ username, userId, userRoles, activeRole, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, unassignedCases = [], disbursableCases = [], onUnassignedGoToList, onPendingDocGoToList, myTurnItems = [], onMyTurnGoToList, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onGoReports, onLogout, onSelectCase }: HomePageProps) {
     const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
     const canViewStats = userRoles.some(r => STATS_ROLES.includes(r));
     const [selectedAnn, setSelectedAnn] = useState<Announcement | null>(null);
     const [contactSearchOpen, setContactSearchOpen] = useState(false);
+    /** 「輪到我處理」改成按鈕 + modal 模式 */
+    const [showMyTurnModal, setShowMyTurnModal] = useState(false);
+    /** 「未派案」改成按鈕 + modal 模式 */
+    const [showUnassignedModal, setShowUnassignedModal] = useState(false);
+    /** 「未補件」改成按鈕 + modal 模式 */
+    const [showPendingDocModal, setShowPendingDocModal] = useState(false);
+    /** 「可撥款」按鈕 + modal */
+    const [showDisbursableModal, setShowDisbursableModal] = useState(false);
 
     /** 聯絡紀錄功能可見角色 — 與 contactRecordActions ALLOWED_ROLES 一致 */
-    const CONTACT_ROLES = ['supervisor', 'case_officer', 'volunteer', 'admin'];
+    // 加 executive：執行長也要看關懷/聯絡紀錄（user feedback #22）
+    const CONTACT_ROLES = ['supervisor', 'case_officer', 'volunteer', 'admin', 'executive'];
     const canUseContactRecords = userRoles.some(r => CONTACT_ROLES.includes(r));
 
     function isNew(publishDate: string, days: number) {
@@ -266,33 +284,69 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                 {/* Banner */}
                 <BannerCarousel banners={banners} />
 
-                {/* Alert banners */}
+                {/* 一排按鈕：輪到我處理 + 未派案 + 未補件 + 可撥款（並列，點開後分別 modal） */}
                 {(
-                    (userRoles.includes('case_officer') && pendingAlerts.length > 0) ||
-                    (canAssign && unassignedCount > 0)
+                    myTurnItems.length > 0
+                    || (canAssign && unassignedCount > 0)
+                    || (userRoles.includes('case_officer') && pendingAlerts.length > 0)
+                    || (userRoles.includes('case_officer') && disbursableCases.length > 0)
                 ) && (
-                    <div className="flex flex-col sm:flex-row gap-2">
-                        {/* Pending doc alert — only for case_officer */}
-                        {userRoles.includes('case_officer') && pendingAlerts.length > 0 && (
-                            <div className="w-full sm:w-1/2 flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-xl px-5 py-4">
-                                <AlertTriangle className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
-                                <div>
-                                    <p className="text-sm font-semibold text-orange-800">
-                                        當前有 {pendingAlerts.length} 筆案件未補件
-                                    </p>
-                                </div>
-                            </div>
+                    <div className="flex flex-wrap gap-2">
+                        {myTurnItems.length > 0 && (
+                            <button
+                                type="button"
+                                onClick={() => setShowMyTurnModal(true)}
+                                className="inline-flex items-center gap-2 px-3 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded-lg shadow-sm transition"
+                                title="點擊查看完整清單"
+                            >
+                                <ListChecks className="w-4 h-4" />
+                                <span>輪到我處理</span>
+                                <span className="inline-flex items-center justify-center min-w-[1.5rem] h-5 px-1.5 rounded-full bg-white text-indigo-700 text-[11px] font-bold">
+                                    {myTurnItems.length}
+                                </span>
+                            </button>
                         )}
-                        {/* Unassigned case alert — only for assign-capable roles */}
                         {canAssign && unassignedCount > 0 && (
-                            <div className="w-full sm:w-1/2 flex items-start gap-3 bg-orange-50 border border-orange-200 rounded-xl px-5 py-4">
-                                <AlertTriangle className="w-5 h-5 text-orange-500 shrink-0 mt-0.5" />
-                                <div>
-                                    <p className="text-sm font-semibold text-orange-800">
-                                        當前有 {unassignedCount} 筆案件尚未派案
-                                    </p>
-                                </div>
-                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowUnassignedModal(true)}
+                                className="inline-flex items-center gap-2 px-3 py-1.5 bg-orange-500 hover:bg-orange-600 text-white text-sm font-medium rounded-lg shadow-sm transition"
+                                title="點擊查看未派案清單"
+                            >
+                                <AlertTriangle className="w-4 h-4" />
+                                <span>未派案</span>
+                                <span className="inline-flex items-center justify-center min-w-[1.5rem] h-5 px-1.5 rounded-full bg-white text-orange-600 text-[11px] font-bold">
+                                    {unassignedCount}
+                                </span>
+                            </button>
+                        )}
+                        {userRoles.includes('case_officer') && pendingAlerts.length > 0 && (
+                            <button
+                                type="button"
+                                onClick={() => setShowPendingDocModal(true)}
+                                className="inline-flex items-center gap-2 px-3 py-1.5 bg-amber-500 hover:bg-amber-600 text-white text-sm font-medium rounded-lg shadow-sm transition"
+                                title="點擊查看未補件清單"
+                            >
+                                <AlertTriangle className="w-4 h-4" />
+                                <span>未補件</span>
+                                <span className="inline-flex items-center justify-center min-w-[1.5rem] h-5 px-1.5 rounded-full bg-white text-amber-600 text-[11px] font-bold">
+                                    {pendingAlerts.length}
+                                </span>
+                            </button>
+                        )}
+                        {userRoles.includes('case_officer') && disbursableCases.length > 0 && (
+                            <button
+                                type="button"
+                                onClick={() => setShowDisbursableModal(true)}
+                                className="inline-flex items-center gap-2 px-3 py-1.5 bg-emerald-600 hover:bg-emerald-700 text-white text-sm font-medium rounded-lg shadow-sm transition"
+                                title="案件已核准、可建立撥款流程"
+                            >
+                                <DollarSign className="w-4 h-4" />
+                                <span>可撥款</span>
+                                <span className="inline-flex items-center justify-center min-w-[1.5rem] h-5 px-1.5 rounded-full bg-white text-emerald-700 text-[11px] font-bold">
+                                    {disbursableCases.length}
+                                </span>
+                            </button>
                         )}
                     </div>
                 )}
@@ -470,6 +524,216 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                                     {selectedAnn.content}
                                 </ReactMarkdown>
                             </div>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 「未補件」清單 modal */}
+            {showPendingDocModal && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowPendingDocModal(false)}>
+                    <ModalEscapeListener onClose={() => setShowPendingDocModal(false)} />
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="p-4 border-b border-slate-200 flex items-center gap-3">
+                            <AlertTriangle className="w-5 h-5 text-amber-500" />
+                            <h3 className="text-base font-bold text-slate-800">未補件案件</h3>
+                            <span className="inline-flex items-center justify-center min-w-[1.5rem] h-6 px-2 rounded-full bg-amber-500 text-white text-xs font-bold">
+                                {pendingAlerts.length}
+                            </span>
+                            {onPendingDocGoToList && (
+                                <button
+                                    type="button"
+                                    onClick={() => { setShowPendingDocModal(false); onPendingDocGoToList(); }}
+                                    className="ml-auto text-xs text-amber-700 hover:underline"
+                                >
+                                    在案件清單中檢視 →
+                                </button>
+                            )}
+                            <button
+                                onClick={() => setShowPendingDocModal(false)}
+                                className={clsx('text-slate-400 hover:text-slate-600 transition shrink-0', onPendingDocGoToList ? '' : 'ml-auto')}
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-3">
+                            {pendingAlerts.length === 0 ? (
+                                <p className="text-sm text-slate-400 text-center py-6">目前沒有未補件的案件</p>
+                            ) : (
+                                <ul className="space-y-1.5">
+                                    {pendingAlerts.map((a, idx) => (
+                                        <li key={`${a.applicationId}-${idx}`}>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setShowPendingDocModal(false); onSelectCase?.(a.applicationId); }}
+                                                className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg border border-amber-100 hover:bg-amber-50 transition cursor-pointer"
+                                            >
+                                                <span className="text-sm font-mono text-slate-700 shrink-0">{a.caseNumber}</span>
+                                                <span className="text-sm text-slate-800 truncate">{a.applicantName}</span>
+                                                <span className="ml-auto inline-flex items-center px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 text-xs shrink-0">
+                                                    缺 {a.missingCount} 件・逾期 {a.daysOverdue} 天
+                                                </span>
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 「可撥款」清單 modal */}
+            {showDisbursableModal && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowDisbursableModal(false)}>
+                    <ModalEscapeListener onClose={() => setShowDisbursableModal(false)} />
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="p-4 border-b border-slate-200 flex items-center gap-3">
+                            <DollarSign className="w-5 h-5 text-emerald-600" />
+                            <h3 className="text-base font-bold text-slate-800">可撥款案件</h3>
+                            <span className="inline-flex items-center justify-center min-w-[1.5rem] h-6 px-2 rounded-full bg-emerald-600 text-white text-xs font-bold">
+                                {disbursableCases.length}
+                            </span>
+                            <span className="text-xs text-slate-500 ml-2">尚未建立任何撥款紀錄</span>
+                            <button
+                                onClick={() => setShowDisbursableModal(false)}
+                                className="ml-auto text-slate-400 hover:text-slate-600 transition shrink-0"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-3">
+                            {disbursableCases.length === 0 ? (
+                                <p className="text-sm text-slate-400 text-center py-6">目前沒有可撥款的案件</p>
+                            ) : (
+                                <ul className="space-y-1.5">
+                                    {disbursableCases.map((it, idx) => (
+                                        <li key={`${it.applicationId}-${idx}`}>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setShowDisbursableModal(false); onSelectCase?.(it.applicationId); }}
+                                                className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg border border-emerald-100 hover:bg-emerald-50 transition cursor-pointer"
+                                            >
+                                                <span className="text-sm font-mono text-slate-700 shrink-0">{it.caseNumber}</span>
+                                                <span className="text-sm text-slate-800 truncate">{it.applicantName}</span>
+                                                {it.approvedAmount != null && (
+                                                    <span className="ml-auto inline-flex items-center px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-semibold shrink-0">
+                                                        ${it.approvedAmount.toLocaleString()}
+                                                    </span>
+                                                )}
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 「未派案」清單 modal */}
+            {showUnassignedModal && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowUnassignedModal(false)}>
+                    <ModalEscapeListener onClose={() => setShowUnassignedModal(false)} />
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="p-4 border-b border-slate-200 flex items-center gap-3">
+                            <AlertTriangle className="w-5 h-5 text-orange-500" />
+                            <h3 className="text-base font-bold text-slate-800">尚未派案案件</h3>
+                            <span className="inline-flex items-center justify-center min-w-[1.5rem] h-6 px-2 rounded-full bg-orange-500 text-white text-xs font-bold">
+                                {unassignedCount}
+                            </span>
+                            {onUnassignedGoToList && (
+                                <button
+                                    type="button"
+                                    onClick={() => { setShowUnassignedModal(false); onUnassignedGoToList(); }}
+                                    className="ml-auto text-xs text-orange-700 hover:underline"
+                                >
+                                    到案件清單派案 →
+                                </button>
+                            )}
+                            <button
+                                onClick={() => setShowUnassignedModal(false)}
+                                className={clsx('text-slate-400 hover:text-slate-600 transition shrink-0', onUnassignedGoToList ? '' : 'ml-auto')}
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-3">
+                            {unassignedCases.length === 0 ? (
+                                <p className="text-sm text-slate-400 text-center py-6">目前沒有未派案的案件</p>
+                            ) : (
+                                <ul className="space-y-1.5">
+                                    {unassignedCases.map((it, idx) => (
+                                        <li key={`${it.applicationId}-${idx}`}>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setShowUnassignedModal(false); onSelectCase?.(it.applicationId); }}
+                                                className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg border border-orange-100 hover:bg-orange-50 transition cursor-pointer"
+                                            >
+                                                <span className="text-sm font-mono text-slate-700 shrink-0">{it.caseNumber}</span>
+                                                <span className="text-sm text-slate-800 truncate">{it.applicantName}</span>
+                                                {it.appliedAt && (
+                                                    <span className="ml-auto text-xs text-slate-500 shrink-0">{it.appliedAt}</span>
+                                                )}
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* 「輪到我處理」清單 modal */}
+            {showMyTurnModal && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowMyTurnModal(false)}>
+                    <ModalEscapeListener onClose={() => setShowMyTurnModal(false)} />
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="p-4 border-b border-slate-200 flex items-center gap-3">
+                            <ListChecks className="w-5 h-5 text-indigo-600" />
+                            <h3 className="text-base font-bold text-slate-800">輪到我處理</h3>
+                            <span className="inline-flex items-center justify-center min-w-[1.5rem] h-6 px-2 rounded-full bg-indigo-600 text-white text-xs font-bold">
+                                {myTurnItems.length}
+                            </span>
+                            {onMyTurnGoToList && (
+                                <button
+                                    type="button"
+                                    onClick={() => { setShowMyTurnModal(false); onMyTurnGoToList(); }}
+                                    className="ml-auto text-xs text-indigo-700 hover:underline"
+                                >
+                                    在案件清單中檢視 →
+                                </button>
+                            )}
+                            <button
+                                onClick={() => setShowMyTurnModal(false)}
+                                className={clsx('text-slate-400 hover:text-slate-600 transition shrink-0', onMyTurnGoToList ? '' : 'ml-auto')}
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-3">
+                            {myTurnItems.length === 0 ? (
+                                <p className="text-sm text-slate-400 text-center py-6">目前沒有需要您處理的案件</p>
+                            ) : (
+                                <ul className="space-y-1.5">
+                                    {myTurnItems.map((it, idx) => (
+                                        <li key={`${it.applicationId}-${idx}`}>
+                                            <button
+                                                type="button"
+                                                onClick={() => { setShowMyTurnModal(false); onSelectCase?.(it.applicationId); }}
+                                                className="w-full text-left flex items-center gap-3 px-3 py-2 rounded-lg border border-indigo-100 hover:bg-indigo-50 transition cursor-pointer"
+                                            >
+                                                <span className="text-sm font-mono text-slate-700 shrink-0">{it.caseNumber}</span>
+                                                <span className="text-sm text-slate-800 truncate">{it.applicantName}</span>
+                                                <span className="ml-auto inline-flex items-center px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700 text-xs shrink-0">
+                                                    {it.reasonText}
+                                                </span>
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            )}
                         </div>
                     </div>
                 </div>

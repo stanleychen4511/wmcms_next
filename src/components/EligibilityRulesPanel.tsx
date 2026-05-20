@@ -196,10 +196,10 @@ export function EligibilityRulesPanel({ operatorUserId }: Props) {
                         hint="戶籍內直系合計：土地公告現值＋房屋評定價" />
                     <Field label="【經濟弱勢】存款上限" unit="萬" value={commonEdits.econDepositMax}
                         onChange={v => setCommonEdits(p => ({ ...p, econDepositMax: v }))}
-                        hint="夫妻取平均" />
+                        hint="配偶取平均" />
                     <Field label="【經濟弱勢】月收入上限" unit="萬" value={commonEdits.econMonthlyIncomeMax}
                         onChange={v => setCommonEdits(p => ({ ...p, econMonthlyIncomeMax: v }))}
-                        hint="夫妻取平均" />
+                        hint="配偶取平均" />
                 </div>
                 <div>
                     <button
@@ -215,7 +215,7 @@ export function EligibilityRulesPanel({ operatorUserId }: Props) {
             {/* ── 3. 小康家庭矩陣 ─────────────────────────────────────────── */}
             <section className="bg-white border border-slate-200 rounded-xl p-5 space-y-3">
                 <h3 className="text-sm font-bold text-slate-700">③ 小康家庭資格矩陣（115 辦法第四條第三項第 2 款）</h3>
-                <p className="text-xs text-slate-500">收入下限 ~ 上限（萬元）；單位：萬元。已婚 = 夫妻合計；單親/單身 = 個人收入。</p>
+                <p className="text-xs text-slate-500">收入下限 ~ 上限（萬元）；單位：萬元。已婚 = 配偶合計；單親/單身 = 個人收入。</p>
                 <div className="overflow-x-auto">
                     <table className="w-full text-sm">
                         <thead>

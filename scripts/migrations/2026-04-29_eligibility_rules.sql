@@ -61,7 +61,7 @@ CREATE TABLE IF NOT EXISTS mid_class_eligibility_matrix (
 COMMENT ON TABLE  mid_class_eligibility_matrix IS
     '小康家庭資格矩陣（115 年辦法第四條第三項第 2 款）— 單位：萬元';
 COMMENT ON COLUMN mid_class_eligibility_matrix.marital_status IS
-    '婚姻狀態：1=已婚（收入夫妻合計）、2=單親（個人收入）、3=單身（個人收入）';
+    '婚姻狀態：1=已婚（收入配偶合計）、2=單親（個人收入）、3=單身（個人收入）';
 COMMENT ON COLUMN mid_class_eligibility_matrix.children_status IS
     '子女狀態：1=未成年子女、2=已成年子女、3=無子女';
 COMMENT ON COLUMN mid_class_eligibility_matrix.income_min IS '年收入下限（萬）';
@@ -100,8 +100,8 @@ INSERT INTO system_settings (key, value, description) VALUES
     ('elig_age_min',                  '25',   '【115 辦法】申請人年齡下限（歲）'),
     ('elig_age_max',                  '65',   '【115 辦法】申請人年齡上限（歲）'),
     ('elig_real_estate_max',          '2500', '【115 辦法】不動產上限：戶籍內直系合計（萬元）'),
-    ('elig_econ_deposit_max',         '16',   '【115 辦法-經濟弱勢】存款上限（夫妻取平均，萬元）'),
-    ('elig_econ_monthly_income_max',  '3',    '【115 辦法-經濟弱勢】每月收入上限（夫妻取平均，萬元）')
+    ('elig_econ_deposit_max',         '16',   '【115 辦法-經濟弱勢】存款上限（配偶取平均，萬元）'),
+    ('elig_econ_monthly_income_max',  '3',    '【115 辦法-經濟弱勢】每月收入上限（配偶取平均，萬元）')
 ON CONFLICT (key) DO UPDATE
     SET description = EXCLUDED.description;
 -- 注意：value 不覆寫（避免管理員調過後被 reseed 蓋掉）；description 永遠對齊新版註解。

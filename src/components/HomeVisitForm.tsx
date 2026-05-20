@@ -1,13 +1,16 @@
 "use client";
-import { useState, useEffect, useCallback } from 'react';
-import { Home, Save, Loader2, ChevronDown, Plus, Trash2 } from 'lucide-react';
+import { useState, useEffect, useCallback, useRef, type ReactNode } from 'react';
+import { Home, Save, Loader2, ChevronDown, Plus, Trash2, Upload, Image as ImageIcon, X, ChevronLeft, ChevronRight } from 'lucide-react';
 import { fetchHomeVisit, saveHomeVisit, HomeVisitData } from '../app/actions/homeVisitActions';
 import { useToast } from './FloatingToast';
+import { uploadFileToBlob } from '../lib/uploadClient';
 
 interface HomeVisitFormProps {
     applicationId: string;
     visitorUserId?: string; // logged-in user's DB id
     readOnly?: boolean;
+    /** 顯示在「本案不進行家訪」勾選區下方、勾選不家訪時自動隱藏的內容（如家訪指派 panel） */
+    assigneeSlot?: ReactNode;
 }
 
 // ── Option helpers ────────────────────────────────────────────────────────────
@@ -120,7 +123,7 @@ const RECOMMENDATION_OPTS = [
 
 // ── Main Component ─────────────────────────────────────────────────────────────
 
-export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }: HomeVisitFormProps) {
+export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false, assigneeSlot }: HomeVisitFormProps) {
     const { push: pushToast } = useToast();
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
@@ -144,12 +147,19 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }
     /** 全欄位必填驗證；缺項回傳第一個缺漏的中文欄位名稱，否則 null */
     const validateRequired = (data: HomeVisitData): string | null => {
         const isEmpty = (v: any) => v == null || (typeof v === 'string' && v.trim() === '');
+        // 不家訪 → 只驗 skip_reason
+        if (data.visit_skipped) {
+            if (isEmpty(data.skip_reason) || (data.skip_reason ?? '').trim().length < 3) {
+                return '不家訪原因（至少 3 字）';
+            }
+            return null;
+        }
         if (isEmpty(data.visit_date))                return '家訪日期';
         if (isEmpty(data.visitor_title))             return '訪視者職稱';
         if (isEmpty(data.visitor_name))              return '訪視者姓名';
         // 至少一張照片
         const photos = (data.visit_photo_urls ?? []).filter(u => u && u.trim() !== '');
-        if (photos.length === 0)                     return '家訪照片（至少一張連結）';
+        if (photos.length === 0)                     return '家訪照片（至少一張）';
         if (isEmpty(data.self_reported_condition))   return '自述病情';
         if (isEmpty(data.disease_reaction_status))   return '對疾病的反應';
         if (data.disease_reaction_status === '6' && isEmpty(data.disease_reaction_other)) return '對疾病的反應-其他說明';
@@ -196,19 +206,21 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }
         }
     };
 
-    /** 媒體 URL 列表：新增/移除/修改 */
-    const addPhoto = () =>
+    /** 照片陣列：上傳/移除（新版用 PhotoUploader 元件直接呼叫 setForm，這裡保留沒用到的接口給未來相容 */
+    /* eslint-disable @typescript-eslint/no-unused-vars */
+    const _addPhoto = () =>
         setForm(prev => ({ ...prev, visit_photo_urls: [...(prev.visit_photo_urls ?? []), ''] }));
-    const removePhoto = (idx: number) =>
+    const _removePhoto = (idx: number) =>
         setForm(prev => ({
             ...prev,
             visit_photo_urls: (prev.visit_photo_urls ?? []).filter((_, i) => i !== idx),
         }));
-    const setPhoto = (idx: number, value: string) =>
+    const _setPhoto = (idx: number, value: string) =>
         setForm(prev => ({
             ...prev,
             visit_photo_urls: (prev.visit_photo_urls ?? []).map((u, i) => (i === idx ? value : u)),
         }));
+    /* eslint-enable @typescript-eslint/no-unused-vars */
 
     if (loading) {
         return (
@@ -233,6 +245,45 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }
             </div>
 
             <div className="p-6 space-y-6">
+                {/* user feedback #18：經濟弱勢可選擇不家訪 + 填寫原因 */}
+                <div className={`border rounded-lg p-3 ${form.visit_skipped ? 'bg-amber-50 border-amber-300' : 'bg-slate-50 border-slate-200'}`}>
+                    <label className="inline-flex items-center gap-2 cursor-pointer">
+                        <input
+                            type="checkbox"
+                            checked={!!form.visit_skipped}
+                            onChange={e => setForm(prev => ({
+                                ...prev,
+                                visit_skipped: e.target.checked,
+                                ...(e.target.checked ? {} : { skip_reason: '' }),
+                            }))}
+                            disabled={readOnly}
+                            className="accent-amber-600"
+                        />
+                        <span className="text-sm font-medium text-slate-700">
+                            ⊘ 本案不進行家訪（適用於經濟弱勢等不需家訪的情況）
+                        </span>
+                    </label>
+                    {form.visit_skipped && (
+                        <div className="mt-2">
+                            <label className="block text-xs font-semibold text-amber-700 mb-1">不家訪原因 *（至少 3 字）</label>
+                            <textarea
+                                value={form.skip_reason ?? ''}
+                                onChange={e => setForm(prev => ({ ...prev, skip_reason: e.target.value }))}
+                                disabled={readOnly}
+                                rows={2}
+                                placeholder="例：經濟弱勢案件依規免家訪、申請人住偏遠地區家訪困難..."
+                                className="w-full bg-white border border-amber-300 rounded px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-amber-400"
+                            />
+                        </div>
+                    )}
+                </div>
+
+                {/* 家訪指派 slot — 勾選「不進行家訪」時隱藏 */}
+                {!form.visit_skipped && assigneeSlot}
+
+                {/* 非跳過情境才顯示完整家訪表 */}
+                {!form.visit_skipped && (<>
+
                 {/* Visitor info: 日期 / 職稱 / 姓名（皆必填） */}
                 <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
                     <div className="space-y-1.5">
@@ -278,49 +329,13 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }
                     </div>
                 </div>
 
-                {/* 家訪照片連結（至少一張，必填） */}
-                <div className="space-y-2">
-                    <label className="block text-sm font-semibold text-slate-700">
-                        家訪照片連結 <span className="text-red-500">*（至少一張）</span>
-                    </label>
-                    <p className="text-xs text-slate-400">將照片上傳至 Google Photos / Drive 等雲端後，把分享連結貼進來。</p>
-                    {(form.visit_photo_urls && form.visit_photo_urls.length > 0
-                        ? form.visit_photo_urls
-                        : ['']
-                    ).map((url, idx) => (
-                        <div key={idx} className="flex items-center gap-2">
-                            <input
-                                type="url"
-                                value={url}
-                                onChange={e => setPhoto(idx, e.target.value)}
-                                disabled={readOnly}
-                                placeholder="https://photos.google.com/... 或其他雲端連結"
-                                className="flex-1 bg-slate-50 border border-slate-200 rounded-xl px-4 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white disabled:opacity-60"
-                            />
-                            {!readOnly && (
-                                <button
-                                    type="button"
-                                    onClick={() => removePhoto(idx)}
-                                    disabled={(form.visit_photo_urls?.length ?? 0) <= 1 && !url}
-                                    className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg transition disabled:opacity-30"
-                                    title="移除此連結"
-                                >
-                                    <Trash2 className="w-4 h-4" />
-                                </button>
-                            )}
-                        </div>
-                    ))}
-                    {!readOnly && (
-                        <button
-                            type="button"
-                            onClick={addPhoto}
-                            className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 transition"
-                        >
-                            <Plus className="w-3.5 h-3.5" />
-                            新增照片連結
-                        </button>
-                    )}
-                </div>
+                {/* 家訪照片（至少一張，必填）— user feedback #8：直接上傳檔案、不用雲端連結 */}
+                <PhotoUploader
+                    photos={form.visit_photo_urls ?? []}
+                    onChange={(arr) => setForm(prev => ({ ...prev, visit_photo_urls: arr }))}
+                    readOnly={readOnly}
+                    applicationId={applicationId}
+                />
 
                 {/* 目前狀態 */}
                 <div className="border-t border-slate-100 pt-4">
@@ -433,6 +448,8 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }
                     </div>
                 </div>
 
+                </>)}{/* 非跳過家訪表單 ↑ */}
+
                 {/* Save row */}
                 {!readOnly && (
                     <div className="flex items-center justify-end border-t border-slate-100 pt-4">
@@ -442,11 +459,189 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false }
                             className="flex items-center gap-2 bg-indigo-600 hover:bg-indigo-700 text-white font-semibold px-5 py-2.5 rounded-xl text-sm transition shadow-md disabled:opacity-60"
                         >
                             {saving ? <Loader2 className="w-4 h-4 animate-spin" /> : <Save className="w-4 h-4" />}
-                            {saving ? '儲存中…' : '儲存家訪紀錄'}
+                            {saving ? '儲存中…' : (form.visit_skipped ? '儲存「不家訪」說明' : '儲存家訪紀錄')}
                         </button>
                     </div>
                 )}
             </div>
+        </div>
+    );
+}
+
+// ─── Photo Uploader（user feedback #8：志工不會用雲端連結，改成直接上傳檔案） ───
+
+interface PhotoUploaderProps {
+    photos: string[];
+    onChange: (next: string[]) => void;
+    readOnly?: boolean;
+    applicationId: string;
+}
+
+function PhotoUploader({ photos, onChange, readOnly, applicationId }: PhotoUploaderProps) {
+    const fileInputRef = useRef<HTMLInputElement>(null);
+    const [uploading, setUploading] = useState(false);
+    const { push: pushToast } = useToast();
+    /** 預覽 lightbox 的當前 index；null = 關閉 */
+    const [previewIdx, setPreviewIdx] = useState<number | null>(null);
+
+    // ESC 關閉、左右鍵切換
+    useEffect(() => {
+        if (previewIdx === null) return;
+        const handler = (e: KeyboardEvent) => {
+            if (e.key === 'Escape') setPreviewIdx(null);
+            else if (e.key === 'ArrowLeft') setPreviewIdx(i => (i === null ? null : (i - 1 + photos.length) % photos.length));
+            else if (e.key === 'ArrowRight') setPreviewIdx(i => (i === null ? null : (i + 1) % photos.length));
+        };
+        window.addEventListener('keydown', handler);
+        // lock body scroll
+        const prevOverflow = document.body.style.overflow;
+        document.body.style.overflow = 'hidden';
+        return () => {
+            window.removeEventListener('keydown', handler);
+            document.body.style.overflow = prevOverflow;
+        };
+    }, [previewIdx, photos.length]);
+
+    const handleAdd = async (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+        setUploading(true);
+        const successes: string[] = [];
+        for (const file of Array.from(files)) {
+            try {
+                const result = await uploadFileToBlob(file, {
+                    pathPrefix: `uploads/${applicationId}/home_visit_photos`,
+                });
+                successes.push(result.url);
+            } catch (err: any) {
+                pushToast({ type: 'error', msg: `${file.name} 上傳失敗：${err?.message ?? '未知錯誤'}` });
+            }
+        }
+        if (successes.length > 0) {
+            onChange([...photos, ...successes]);
+            pushToast({ type: 'success', msg: `已上傳 ${successes.length} 張照片` });
+        }
+        setUploading(false);
+        if (fileInputRef.current) fileInputRef.current.value = '';
+    };
+
+    const handleRemove = (idx: number) => {
+        onChange(photos.filter((_, i) => i !== idx));
+    };
+
+    return (
+        <div className="space-y-2">
+            <label className="block text-sm font-semibold text-slate-700">
+                家訪照片 <span className="text-red-500">*（至少一張）</span>
+            </label>
+            <p className="text-xs text-slate-400">點下方按鈕直接從手機 / 電腦選照片上傳；支援 jpg/png/webp，可一次選多張。</p>
+
+            {photos.length > 0 && (
+                <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 mt-2">
+                    {photos.map((url, idx) => (
+                        <div key={idx} className="relative group border border-slate-200 rounded-lg overflow-hidden">
+                            {/* 點圖片開啟 lightbox 預覽 */}
+                            <button
+                                type="button"
+                                onClick={() => setPreviewIdx(idx)}
+                                className="block w-full cursor-zoom-in"
+                                title="點擊放大檢視"
+                            >
+                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                <img src={url} alt={`家訪照片 ${idx + 1}`} className="w-full h-32 object-cover hover:opacity-90 transition" />
+                            </button>
+                            {!readOnly && (
+                                <button
+                                    type="button"
+                                    onClick={() => handleRemove(idx)}
+                                    className="absolute top-1 right-1 p-1 bg-white/90 rounded-full text-red-600 hover:bg-red-50 opacity-0 group-hover:opacity-100 transition shadow"
+                                    title="移除這張照片"
+                                >
+                                    <Trash2 className="w-3.5 h-3.5" />
+                                </button>
+                            )}
+                        </div>
+                    ))}
+                </div>
+            )}
+
+            {!readOnly && (
+                <div className="mt-2">
+                    <input
+                        ref={fileInputRef}
+                        type="file"
+                        accept="image/jpeg,image/png,image/webp"
+                        multiple
+                        className="hidden"
+                        onChange={e => handleAdd(e.target.files)}
+                    />
+                    <button
+                        type="button"
+                        onClick={() => fileInputRef.current?.click()}
+                        disabled={uploading}
+                        className="inline-flex items-center gap-1.5 px-3 py-1.5 bg-indigo-50 hover:bg-indigo-100 border border-indigo-200 text-indigo-700 text-xs rounded-lg transition disabled:opacity-50"
+                    >
+                        {uploading ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Upload className="w-3.5 h-3.5" />}
+                        {uploading ? '上傳中…' : (photos.length > 0 ? '新增更多照片' : '選擇照片上傳')}
+                    </button>
+                    {photos.length === 0 && (
+                        <p className="inline-flex items-center gap-1 ml-2 text-xs text-red-600">
+                            <ImageIcon className="w-3 h-3" />尚未上傳任何照片
+                        </p>
+                    )}
+                </div>
+            )}
+
+            {/* Lightbox 預覽 — 點黑底或 X 關閉；左右鍵或左右按鈕切換 */}
+            {previewIdx !== null && photos[previewIdx] && (
+                <div
+                    className="fixed inset-0 z-[100] bg-black/85 flex items-center justify-center p-4"
+                    onClick={() => setPreviewIdx(null)}
+                >
+                    {/* 關閉按鈕 */}
+                    <button
+                        type="button"
+                        onClick={(e) => { e.stopPropagation(); setPreviewIdx(null); }}
+                        className="absolute top-4 right-4 p-2 bg-white/10 hover:bg-white/20 rounded-full text-white transition"
+                        title="關閉（ESC）"
+                    >
+                        <X className="w-6 h-6" />
+                    </button>
+                    {/* 上一張 */}
+                    {photos.length > 1 && (
+                        <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setPreviewIdx(i => i === null ? null : (i - 1 + photos.length) % photos.length); }}
+                            className="absolute left-4 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition"
+                            title="上一張（←）"
+                        >
+                            <ChevronLeft className="w-6 h-6" />
+                        </button>
+                    )}
+                    {/* 下一張 */}
+                    {photos.length > 1 && (
+                        <button
+                            type="button"
+                            onClick={(e) => { e.stopPropagation(); setPreviewIdx(i => i === null ? null : (i + 1) % photos.length); }}
+                            className="absolute right-4 p-3 bg-white/10 hover:bg-white/20 rounded-full text-white transition"
+                            title="下一張（→）"
+                        >
+                            <ChevronRight className="w-6 h-6" />
+                        </button>
+                    )}
+                    {/* 圖片本身 */}
+                    {/* eslint-disable-next-line @next/next/no-img-element */}
+                    <img
+                        src={photos[previewIdx]}
+                        alt={`家訪照片 ${previewIdx + 1}`}
+                        className="max-w-full max-h-full object-contain shadow-2xl"
+                        onClick={(e) => e.stopPropagation()}
+                    />
+                    {/* 頁碼指示器 */}
+                    <div className="absolute bottom-4 left-1/2 -translate-x-1/2 px-3 py-1 bg-white/10 rounded-full text-white text-sm">
+                        {previewIdx + 1} / {photos.length}
+                    </div>
+                </div>
+            )}
         </div>
     );
 }

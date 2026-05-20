@@ -30,6 +30,17 @@ export interface ApplicationDetail {
     applicationForm?: 'P' | 'E' | null;
     /** 治療階段：'B' 治療前 / 'A' 治療後 / 'X' 治療前後 */
     treatmentPhase?: 'B' | 'A' | 'X' | null;
+    /** 申請人戶籍地址（領款收據用） */
+    applicantAddress?: string | null;
+    /** 主管審核 → 送董事閘門：null=未審, true=已通過, false=已退件 */
+    supervisorApprovedForBoard?: boolean | null;
+    /** 主管審核 → 送會計閘門 */
+    supervisorApprovedForAccounting?: boolean | null;
+    /** 主管退件原因或通過備註 */
+    supervisorReviewNote?: string | null;
+    /** 是否目前等待主管審核中（個管已送主管、主管尚未通過/退件）
+     *  邏輯：supervisor_approved_for_board IS NULL 且 audit_logs 有 application.request_supervisor_review_board 紀錄 */
+    supervisorReviewPending?: boolean;
     officerName?: string;
     applyAt?: string;
     createdAt?: string;
@@ -52,6 +63,10 @@ export interface ApplicationDetail {
     applicationType?: string | null;
     // Cumulative approved amount across all completed applications for this applicant
     totalApprovedAmount?: number;
+    /** 累積核准補助金額（subsidy_subtype='1' 經濟弱勢 案件加總） */
+    totalApprovedSubtype1?: number;
+    /** 累積核准補助金額（subsidy_subtype='2' 小康家庭 案件加總） */
+    totalApprovedSubtype2?: number;
     // Applicant user ID (for fetching historical receipts, etc.)
     applicantId?: string | null;
     // Officer user ID (for UI permission check — e.g. basics-edit button)
@@ -73,8 +88,10 @@ export interface ApplicationDetail {
     econMonthlyIncome?: number | null;
     // #17 個管師案件說明（建議 5 點條列）
     officerCaseSummary?: string | null;
-    // 家庭訪視階段：家訪表是否已存（home_visit 列存在且 visit_date 有值）
+    // 家庭訪視階段：家訪表是否已存（home_visit 列存在且 visit_date 有值，或 visit_skipped=true）
     homeVisitSaved?: boolean;
+    // 家庭訪視階段：是否標記為「免家訪」（visit_skipped=true）。true 時免指派人員/免填家訪表
+    homeVisitSkipped?: boolean;
 }
 
 // Guard: mock store IDs look like 'app-001-a', real DB IDs are numeric UUIDs or bigints.
@@ -134,6 +151,8 @@ async function checkBoardSignatureGate(
 
     let invalidCount = 0;
     let unsignedCount = 0;
+    const memberDecisions: Array<boolean | null> = [];
+    const memberAmounts: Array<number | null> = [];
     for (const r of rows.rows) {
         const sig = r.signature_data_url;
         if (!sig || sig === '') {
@@ -147,12 +166,54 @@ async function checkBoardSignatureGate(
             r.member_comments ?? null,
         );
         if (r.content_hash !== expected) invalidCount += 1;
+        memberDecisions.push(r.member_approved ?? null);
+        memberAmounts.push(r.member_amount != null ? Number(r.member_amount) : null);
     }
     if (unsignedCount > 0 || invalidCount > 0) {
         const parts: string[] = [];
         if (unsignedCount > 0) parts.push(`${unsignedCount} 位未簽署`);
         if (invalidCount > 0)  parts.push(`${invalidCount} 位簽章因內容變動已失效`);
         return { ok: false, error: `尚有 ${parts.join('、')}，請該組員重新簽章` };
+    }
+
+    // user feedback #9：兩位董事意見不一致（同意/否 OR 金額不同）→ 須董事長簽章為第 3 人
+    const uniqueDecisions = new Set(memberDecisions.map(d => d === true ? 't' : d === false ? 'f' : 'n'));
+    const uniqueAmounts   = new Set(memberAmounts.map(a => a == null ? 'null' : String(a)));
+    const decisionsDiffer = uniqueDecisions.size > 1;
+    const amountsDiffer   = uniqueAmounts.size > 1;
+    if (decisionsDiffer || amountsDiffer) {
+        // 找出 chairman；檢查是否已有 chairman 的有效簽章
+        const chairmanRes = await client.query(
+            `SELECT u.id::text AS uid,
+                    bs.signature_data_url, bs.content_hash,
+                    bs.member_approved, bs.member_amount, bs.member_comments
+             FROM users u
+             JOIN user_roles ur ON ur.user_id = u.id
+             JOIN roles r ON r.id = ur.role_id AND r.code = 'chairman'
+             LEFT JOIN board_review_signatures bs
+                    ON bs.signer_user_id = u.id AND bs.application_id = $1::bigint
+             WHERE u.is_active = true`,
+            [applicationId]
+        );
+        const disagreeReason = decisionsDiffer
+            ? (amountsDiffer ? '意見與金額皆不一致' : '同意/不同意意見不一致')
+            : '金額不一致';
+        const chairman = chairmanRes.rows[0];
+        if (!chairman) {
+            return { ok: false, error: `兩位董事${disagreeReason}，系統內無啟用中的董事長帳號可作第三審` };
+        }
+        if (!chairman.signature_data_url || chairman.signature_data_url === '') {
+            return { ok: false, error: `兩位董事${disagreeReason}，請董事長以第三審身分審核並簽章後才能推進` };
+        }
+        const chairExpected = computeHash(
+            chairman.uid,
+            chairman.member_approved ?? null,
+            chairman.member_amount != null ? Number(chairman.member_amount) : null,
+            chairman.member_comments ?? null,
+        );
+        if (chairman.content_hash !== chairExpected) {
+            return { ok: false, error: '董事長簽章已因內容變動而失效，請董事長重新簽章' };
+        }
     }
     return { ok: true };
 }
@@ -168,9 +229,23 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 a.id, a.case_number, a.status, a.apply_at, a.created_at,
                 a.application_type, a.applicant_id, a.officer_id, a.applicant_phone,
                 a.applicant_dob, a.cancer_type, a.cancer_stage,
-                a.application_form, a.treatment_phase,
+                a.application_form, a.treatment_phase, a.applicant_address,
+                a.supervisor_approved_for_board, a.supervisor_approved_for_accounting, a.supervisor_review_note,
+                /* 是否等待主管審核中：尚未通過/退件 + 有任何「請主管審核」audit log */
+                (a.supervisor_approved_for_board IS NULL AND EXISTS (
+                    SELECT 1 FROM audit_logs al
+                    WHERE al.target_type = 'application'
+                      AND al.target_id = a.id::text
+                      AND al.action = 'application.request_supervisor_review_board'
+                )) AS supervisor_review_pending,
                 (SELECT COALESCE(SUM(a2.approved_amount), 0) FROM applications a2
                  WHERE a2.applicant_id = a.applicant_id AND a2.status = '4') AS total_approved_amount,
+                (SELECT COALESCE(SUM(a2.approved_amount), 0) FROM applications a2
+                 WHERE a2.applicant_id = a.applicant_id AND a2.status = '4'
+                   AND a2.subsidy_subtype = '1') AS total_approved_subtype1,
+                (SELECT COALESCE(SUM(a2.approved_amount), 0) FROM applications a2
+                 WHERE a2.applicant_id = a.applicant_id AND a2.status = '4'
+                   AND a2.subsidy_subtype = '2') AS total_approved_subtype2,
                 a.age, a.moveable_property, a.immoveable_property,
                 a.annual_income, a.marital_status, a.has_children, a.underage_children_count, a.adult_children_count,
                 a.apply_amount, a.approved_amount,
@@ -182,8 +257,12 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 a.officer_case_summary,
                 a.home_visit_assignee_id,
                 EXISTS (SELECT 1 FROM home_visit hv
-                        WHERE hv.application_id = a.id AND hv.visit_date IS NOT NULL
+                        WHERE hv.application_id = a.id
+                          AND (hv.visit_date IS NOT NULL OR hv.visit_skipped = true)
                         LIMIT 1) AS home_visit_saved,
+                EXISTS (SELECT 1 FROM home_visit hv2
+                        WHERE hv2.application_id = a.id AND hv2.visit_skipped = true
+                        LIMIT 1) AS home_visit_skipped,
                 u_hva.name_enc AS hva_name_enc, u_hva.name_iv AS hva_name_iv, u_hva.account AS hva_account,
                 w.stage as wf_stage,
                 w.is_approved as wf_is_approved,
@@ -191,7 +270,12 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 u_app.name_enc as app_name_enc, u_app.name_iv  as app_name_iv,
                 u_off.name_enc as off_name_enc, u_off.name_iv  as off_name_iv
             FROM applications a
-            LEFT JOIN application_workflow w ON w.application_id = a.id
+            LEFT JOIN LATERAL (
+                SELECT stage, is_approved, comments
+                FROM application_workflow
+                WHERE application_id = a.id
+                ORDER BY id DESC LIMIT 1
+            ) w ON TRUE
             LEFT JOIN users u_app ON u_app.id = a.applicant_id
             LEFT JOIN users u_off ON u_off.id = a.officer_id
             LEFT JOIN users u_hva ON u_hva.id = a.home_visit_assignee_id
@@ -237,6 +321,11 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             cancerStage: row.cancer_stage ?? null,
             applicationForm: (row.application_form === 'P' || row.application_form === 'E') ? row.application_form : null,
             treatmentPhase: (row.treatment_phase === 'B' || row.treatment_phase === 'A' || row.treatment_phase === 'X') ? row.treatment_phase : null,
+            applicantAddress: row.applicant_address ?? null,
+            supervisorApprovedForBoard: row.supervisor_approved_for_board ?? null,
+            supervisorApprovedForAccounting: row.supervisor_approved_for_accounting ?? null,
+            supervisorReviewNote: row.supervisor_review_note ?? null,
+            supervisorReviewPending: !!row.supervisor_review_pending,
             officerName,
             applyAt: row.apply_at ? new Date(row.apply_at).toISOString().split('T')[0] : undefined,
             createdAt: row.created_at ? row.created_at.toISOString() : undefined,
@@ -254,6 +343,8 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             wfComments: row.wf_comments ?? null,
             applicationType: row.application_type ?? null,
             totalApprovedAmount: Number(row.total_approved_amount ?? 0),
+            totalApprovedSubtype1: Number(row.total_approved_subtype1 ?? 0),
+            totalApprovedSubtype2: Number(row.total_approved_subtype2 ?? 0),
             applicantId: row.applicant_id ? String(row.applicant_id) : null,
             officerId: row.officer_id ? String(row.officer_id) : null,
             applicationWay: (row.application_way === '2' ? '2' : '1') as '1' | '2',
@@ -269,6 +360,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             econMonthlyIncome: row.econ_monthly_income != null ? Number(row.econ_monthly_income) : null,
             officerCaseSummary: row.officer_case_summary ?? null,
             homeVisitSaved: !!row.home_visit_saved,
+            homeVisitSkipped: !!row.home_visit_skipped,
             homeVisitAssigneeId: row.home_visit_assignee_id != null ? String(row.home_visit_assignee_id) : null,
             homeVisitAssigneeName: row.hva_name_enc && row.hva_name_iv
                 ? (decryptAES(row.hva_name_enc, row.hva_name_iv) || row.hva_account)
@@ -298,6 +390,24 @@ export async function advanceWorkflowStage(
     try {
         await client.query('BEGIN');
 
+        // 0a. 角色閘門：board_review → reimbursement 僅 supervisor / admin 可推進
+        //     董事 / 董事長僅負責簽章意見，不負責推進到撥款階段
+        if (fromStage === 'board_review' && toStage === 'reimbursement') {
+            if (!reviewerUserId || !/^\d+$/.test(reviewerUserId)) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '缺少操作者身分，無法推進' };
+            }
+            const roleRes = await client.query(
+                `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = $1::bigint AND r.code IN ('supervisor', 'admin') LIMIT 1`,
+                [reviewerUserId]
+            );
+            if ((roleRes.rowCount ?? 0) === 0) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '僅主管或系統管理員可將案件推進到撥款階段' };
+            }
+        }
+
         // 0. 若自 board_review 推進，須驗證全員簽章完整且 hash 有效
         if (fromStage === 'board_review') {
             const gate = await checkBoardSignatureGate(client, applicationId);
@@ -307,35 +417,71 @@ export async function advanceWorkflowStage(
             }
         }
 
+        // 0b. 文件齊備閘門：
+        //    所有推進到 visit / board_review 的事件都只擋「不可延後補件」(allow_supplement=false) 的必備文件。
+        //    「可延後補件」(allow_supplement=true) 的文件不阻擋流程推進；
+        //    這類文件由系統其他機制（補件警示／報表「待收文件」欄）持續提醒個管補齊。
+        const isAdvancingToVisit = toStage === 'visit';
+        const isAdvancingToBoard = toStage === 'board_review';
+        if (isAdvancingToVisit || isAdvancingToBoard) {
+            const docGate = await client.query(
+                `SELECT dtc.id, dtc.label
+                 FROM document_type_config dtc
+                 WHERE dtc.phase = 'apply'
+                   AND dtc.is_required = true
+                   AND dtc.allow_supplement = false
+                   AND COALESCE(dtc.is_active, true) = true
+                   AND NOT EXISTS (
+                       SELECT 1 FROM application_documents ad
+                       WHERE ad.application_id = $1::bigint
+                         AND ad.id = dtc.id
+                         AND ad.status = '1'
+                   )
+                 ORDER BY dtc.sort_order, dtc.id`,
+                [applicationId]
+            );
+            if ((docGate.rowCount ?? 0) > 0) {
+                const missing = docGate.rows.map(r => r.label).join('、');
+                await client.query('ROLLBACK');
+                const gateLabel = isAdvancingToBoard ? '送董事審核前' : '進入家訪前';
+                return {
+                    success: false,
+                    error: `${gateLabel}尚有「不可延後補件」的必備文件未上傳或未核過：${missing}`,
+                };
+            }
+        }
+
+        // 0c. 推進到 board_review 必須先經過主管審核（user feedback #7 主管雙閘門）
+        if (toStage === 'board_review') {
+            const supRes = await client.query(
+                `SELECT supervisor_approved_for_board, supervisor_review_note
+                 FROM applications WHERE id = $1::bigint`,
+                [applicationId]
+            );
+            const supApproved = supRes.rows[0]?.supervisor_approved_for_board;
+            if (supApproved !== true) {
+                await client.query('ROLLBACK');
+                if (supApproved === false) {
+                    const note = supRes.rows[0]?.supervisor_review_note ?? '';
+                    return { success: false, error: `主管已退件，請修正後重送：${note}` };
+                }
+                return { success: false, error: '請先按【送主管審核】等主管通過後才能推進到董事審核' };
+            }
+        }
+
         // 1. Update applications.status
         await client.query(
             `UPDATE applications SET status = $1, updated_at = NOW() WHERE id = $2`,
             [toStatus, applicationId]
         );
 
-        // 2. UPSERT the single workflow row (one per application per spec)
-        const existRes = await client.query(
-            `SELECT 1 FROM application_workflow WHERE application_id = $1 LIMIT 1`,
-            [applicationId]
-        );
-
-        if (existRes.rows.length > 0) {
-            await client.query(`
-                UPDATE application_workflow
-                SET stage = $1,
-                    reviewer_id = $2,
-                    is_approved = true,
-                    comments = $3,
-                    reviewed_at = NOW()
-                WHERE application_id = $4
-            `, [dbStage, reviewerUserId, comments ?? `推進至${stageLabel}`, applicationId]);
-        } else {
-            await client.query(`
-                INSERT INTO application_workflow
-                    (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
-                VALUES ($1, $2, $3, true, $4, NOW())
-            `, [applicationId, dbStage, reviewerUserId, comments ?? `建立並進入${stageLabel}`]);
-        }
+        // 2. Append-only：每次推進階段都 INSERT 一列新紀錄，保留完整歷史。
+        //    讀取「目前階段」改用 `ORDER BY id DESC LIMIT 1`。
+        await client.query(`
+            INSERT INTO application_workflow
+                (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
+            VALUES ($1, $2, $3, true, $4, NOW())
+        `, [applicationId, dbStage, reviewerUserId, comments ?? null]);
 
         await client.query('COMMIT');
         void writeAuditLog({
@@ -363,45 +509,79 @@ export async function advanceWorkflowStage(
         }
 
         // 從 board_review 推進到 reimbursement 時：
-        //   1) 個別獨立簽章模式 — 計算 MAX(member_amount where approved) → 寫到 applications.approved_amount
-        //      consolidate 全部 member_comments 到 applications.board_review_comments
-        //   （refine-disbursement-flow：原 (2) 自動寄領款收據已移除；改由個管師於每筆撥款手動觸發）
+        //   1) 彙整審核意見到 applications.board_review_comments（供列印）
+        //   2) approved_amount 由 chairman 第三審 / 派組多數決決定（規則與
+        //      boardSignatureActions.recomputeApplicationApprovedAmount 一致）
+        //   （refine-disbursement-flow：原自動寄領款收據已移除；改由個管師於每筆撥款手動觸發）
         if (fromStage === 'board_review' && toStage === 'reimbursement') {
             try {
                 const aggClient = await pool.connect();
                 try {
+                    // 取得所有有簽章的 signatures + 該員角色（用來識別 chairman）+ 派組身分
                     const aggRes = await aggClient.query(
                         `SELECT s.signer_user_id::text AS uid,
                                 s.member_approved, s.member_amount, s.member_comments,
-                                u.name_enc, u.name_iv, u.account
+                                u.name_enc, u.name_iv, u.account,
+                                EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                                        WHERE ur.user_id = s.signer_user_id AND r.code = 'chairman') AS is_chairman,
+                                EXISTS (SELECT 1 FROM board_review_assignments bra
+                                        JOIN board_group_members bgm
+                                             ON bgm.group_id = bra.group_id
+                                            AND bgm.user_id = s.signer_user_id
+                                        WHERE bra.application_id = s.application_id) AS is_group_member
                          FROM board_review_signatures s
                          JOIN users u ON u.id = s.signer_user_id
-                         WHERE s.application_id = $1::bigint`,
+                         WHERE s.application_id = $1::bigint
+                           AND s.signature_data_url IS NOT NULL
+                           AND s.signature_data_url <> ''`,
                         [applicationId]
                     );
                     const { decryptAES } = await import('../../lib/crypto');
-                    let maxAmount: number | null = null;
                     const opinionLines: string[] = [];
+                    // 彙整審核意見字串（含 chairman）
                     for (const r of aggRes.rows) {
                         const name = r.name_enc && r.name_iv
                             ? decryptAES(r.name_enc, r.name_iv) || r.account
                             : r.account;
-                        if (r.member_approved === true && r.member_amount != null) {
-                            const a = Number(r.member_amount);
-                            if (maxAmount === null || a > maxAmount) maxAmount = a;
-                        }
                         if (r.member_comments && r.member_comments.trim() !== '') {
+                            const roleTag = r.is_chairman && !r.is_group_member ? '・董事長第三審'
+                                          : r.is_chairman ? '・董事長'
+                                          : '';
                             const verdict = r.member_approved === true ? '通過' : r.member_approved === false ? '不通過' : '未表態';
                             const amt = r.member_amount != null ? `（${Number(r.member_amount).toLocaleString()} 元）` : '';
-                            opinionLines.push(`【${name}・${verdict}${amt}】${r.member_comments}`);
+                            opinionLines.push(`【${name}${roleTag}・${verdict}${amt}】${r.member_comments}`);
                         }
                     }
                     const consolidatedComments = opinionLines.join('\n\n');
+
+                    // approved_amount 的決定規則：
+                    //   1) 若 chairman 已簽（chairman 為第三審裁決者）→ 採 chairman 的 member_amount
+                    //   2) 否則 → 派組成員多數決，通過時取已同意者最高金額
+                    const chairmanRow = aggRes.rows.find((r: any) => r.is_chairman === true);
+                    let newAmount: number = 0;
+                    if (chairmanRow) {
+                        newAmount = chairmanRow.member_approved === true && chairmanRow.member_amount != null
+                            ? Number(chairmanRow.member_amount)
+                            : 0;
+                    } else {
+                        const groupRows = aggRes.rows.filter((r: any) => r.is_group_member === true);
+                        if (groupRows.length > 0) {
+                            const yes = groupRows.filter((r: any) => r.member_approved === true).length;
+                            const approved = yes > groupRows.length / 2;
+                            if (approved) {
+                                newAmount = Math.max(
+                                    ...groupRows.filter((r: any) => r.member_approved === true)
+                                                .map((r: any) => r.member_amount != null ? Number(r.member_amount) : 0)
+                                );
+                            }
+                        }
+                    }
+
                     await aggClient.query(
                         `UPDATE applications
                          SET approved_amount = $1, board_review_comments = $2, updated_at = NOW()
                          WHERE id = $3::bigint`,
-                        [maxAmount, consolidatedComments || null, applicationId]
+                        [newAmount, consolidatedComments || null, applicationId]
                     );
                 } finally {
                     aggClient.release();
@@ -437,9 +617,9 @@ export interface QualificationData {
     apply_amount?: number | null;
     /** 補助子類型（115 年辦法）：'1'=經濟弱勢、'2'=小康家庭 */
     subsidy_subtype?: '1' | '2' | null;
-    /** 經濟弱勢專屬：存款（夫妻取平均，萬元） */
+    /** 經濟弱勢專屬：存款（配偶取平均，萬元） */
     econ_deposit?: number | null;
-    /** 經濟弱勢專屬：每月收入（夫妻取平均，萬元） */
+    /** 經濟弱勢專屬：每月收入（配偶取平均，萬元） */
     econ_monthly_income?: number | null;
 }
 
@@ -525,28 +705,16 @@ export async function retreatWorkflowStage(
             [toStatus, applicationId]
         );
 
-        const existRes = await client.query(
-            `SELECT 1 FROM application_workflow WHERE application_id = $1 LIMIT 1`,
-            [applicationId]
-        );
-
-        if (existRes.rows.length > 0) {
-            await client.query(`
-                UPDATE application_workflow
-                SET stage = $1,
-                    reviewer_id = $2,
-                    is_approved = false,
-                    comments = $3,
-                    reviewed_at = NOW()
-                WHERE application_id = $4
-            `, [dbStage, reviewerUserId, comments ?? `退回至${stageLabel}`, applicationId]);
-        } else {
-            await client.query(`
-                INSERT INTO application_workflow
-                    (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
-                VALUES ($1, $2, $3, false, $4, NOW())
-            `, [applicationId, dbStage, reviewerUserId, comments ?? `退回至${stageLabel}`]);
-        }
+        // 退回不再自動寫 "退回至XXX" 進 comments 欄位（會被 UI 誤回填到審核意見 textarea）；
+        // 改成只有 caller 明確帶 comments 時才寫入，否則設 NULL。
+        // 退回的「系統 note」記在 audit_logs，比放這裡更合適。
+        //
+        // Append-only：退回也插入一列新紀錄（is_approved=false 代表退回事件）。
+        await client.query(`
+            INSERT INTO application_workflow
+                (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
+            VALUES ($1, $2, $3, false, $4, NOW())
+        `, [applicationId, dbStage, reviewerUserId, comments ?? null]);
 
         // 退回至 board_review 之前的階段時，清除既有的董事組派案 + 簽章 + 永久審核意見。
         // 否則再推進回 board_review 時 maybeAutoAssign 會走 reassign 路徑而非首次派組，
@@ -570,8 +738,15 @@ export async function retreatWorkflowStage(
                 });
             }
             // 同步清空永久審核意見欄位（與派組/簽章一致：重新進 board_review = 全新一張白紙）
+            //
+            // 同時 reset 主管雙閘門 supervisor_approved_for_board ← NULL；
+            // 這樣案件再次推進到「待送董事」前，主管必須重新確認狀況（再次審核並決定通過或退件）。
+            // 否則主管早先按過「通過」會殘留，但案件已被推回前一階段，狀態與真實流程脫節。
             await client.query(
-                `UPDATE applications SET board_review_comments = NULL
+                `UPDATE applications
+                 SET board_review_comments = NULL,
+                     supervisor_approved_for_board = NULL,
+                     supervisor_review_note = NULL
                  WHERE id = $1::bigint`,
                 [applicationId]
             );
@@ -595,6 +770,258 @@ export async function retreatWorkflowStage(
     }
 }
 
+// ─── 主管審核閘門（user feedback #7 主管雙閘門 — 進董事前的審核） ──────
+// 「給會計前」的審核已經在 payment_disbursements.review_stage='1'→'2'→'3' 自然存在；
+// 此處只新增「給董事前」的審核，發生在 visit/admin_review 推進到 board_review 之前。
+
+/** 個管按下「送主管審核」— 將 supervisor_approved_for_board 設為 NULL（待審）
+ *
+ *  閘門設計：避免主管收到還沒準備好的案件，但允許「可延後補件」的文件延後處理：
+ *    1) apply phase 必備文件 status='1'（符合）— **但只擋 allow_supplement=false（不可延後補件）的文件**
+ *       allow_supplement=true 的文件可等主管審核期間 / 進入董事審核前再補（送董事前的 advance 閘門才擋全部）
+ *    2) 若 stage = home_visit：家訪表已存（visit_date 或 visit_skipped）+ 個管案件說明已填
+ */
+export async function requestSupervisorReviewForBoard(
+    applicationId: string,
+    operatorUserId: string,
+): Promise<{ success: boolean; error?: string }> {
+    if (!isValidDbId(applicationId)) return { success: false, error: '無效的案件 ID' };
+    const client = await pool.connect();
+    try {
+        // 任何進行中且當前 stage 為 visit/admin_review 的案件都可送
+        const r = await client.query(
+            `SELECT a.status, a.officer_case_summary, w.stage,
+                    EXISTS (SELECT 1 FROM home_visit hv
+                            WHERE hv.application_id = a.id
+                              AND (hv.visit_date IS NOT NULL OR hv.visit_skipped = true)) AS home_visit_saved
+             FROM applications a
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
+             WHERE a.id = $1::bigint LIMIT 1`,
+            [applicationId]
+        );
+        if (r.rowCount === 0) return { success: false, error: '案件不存在' };
+        const { status, stage, officer_case_summary, home_visit_saved } = r.rows[0];
+        if (status !== '1') return { success: false, error: '案件已結案，無法送主管' };
+        if (stage !== 'admin_review' && stage !== 'home_visit' && stage !== 'visit') {
+            return { success: false, error: `當前階段「${stage}」不需主管審核` };
+        }
+
+        // 閘門 1：apply phase 必備文件 status='1' — 只擋 allow_supplement=false（不可延後補件）
+        const docGate = await client.query(
+            `SELECT dtc.label
+             FROM document_type_config dtc
+             WHERE dtc.phase = 'apply'
+               AND dtc.is_required = true
+               AND dtc.allow_supplement = false
+               AND COALESCE(dtc.is_active, true) = true
+               AND NOT EXISTS (
+                   SELECT 1 FROM application_documents ad
+                   WHERE ad.application_id = $1::bigint
+                     AND ad.id = dtc.id
+                     AND ad.status = '1'
+               )
+             ORDER BY dtc.sort_order, dtc.id`,
+            [applicationId]
+        );
+        if ((docGate.rowCount ?? 0) > 0) {
+            const missing = docGate.rows.map(x => x.label).join('、');
+            return {
+                success: false,
+                error: `送主管審核前尚有必備文件未上傳或未核過：${missing}`,
+            };
+        }
+
+        // 閘門 2：家訪階段需家訪表 + 個管案件說明
+        if (stage === 'home_visit' || stage === 'visit') {
+            if (!home_visit_saved) {
+                return { success: false, error: '送主管審核前須先完成家訪表（或標記免家訪）' };
+            }
+            if (!officer_case_summary || !String(officer_case_summary).trim()) {
+                return { success: false, error: '送主管審核前須先填寫個管師案件說明' };
+            }
+        }
+
+        await client.query(
+            `UPDATE applications
+             SET supervisor_approved_for_board = NULL,
+                 supervisor_review_note = NULL,
+                 updated_at = NOW()
+             WHERE id = $1::bigint`,
+            [applicationId]
+        );
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'application.request_supervisor_review_board',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { from_stage: stage },
+        });
+        return { success: true };
+    } finally {
+        client.release();
+    }
+}
+
+/** 主管 approve/reject — approved=true 直接 advance 至 board_review；false 退件留註記 */
+export async function supervisorReviewForBoard(
+    applicationId: string,
+    approved: boolean,
+    note: string,
+    operatorUserId: string,
+): Promise<{ success: boolean; error?: string }> {
+    if (!isValidDbId(applicationId)) return { success: false, error: '無效的案件 ID' };
+    const trimmedNote = (note ?? '').trim();
+    if (!approved && trimmedNote.length < 3) {
+        return { success: false, error: '退件須填寫原因（至少 3 字）' };
+    }
+
+    // 角色守門：admin / supervisor
+    const roleCheck = await pool.query(
+        `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1::bigint AND r.code IN ('admin','supervisor') LIMIT 1`,
+        [operatorUserId]
+    );
+    if ((roleCheck.rowCount ?? 0) === 0) {
+        return { success: false, error: '僅主管或系統管理員可執行此審核' };
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+
+        // 先標記 approve/reject
+        await client.query(
+            `UPDATE applications
+             SET supervisor_approved_for_board = $1,
+                 supervisor_review_note = $2,
+                 updated_at = NOW()
+             WHERE id = $3::bigint`,
+            [approved, trimmedNote || null, applicationId]
+        );
+
+        // approved → 自動 advance 到 board_review
+        if (approved) {
+            // 直接呼叫 advanceWorkflowStage 邏輯（已經會檢查文件閘門等）
+            // 但這裡 fromStage 要動態取得
+            const sRes = await client.query(
+                `SELECT w.stage FROM application_workflow w
+                 WHERE w.application_id = $1::bigint
+                 ORDER BY w.id DESC LIMIT 1`,
+                [applicationId]
+            );
+            const curStage = sRes.rows[0]?.stage ?? 'visit';
+            // map db_stage → frontend stage
+            const frontStage = curStage === 'admin_review' ? 'admin_review'
+                             : (curStage === 'home_visit' || curStage === 'visit') ? 'visit'
+                             : curStage;
+            await client.query('COMMIT');
+            // 出 transaction 後呼叫 advanceWorkflowStage（它自己有 transaction）
+            const advRes = await advanceWorkflowStage(
+                applicationId, frontStage, 'board_review', operatorUserId,
+                trimmedNote ? `主管審核通過：${trimmedNote}` : '主管審核通過'
+            );
+            if (!advRes.success) return advRes;
+        } else {
+            await client.query('COMMIT');
+        }
+
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: approved ? 'application.supervisor_approve_board' : 'application.supervisor_reject_board',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { approved, note: trimmedNote },
+        });
+        return { success: true };
+    } catch (err: any) {
+        try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+        console.error('supervisorReviewForBoard error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * 取消「不通過結案」(`status='2'`) → 將案件還原為審核中 (`status='1'`)，
+ * 並依當前 workflow stage 保留所在階段（通常是 board_review）。
+ *
+ * 用途：使用者誤按結案 / 主管/admin 事後想復原。
+ * 限制：僅 admin / supervisor / chairman 可操作；status 必須為 '2'。
+ *      不還原 application_close_reasons（caller 若需要可另外刪除）。
+ */
+export async function reopenRejectedCase(
+    applicationId: string,
+    operatorUserId: string,
+): Promise<{ success: boolean; error?: string }> {
+    if (!isValidDbId(applicationId)) return { success: false, error: '無效的案件 ID' };
+    const roleCheck = await pool.query(
+        `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1::bigint AND r.code IN ('admin','supervisor','chairman') LIMIT 1`,
+        [operatorUserId]
+    );
+    if ((roleCheck.rowCount ?? 0) === 0) {
+        return { success: false, error: '僅主管、董事長或系統管理員可復原結案' };
+    }
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const cur = await client.query(
+            `SELECT status FROM applications WHERE id = $1::bigint LIMIT 1`,
+            [applicationId]
+        );
+        if (cur.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件不存在' };
+        }
+        if (cur.rows[0].status !== '2') {
+            await client.query('ROLLBACK');
+            return { success: false, error: '此案件不是「審核未通過結案」狀態，無法復原' };
+        }
+        // 還原 status；保留 workflow.stage 不動（通常停在 board_review）
+        await client.query(
+            `UPDATE applications SET status = '1', updated_at = NOW() WHERE id = $1::bigint`,
+            [applicationId]
+        );
+        // 清掉之前結案時寫入的結構化原因（若有），讓後續可重新處理
+        await client.query(
+            `DELETE FROM application_close_reasons WHERE application_id = $1::bigint`,
+            [applicationId]
+        );
+        // Append-only：以「最新一列」為基底，INSERT 一列「復原結案」事件
+        // （stage 保持原階段、is_approved=NULL 代表「待重新決定」）
+        await client.query(
+            `INSERT INTO application_workflow
+                (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
+             SELECT application_id, stage, $1::bigint, NULL, '復原結案，重新審核', NOW()
+             FROM application_workflow
+             WHERE application_id = $2::bigint
+             ORDER BY id DESC
+             LIMIT 1`,
+            [operatorUserId, applicationId]
+        );
+        await client.query('COMMIT');
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'application.reopen',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { from_status: '2', to_status: '1' },
+        });
+        return { success: true };
+    } catch (err: any) {
+        try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+        console.error('reopenRejectedCase error', err);
+        return { success: false, error: err.message ?? '復原失敗' };
+    } finally {
+        client.release();
+    }
+}
+
 /**
  * Close case as rejected after board review failure.
  * Sets applications.status = '2' (審核未通過/結案),
@@ -612,7 +1039,9 @@ export async function closeCaseRejected(
 
         // 若案件目前在 board_review 階段才呼叫此結案，須驗全員簽章
         const stageRes = await client.query(
-            `SELECT stage FROM application_workflow WHERE application_id = $1 LIMIT 1`,
+            `SELECT stage FROM application_workflow
+             WHERE application_id = $1
+             ORDER BY id DESC LIMIT 1`,
             [applicationId]
         );
         const curStage = stageRes.rows[0]?.stage;
@@ -628,24 +1057,12 @@ export async function closeCaseRejected(
             `UPDATE applications SET status = '2', approved_amount = 0, updated_at = NOW() WHERE id = $1`,
             [applicationId]
         );
-        const existRes = await client.query(
-            `SELECT 1 FROM application_workflow WHERE application_id = $1 LIMIT 1`,
-            [applicationId]
-        );
-        if (existRes.rows.length > 0) {
-            await client.query(`
-                UPDATE application_workflow
-                SET stage = 'board_review', reviewer_id = $1, is_approved = false,
-                    comments = $2, reviewed_at = NOW()
-                WHERE application_id = $3
-            `, [reviewerUserId, comments, applicationId]);
-        } else {
-            await client.query(`
-                INSERT INTO application_workflow
-                    (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
-                VALUES ($1, 'board_review', $2, false, $3, NOW())
-            `, [applicationId, reviewerUserId, comments]);
-        }
+        // Append-only：結案以董事審核 stage 寫入一列 is_approved=false 紀錄
+        await client.query(`
+            INSERT INTO application_workflow
+                (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
+            VALUES ($1, 'board_review', $2, false, $3, NOW())
+        `, [applicationId, reviewerUserId, comments]);
         await client.query('COMMIT');
         void writeAuditLog({
             userId: reviewerUserId,
@@ -709,11 +1126,13 @@ export async function closeCaseWithReasons(
     try {
         await client.query('BEGIN');
 
-        // 取當下 stage（若 caller 沒傳）
+        // 取當下 stage（若 caller 沒傳）；append-only 後須取「最新一列」
         let actualStage = stage ?? null;
         if (!actualStage) {
             const sRes = await client.query(
-                `SELECT stage FROM application_workflow WHERE application_id = $1 LIMIT 1`,
+                `SELECT stage FROM application_workflow
+                 WHERE application_id = $1
+                 ORDER BY id DESC LIMIT 1`,
                 [applicationId]
             );
             actualStage = sRes.rows[0]?.stage ?? 'admin_review';
@@ -734,25 +1153,12 @@ export async function closeCaseWithReasons(
             [applicationId]
         );
 
-        // workflow row：upsert
-        const exist = await client.query(
-            `SELECT 1 FROM application_workflow WHERE application_id = $1 LIMIT 1`,
-            [applicationId]
-        );
-        if (exist.rows.length > 0) {
-            await client.query(`
-                UPDATE application_workflow
-                SET stage = $1, reviewer_id = $2, is_approved = false,
-                    comments = $3, reviewed_at = NOW()
-                WHERE application_id = $4
-            `, [actualStage, operatorUserId, comments, applicationId]);
-        } else {
-            await client.query(`
-                INSERT INTO application_workflow
-                    (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
-                VALUES ($1, $2, $3, false, $4, NOW())
-            `, [applicationId, actualStage, operatorUserId, comments]);
-        }
+        // Append-only：每次結案 INSERT 新紀錄
+        await client.query(`
+            INSERT INTO application_workflow
+                (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
+            VALUES ($1, $2, $3, false, $4, NOW())
+        `, [applicationId, actualStage, operatorUserId, comments]);
 
         // 結構化原因：先清空再寫入（允許重新結案時覆蓋）
         await client.query(
@@ -842,6 +1248,81 @@ export async function fetchCloseReasons(
 }
 
 /**
+ * #24: 行政初審階段允許 case_officer/admin/supervisor 調整 apply_amount。
+ * 限制：案件 status='1' 且當前 workflow stage='admin_review'，新金額 >= 0 且 <= 子類型上限。
+ */
+export async function updateApplyAmount(
+    applicationId: string,
+    newAmount: number,
+    operatorUserId: string,
+): Promise<{ success: boolean; error?: string }> {
+    if (!isValidDbId(applicationId)) return { success: false, error: '無效的案件 ID' };
+    if (!Number.isFinite(newAmount) || newAmount < 0) {
+        return { success: false, error: '金額必須為非負數' };
+    }
+    const roleCheck = await pool.query(
+        `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1::bigint AND r.code IN ('admin','supervisor','case_officer') LIMIT 1`,
+        [operatorUserId]
+    );
+    if ((roleCheck.rowCount ?? 0) === 0) {
+        return { success: false, error: '權限不足' };
+    }
+    const client = await pool.connect();
+    try {
+        const cur = await client.query(
+            `SELECT a.status, a.subsidy_subtype, a.officer_id, a.apply_amount, w.stage
+             FROM applications a
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
+             WHERE a.id = $1::bigint LIMIT 1`,
+            [applicationId]
+        );
+        if (cur.rowCount === 0) return { success: false, error: '案件不存在' };
+        const { status, stage, subsidy_subtype, apply_amount, officer_id } = cur.rows[0];
+        if (status !== '1') return { success: false, error: '案件已結案，無法調整' };
+        if (stage !== 'admin_review') return { success: false, error: '僅在行政初審階段可調整' };
+        // case_officer 必須為被指派的承辦人
+        const isAdminOrSup = (await pool.query(
+            `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+             WHERE ur.user_id = $1::bigint AND r.code IN ('admin','supervisor') LIMIT 1`,
+            [operatorUserId]
+        )).rowCount ?? 0;
+        if (!isAdminOrSup && String(officer_id) !== String(operatorUserId)) {
+            return { success: false, error: '僅指派之承辦人或主管/系統管理員可調整' };
+        }
+        // 子類型上限檢查
+        if (subsidy_subtype) {
+            const { fetchSubsidyAmountLimitsMap } = await import('./eligibilityRulesActions');
+            const limits = await fetchSubsidyAmountLimitsMap();
+            const max = limits[subsidy_subtype as '1' | '2'] ?? 0;
+            if (newAmount > max) {
+                return { success: false, error: `超過子類型上限 NT$${max.toLocaleString()}` };
+            }
+        }
+        await client.query(
+            `UPDATE applications SET apply_amount = $1, updated_at = NOW() WHERE id = $2::bigint`,
+            [newAmount, applicationId]
+        );
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'application.update_amount',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { old_amount: apply_amount, new_amount: newAmount, stage },
+        });
+        return { success: true };
+    } catch (err: any) {
+        return { success: false, error: err.message ?? '更新失敗' };
+    } finally {
+        client.release();
+    }
+}
+
+/**
  * Save board review result: approved_amount + workflow comments.
  * approved_amount = 0 when not approved.
  */
@@ -858,8 +1339,15 @@ export async function saveBoardReviewData(
             `UPDATE applications SET approved_amount = $1, updated_at = NOW() WHERE id = $2`,
             [approvedAmount, applicationId]
         );
+        // 草稿存檔不 INSERT 新列，只 UPDATE 最新一列（append-only 模式：意見編輯期間共用同一列）
         await client.query(
-            `UPDATE application_workflow SET comments = $1, reviewed_at = NOW() WHERE application_id = $2`,
+            `UPDATE application_workflow
+             SET comments = $1, reviewed_at = NOW()
+             WHERE id = (
+                 SELECT id FROM application_workflow
+                 WHERE application_id = $2
+                 ORDER BY id DESC LIMIT 1
+             )`,
             [comments, applicationId]
         );
         await client.query('COMMIT');
@@ -894,12 +1382,10 @@ export async function closeCase(
              WHERE id = $1`,
             [applicationId, approvedAmount ?? null]
         );
-        await client.query(`
-            UPDATE application_workflow
-            SET stage = 'reimbursement', reviewer_id = $1, is_approved = true,
-                comments = '核銷完成，案件結案', reviewed_at = NOW()
-            WHERE application_id = $2
-        `, [reviewerUserId, applicationId]);
+        // 核銷完成不再寫 workflow row：
+        //   - 「進入核銷」的 stage='reimbursement' 列已在 advance(board_review→reimbursement) 時 INSERT；
+        //   - 「核銷完成」=狀態變更（status 3→4），非 stage 推進，audit_logs 已記錄事件。
+        // 若這裡也 INSERT，會與「進入核銷」列同 stage / is_approved，導致報表分不出「董事通過時間 vs 核銷完成時間」。
         await client.query('COMMIT');
         void writeAuditLog({
             userId: reviewerUserId,
@@ -927,6 +1413,7 @@ export async function fetchWorkflowRecord(applicationId: string) {
             FROM application_workflow w
             LEFT JOIN users u ON u.id = w.reviewer_id
             WHERE w.application_id = $1
+            ORDER BY w.id DESC
             LIMIT 1
         `, [applicationId]);
 

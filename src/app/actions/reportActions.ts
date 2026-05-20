@@ -68,6 +68,14 @@ export interface SelfPayReportRow {
     cancerStage: string | null;
     /** 行政審核（admin_review）通過/未通過 + 說明 */
     adminReviewText: string | null;
+    /** 行政審核通過時間（YYYY-MM-DD） */
+    adminReviewAt: string | null;
+    /** 家訪時間（YYYY-MM-DD） */
+    homeVisitAt: string | null;
+    /** 董事收到時間（board_review_assignments.assigned_at） */
+    boardReceivedAt: string | null;
+    /** 董事通過/結論時間 */
+    boardReviewedAt: string | null;
     /** 董事審核（board_review）通過/未通過 + 說明 */
     boardReviewText: string | null;
     /** 待收到的資料（撥款 phase 必備但未上傳/未符合的文件 label 列表） */
@@ -142,6 +150,23 @@ function formatDate(d: unknown): string | null {
     return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
 }
 
+/** YYYY-MM-DD HH:MM:SS（Asia/Taipei）— 給含時分秒的欄位用 */
+function formatDateTime(d: unknown): string | null {
+    if (!d) return null;
+    const dt = new Date(d as string | number | Date);
+    if (Number.isNaN(dt.getTime())) return null;
+    // 用 Asia/Taipei 顯示，避免 UTC 截掉前一天
+    const parts = new Intl.DateTimeFormat('en-CA', {
+        timeZone: 'Asia/Taipei',
+        year: 'numeric', month: '2-digit', day: '2-digit',
+        hour: '2-digit', minute: '2-digit', second: '2-digit',
+        hour12: false,
+    }).formatToParts(dt);
+    const get = (t: string) => parts.find(p => p.type === t)?.value ?? '';
+    // en-CA gives YYYY-MM-DD, time as HH:MM:SS
+    return `${get('year')}-${get('month')}-${get('day')} ${get('hour')}:${get('minute')}:${get('second')}`;
+}
+
 // ─── Report 1: 自費醫療 ──────────────────────────────────────────────────
 
 export async function fetchSelfPayMedicalReport(
@@ -167,27 +192,46 @@ export async function fetchSelfPayMedicalReport(
 
     const client = await pool.connect();
     try {
+        // append-only workflow 語意：每筆 row 的 stage = 「案件推進到此 stage 的事件」（target stage）。
+        // 「行政審核通過」記錄在 stage='home_visit' AND is_approved=true 的列（離開 admin_review、進入家訪）；
+        // 「董事審核通過」記錄在 stage='reimbursement' AND is_approved=true 的列（離開董事審核、進入核銷）。
+        //
+        // 退回邏輯：若案件「目前」在 admin_review，代表曾被退回／尚未進家訪 → 報表不應顯示「行政審核通過」。
+        // 同理：「目前」非在 reimbursement → 不顯示「董事審核通過」。
+        // 用 current_stage CTE 取每案最新 workflow row 的 stage 來閘門。
         const sql = `
-            WITH wf_admin AS (
+            WITH current_stage AS (
+                SELECT DISTINCT ON (application_id) application_id, stage AS cur_stage
+                FROM application_workflow
+                ORDER BY application_id, id DESC
+            ),
+            wf_admin AS (
                 SELECT DISTINCT ON (application_id) application_id, is_approved, comments, reviewed_at
                 FROM application_workflow
-                WHERE stage = 'admin_review'
-                ORDER BY application_id, COALESCE(reviewed_at, created_at) DESC
+                WHERE stage = 'home_visit' AND is_approved = true
+                ORDER BY application_id, id DESC
             ),
             wf_board AS (
                 SELECT DISTINCT ON (application_id) application_id, is_approved, comments, reviewed_at
                 FROM application_workflow
-                WHERE stage = 'board_review'
-                ORDER BY application_id, COALESCE(reviewed_at, created_at) DESC
+                WHERE stage = 'reimbursement' AND is_approved = true
+                ORDER BY application_id, id DESC
             )
             SELECT a.id, a.case_number, a.status, a.apply_at,
                    a.subsidy_subtype, a.application_way,
                    a.referral_unit_name, a.referral_contact_phone,
                    a.applicant_phone, a.application_form, a.treatment_phase, a.cancer_stage,
+                   a.board_review_comments AS board_review_comments_permanent,
                    u_app.name_enc AS app_name_enc, u_app.name_iv AS app_name_iv,
                    u_off.name_enc AS off_name_enc, u_off.name_iv AS off_name_iv, u_off.account AS off_account,
-                   wfa.is_approved AS admin_approved, wfa.comments AS admin_comments, wfa.reviewed_at AS admin_at,
-                   wfb.is_approved AS board_approved, wfb.comments AS board_comments, wfb.reviewed_at AS board_at,
+                   CASE WHEN cs.cur_stage <> 'admin_review' THEN wfa.is_approved END AS admin_approved,
+                   CASE WHEN cs.cur_stage <> 'admin_review' THEN wfa.comments    END AS admin_comments,
+                   CASE WHEN cs.cur_stage <> 'admin_review' THEN wfa.reviewed_at END AS admin_at,
+                   CASE WHEN cs.cur_stage = 'reimbursement' THEN wfb.is_approved END AS board_approved,
+                   CASE WHEN cs.cur_stage = 'reimbursement' THEN wfb.reviewed_at END AS board_at,
+                   bra.assigned_at AS board_received_at,
+                   /* 家訪時間：home_visit.updated_at（真正含時分秒的 timestamp；visit_date 只有日期） */
+                   hv.updated_at AS home_visit_at,
                    /* 待收文件：撥款 phase 必備、目前尚無任何 status='1'（符合）的文件 */
                    (SELECT array_agg(dtc.label ORDER BY dtc.id)
                       FROM document_type_config dtc
@@ -204,8 +248,11 @@ export async function fetchSelfPayMedicalReport(
             FROM applications a
             LEFT JOIN users u_app  ON u_app.id  = a.applicant_id
             LEFT JOIN users u_off  ON u_off.id  = a.officer_id
+            LEFT JOIN current_stage cs ON cs.application_id = a.id
             LEFT JOIN wf_admin wfa ON wfa.application_id = a.id
             LEFT JOIN wf_board wfb ON wfb.application_id = a.id
+            LEFT JOIN board_review_assignments bra ON bra.application_id = a.id
+            LEFT JOIN home_visit hv ON hv.application_id = a.id
             WHERE ${where.join(' AND ')}
             ORDER BY a.apply_at ASC, a.case_number ASC
             LIMIT 5000
@@ -213,16 +260,13 @@ export async function fetchSelfPayMedicalReport(
         const res = await client.query(sql, params);
 
         const rows: SelfPayReportRow[] = res.rows.map(r => {
+            // 行政審核 / 董事審核欄位只顯示「通過 / 未通過」；時間另列在「行政通過時間 / 董事通過時間」欄位
             const adminText = r.admin_approved == null
                 ? null
-                : (r.admin_approved
-                    ? `通過${r.admin_at ? `（${formatDate(r.admin_at)}）` : ''}${r.admin_comments ? '：' + r.admin_comments : ''}`
-                    : `未通過${r.admin_at ? `（${formatDate(r.admin_at)}）` : ''}${r.admin_comments ? '：' + r.admin_comments : ''}`);
+                : (r.admin_approved ? '通過' : '未通過');
             const boardText = r.board_approved == null
                 ? null
-                : (r.board_approved
-                    ? `通過${r.board_at ? `（${formatDate(r.board_at)}）` : ''}${r.board_comments ? '：' + r.board_comments : ''}`
-                    : `未通過${r.board_at ? `（${formatDate(r.board_at)}）` : ''}${r.board_comments ? '：' + r.board_comments : ''}`);
+                : (r.board_approved ? '通過' : '未通過');
             return {
                 caseNumber: r.case_number,
                 officerName: r.off_name_enc ? decryptName(r.off_name_enc, r.off_name_iv) : (r.off_account ?? ''),
@@ -237,6 +281,10 @@ export async function fetchSelfPayMedicalReport(
                 treatmentPhase: (r.treatment_phase === 'B' || r.treatment_phase === 'A' || r.treatment_phase === 'X') ? r.treatment_phase : null,
                 cancerStage: r.cancer_stage ?? null,
                 adminReviewText: adminText,
+                adminReviewAt: formatDateTime(r.admin_at),
+                homeVisitAt: formatDateTime(r.home_visit_at),
+                boardReceivedAt: formatDateTime(r.board_received_at),
+                boardReviewedAt: formatDateTime(r.board_at),
                 boardReviewText: boardText,
                 pendingDocuments: Array.isArray(r.pending_doc_labels) ? r.pending_doc_labels.filter(Boolean) : [],
                 status: r.status,

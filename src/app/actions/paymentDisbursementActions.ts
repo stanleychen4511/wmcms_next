@@ -72,6 +72,13 @@ export interface PaymentDisbursement {
     lastReceiptEmailStatus: 'sent' | 'failed' | null;  // 最近一次寄送領款收據 email 狀態
     lastPrintedAt: string | null;              // 會計合併列印時間
     medicalReceipts: { fileUrl: string; uploadedAt: string | null }[];  // 會計上傳的醫療收據（id=17）
+
+    // user feedback #12：是否同意公開捐贈者姓名（每筆撥款獨立記錄）+ 配套文件
+    donorDisclosureConsent: boolean | null;    // null=未填 / true=同意公開 / false=不同意 → 須附聲明書
+    donorConsentLetterUploaded: boolean;       // 是否已上傳「捐贈/受補助者聲明書」（doc id=22, disbursement_id=X）
+    donorConsentLetterUrl: string | null;      // 聲明書 file_path（供檢視按鈕）
+    passbookCoverUploaded: boolean;            // 是否已上傳「存摺封面影本」（doc id=21, disbursement_id=X）
+    passbookCoverUrl: string | null;           // 存摺封面 file_path（供檢視按鈕）
 }
 
 export interface DisbursementSummary {
@@ -243,6 +250,11 @@ function rowToDisbursement(r: any): PaymentDisbursement {
                 uploadedAt: m.uploadedAt ?? m.uploaded_at ?? null,
               }))
             : [],
+        donorDisclosureConsent:           r.donor_disclosure_consent ?? null,
+        donorConsentLetterUploaded:       !!r.donor_consent_letter_uploaded,
+        donorConsentLetterUrl:            r.donor_consent_letter_url ?? null,
+        passbookCoverUploaded:            !!r.passbook_cover_uploaded,
+        passbookCoverUrl:                 r.passbook_cover_url ?? null,
     };
 }
 
@@ -316,7 +328,23 @@ export async function fetchDisbursements(
                      ) ORDER BY uploaded_at DESC), '[]'::json)
                      FROM application_documents ad2
                      WHERE ad2.id = 17 AND ad2.disbursement_id = payment_disbursements.id
-                       AND ad2.file_path IS NOT NULL) AS medical_receipts
+                       AND ad2.file_path IS NOT NULL) AS medical_receipts,
+                    /* user feedback #12：捐贈聲明書 + 存摺封面（per-disbursement） */
+                    payment_disbursements.donor_disclosure_consent,
+                    EXISTS (SELECT 1 FROM application_documents ad4
+                            WHERE ad4.id = 22 AND ad4.disbursement_id = payment_disbursements.id
+                              AND ad4.file_path IS NOT NULL) AS donor_consent_letter_uploaded,
+                    (SELECT file_path FROM application_documents ad4u
+                     WHERE ad4u.id = 22 AND ad4u.disbursement_id = payment_disbursements.id
+                       AND ad4u.file_path IS NOT NULL
+                     ORDER BY uploaded_at DESC LIMIT 1) AS donor_consent_letter_url,
+                    EXISTS (SELECT 1 FROM application_documents ad5
+                            WHERE ad5.id = 21 AND ad5.disbursement_id = payment_disbursements.id
+                              AND ad5.file_path IS NOT NULL) AS passbook_cover_uploaded,
+                    (SELECT file_path FROM application_documents ad5u
+                     WHERE ad5u.id = 21 AND ad5u.disbursement_id = payment_disbursements.id
+                       AND ad5u.file_path IS NOT NULL
+                     ORDER BY uploaded_at DESC LIMIT 1) AS passbook_cover_url
              FROM payment_disbursements
              WHERE application_id = $1::bigint
              ORDER BY created_at ASC`,
@@ -609,6 +637,36 @@ async function checkOfficerGate(client: any, disbursementId: string, cur: any): 
     }
     if (mailRes.rows[0].status !== 'sent') {
         return '上次寄送領款收據 email 失敗，請重新寄送';
+    }
+    // 存摺封面（document_type_config.id=21）必須已上傳（每次撥款都要）
+    const passRes = await client.query(
+        `SELECT 1 FROM application_documents
+         WHERE id = 21 AND disbursement_id = $1::bigint AND file_path IS NOT NULL
+         LIMIT 1`,
+        [disbursementId]
+    );
+    if (passRes.rowCount === 0) {
+        return '尚未上傳存摺封面（每次撥款都需上傳）';
+    }
+    // 若不同意公開捐贈者姓名，需上傳「捐贈/受補助者聲明書」（doc id=22）
+    const consentRes = await client.query(
+        `SELECT donor_disclosure_consent FROM payment_disbursements WHERE id = $1::bigint`,
+        [disbursementId]
+    );
+    const consent = consentRes.rows[0]?.donor_disclosure_consent;
+    if (consent === null || consent === undefined) {
+        return '請先確認「是否同意公開捐贈者姓名」';
+    }
+    if (consent === false) {
+        const letterRes = await client.query(
+            `SELECT 1 FROM application_documents
+             WHERE id = 22 AND disbursement_id = $1::bigint AND file_path IS NOT NULL
+             LIMIT 1`,
+            [disbursementId]
+        );
+        if (letterRes.rowCount === 0) {
+            return '勾選「不同意公開捐贈者姓名」時，需上傳捐贈/受補助者聲明書';
+        }
     }
     return null;
 }
@@ -1269,6 +1327,41 @@ export async function setDisbursementChecklist(
         return { success: true, data: undefined };
     } catch (err: any) {
         console.error('setDisbursementChecklist error:', err);
+        return { success: false, error: err.message ?? '更新失敗' };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── 設定捐贈者公開同意（officer only, stage='1'） ────────────────────
+
+export async function setDisbursementDonorConsent(
+    operatorUserId: string,
+    disbursementId: string,
+    consent: boolean,
+): Promise<ActionResult> {
+    if (!/^\d+$/.test(disbursementId)) return { success: false, error: '無效的撥款 ID' };
+    const client = await pool.connect();
+    try {
+        const cur = await client.query(
+            `SELECT review_stage FROM payment_disbursements WHERE id = $1::bigint`,
+            [disbursementId]
+        );
+        if (cur.rowCount === 0) return { success: false, error: '撥款紀錄不存在' };
+        const stage = cur.rows[0].review_stage as ReviewStage;
+        if (stage !== '1') {
+            return { success: false, error: '僅在「待送出」階段可設定' };
+        }
+        if (!(await hasAnyRole(operatorUserId, rolesForStage('1')))) {
+            return { success: false, error: '僅承辦人可設定' };
+        }
+        await client.query(
+            `UPDATE payment_disbursements SET donor_disclosure_consent = $1, updated_at = NOW() WHERE id = $2::bigint`,
+            [consent, disbursementId]
+        );
+        return { success: true, data: undefined };
+    } catch (err: any) {
+        console.error('setDisbursementDonorConsent error:', err);
         return { success: false, error: err.message ?? '更新失敗' };
     } finally {
         client.release();

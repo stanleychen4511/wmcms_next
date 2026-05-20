@@ -385,6 +385,14 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                                         {!doc.isRequired && (
                                             <span className="ml-2 text-[10px] font-normal text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">非必填</span>
                                         )}
+                                        {doc.isRequired && doc.allowSupplement && doc.status !== '1' && (
+                                            <span
+                                                className="ml-2 text-[10px] font-normal text-amber-700 bg-amber-50 border border-amber-200 px-1.5 py-0.5 rounded"
+                                                title="此文件為必備，但允許延後補件 — 可先進入家訪階段，於送董事審核前補齊即可"
+                                            >
+                                                可延後補件
+                                            </span>
+                                        )}
                                     </p>
                                     {doc.storageLocationPath && (
                                         <p className="text-xs text-slate-400 mt-0.5">

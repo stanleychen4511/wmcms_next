@@ -13,9 +13,42 @@ export interface ApplicationStatusResult {
     applyAmount?: number | null;
     approvedAmount?: number | null;
     totalApprovedAmount?: number;
+    /** 累積核准補助金額 — 經濟弱勢（subsidy_subtype='1'）案件加總 */
+    totalApprovedSubtype1?: number;
+    /** 累積核准補助金額 — 小康家庭（subsidy_subtype='2'）案件加總 */
+    totalApprovedSubtype2?: number;
     maxAmount?: number;
     remaining?: number;
     error?: string;
+}
+
+/**
+ * #24: 用身分證號（blind index）查詢申請人 ID。
+ * 回傳 null 表示查不到。
+ *
+ * DB 內所有 search_salt 都是 32-byte Buffer（CLAUDE.md 規定的格式；歷史 64-byte
+ * 不一致格式已由 scripts/migrate_64byte_salts.mjs 一次性轉換完畢）。
+ * Bidx 是 TEXT (64-char hex string)，與寫入時 `generateBlindIndex(value, hexStr)` 一致。
+ */
+export async function findApplicantIdByIdNumber(idNumber: string): Promise<string | null> {
+    const trimmed = (idNumber ?? '').trim().toUpperCase();
+    if (!trimmed) return null;
+    const client = await pool.connect();
+    try {
+        const usersRes = await client.query(
+            `SELECT id, search_salt, id_number_bidx FROM users WHERE is_active = true`
+        );
+        for (const row of usersRes.rows) {
+            if (!row.search_salt || !row.id_number_bidx) continue;
+            const saltHex = (row.search_salt as Buffer).toString('hex');
+            if (generateBlindIndex(trimmed, saltHex) === String(row.id_number_bidx)) {
+                return String(row.id);
+            }
+        }
+        return null;
+    } finally {
+        client.release();
+    }
 }
 
 export async function checkApplicationStatus(idNumber: string): Promise<ApplicationStatusResult> {
@@ -79,13 +112,19 @@ export async function checkApplicationStatus(idNumber: string): Promise<Applicat
         `, [matchedUserId]);
 
         // 4. Get total approved amount (status='4' 核銷完成 only)
+        //    同時依 subsidy_subtype 分開累計，給 UI 顯示「經濟弱勢累計 / 小康家庭累計」
         const sumRes = await client.query(`
-            SELECT COALESCE(SUM(approved_amount), 0) AS total_approved
+            SELECT
+                COALESCE(SUM(approved_amount), 0) AS total_approved,
+                COALESCE(SUM(approved_amount) FILTER (WHERE subsidy_subtype = '1'), 0) AS total_approved_1,
+                COALESCE(SUM(approved_amount) FILTER (WHERE subsidy_subtype = '2'), 0) AS total_approved_2
             FROM applications
             WHERE applicant_id = $1 AND status = '4'
         `, [matchedUserId]);
 
-        const totalApprovedAmount = parseInt(sumRes.rows[0].total_approved || '0', 10);
+        const totalApprovedAmount    = parseInt(sumRes.rows[0].total_approved   || '0', 10);
+        const totalApprovedSubtype1  = parseInt(sumRes.rows[0].total_approved_1 || '0', 10);
+        const totalApprovedSubtype2  = parseInt(sumRes.rows[0].total_approved_2 || '0', 10);
 
         // 子類型尚未選定（lookup 階段），採兩子類型較大值；submit 時再用實際子類型 enforce
         const { fetchSubsidyAmountLimitsMap } = await import('./eligibilityRulesActions');
@@ -101,6 +140,8 @@ export async function checkApplicationStatus(idNumber: string): Promise<Applicat
             applyAmount: appData?.apply_amount ?? null,
             approvedAmount: appData?.approved_amount ?? null,
             totalApprovedAmount,
+            totalApprovedSubtype1,
+            totalApprovedSubtype2,
             maxAmount,
             remaining,
         };
@@ -416,13 +457,18 @@ export async function fetchCaseSummaries(
                     a.apply_at,
                     a.status,
                     a.subsidy_subtype,
+                    a.applicant_phone,
                     u_off.name_enc as off_name_enc, u_off.name_iv as off_name_iv,
                     u_off.account as officer_account,
                     w.stage as wf_stage,
                     bra.group_id AS board_group_id
                 FROM applications a
                 LEFT JOIN users u_off ON u_off.id = a.officer_id
-                LEFT JOIN application_workflow w ON w.application_id = a.id
+                LEFT JOIN LATERAL (
+                    SELECT stage FROM application_workflow
+                    WHERE application_id = a.id
+                    ORDER BY id DESC LIMIT 1
+                ) w ON TRUE
                 LEFT JOIN board_review_assignments bra ON bra.application_id = a.id
                 ${useVolunteerFilter ? 'WHERE a.applicant_id IN (SELECT applicant_id FROM applicants_for_volunteer)' : ''}
                 ORDER BY a.applicant_id, a.apply_at DESC
@@ -443,7 +489,8 @@ export async function fetchCaseSummaries(
                 l.off_name_iv,
                 l.officer_account,
                 l.board_group_id,
-                l.subsidy_subtype
+                l.subsidy_subtype,
+                l.applicant_phone
             FROM users u
             JOIN user_stats s ON s.applicant_id = u.id
             LEFT JOIN latest_apps l ON l.applicant_id = u.id
@@ -479,6 +526,7 @@ export async function fetchCaseSummaries(
                 applicationId: String(row.app_id),
                 caseNumber: row.case_number ?? '',
                 applicantName: name,
+                applicantPhone: row.applicant_phone ?? null,
                 applicationCount: parseInt(row.app_count),
                 totalAmount: parseInt(row.total_approved) || 0,
                 appliedAt: row.apply_at ? row.apply_at.toISOString().split('T')[0] : '',
@@ -536,6 +584,7 @@ export async function assignOfficerBatch(
 export async function fetchApplicantHistory(applicantId: string): Promise<ApplicationRecord[]> {
     const client = await pool.connect();
     try {
+        // Append-only workflow：每案多列；用 LATERAL 取最新一列當作目前 stage
         const res = await client.query(`
             SELECT
                 a.id, a.case_number, a.apply_at, a.status, a.approved_amount,
@@ -544,7 +593,11 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
                 w.stage as wf_stage
             FROM applications a
             LEFT JOIN users u_off ON u_off.id = a.officer_id
-            LEFT JOIN application_workflow w ON w.application_id = a.id
+            LEFT JOIN LATERAL (
+                SELECT stage FROM application_workflow
+                WHERE application_id = a.id
+                ORDER BY id DESC LIMIT 1
+            ) w ON TRUE
             WHERE a.applicant_id = $1
             ORDER BY a.apply_at DESC
         `, [applicantId]);
@@ -623,6 +676,85 @@ export async function fetchApplicationIdsByCaseNumbers(
     }
 }
 
+/**
+ * 取得所有「尚未派案」（officer_id IS NULL 且未結案）的案件清單。
+ * 給首頁的「未派案」modal 用。回傳順序為 apply_at ASC（最早申請的先處理）。
+ */
+export async function fetchUnassignedCases(): Promise<Array<{ applicationId: string; caseNumber: string; applicantName: string; appliedAt: string | null }>> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT a.id::text AS app_id, a.case_number, a.apply_at,
+                    u.name_enc, u.name_iv
+             FROM applications a
+             JOIN users u ON u.id = a.applicant_id
+             WHERE a.officer_id IS NULL AND a.status NOT IN ('2','4')
+             ORDER BY a.apply_at ASC NULLS LAST`
+        );
+        const { decryptAES } = await import('../../lib/crypto');
+        return res.rows.map(row => {
+            const name = row.name_enc && row.name_iv ? (decryptAES(row.name_enc, row.name_iv) || '未知') : '未知';
+            return {
+                applicationId: row.app_id,
+                caseNumber: row.case_number ?? '',
+                applicantName: name,
+                appliedAt: row.apply_at ? row.apply_at.toISOString().split('T')[0] : null,
+            };
+        });
+    } catch (err) {
+        console.error('fetchUnassignedCases error', err);
+        return [];
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * 取得「可撥款但尚未建立撥款紀錄」的案件清單（個管自己負責的）。
+ *
+ * 條件：
+ *   - status='3' （待核銷 — 董事審核已通過、進入核銷階段）
+ *   - officer_id = $1 （當前個管）
+ *   - 尚無任何 payment_disbursements 紀錄
+ *
+ * 用途：首頁「可撥款」提醒按鈕，提醒承辦人對核可通過的案件建立撥款流程。
+ */
+export async function fetchDisbursableCases(operatorUserId: string): Promise<Array<{
+    applicationId: string; caseNumber: string; applicantName: string; approvedAmount: number | null;
+}>> {
+    if (!/^\d+$/.test(operatorUserId)) return [];
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT a.id::text AS app_id, a.case_number, a.approved_amount,
+                    u.name_enc, u.name_iv
+             FROM applications a
+             JOIN users u ON u.id = a.applicant_id
+             WHERE a.status = '3'
+               AND a.officer_id = $1::bigint
+               AND NOT EXISTS (
+                   SELECT 1 FROM payment_disbursements pd
+                   WHERE pd.application_id = a.id
+               )
+             ORDER BY a.apply_at ASC NULLS LAST`,
+            [operatorUserId]
+        );
+        const { decryptAES } = await import('../../lib/crypto');
+        return res.rows.map(row => ({
+            applicationId: row.app_id,
+            caseNumber: row.case_number ?? '',
+            applicantName: row.name_enc && row.name_iv
+                ? (decryptAES(row.name_enc, row.name_iv) || '未知') : '未知',
+            approvedAmount: row.approved_amount != null ? Number(row.approved_amount) : null,
+        }));
+    } catch (err) {
+        console.error('fetchDisbursableCases error', err);
+        return [];
+    } finally {
+        client.release();
+    }
+}
+
 export async function fetchUnassignedCount(): Promise<number> {
     const client = await pool.connect();
     try {
@@ -643,10 +775,90 @@ export async function fetchUnassignedCount(): Promise<number> {
 
 // ─── Edit case basics (admin_review stage only) ─────────────────────────────
 
+/**
+ * #12 編輯領款收據：開放 case_officer/admin/supervisor 在任何階段更新申請人聯絡電話 + 戶籍地址，
+ * 不受 updateApplicationBasics 的 stage='admin_review' 限制（因為這兩個欄位是領款收據必要資料，
+ * 進入核銷後仍可能需要修正）。
+ *
+ * 只接受兩個欄位，比 updateApplicationBasics 嚴格，避免被誤用為「繞過 stage 鎖」的入口。
+ */
+export async function updateApplicantContact(
+    applicationId: string,
+    patch: { applicantPhone?: string; applicantAddress?: string | null },
+    operatorUserId: string,
+): Promise<{ success: boolean; error?: string; changedFields?: string[] }> {
+    if (!/^\d+$/.test(applicationId)) return { success: false, error: '無效的案件 ID' };
+
+    const trimmedPhone = patch.applicantPhone !== undefined ? patch.applicantPhone.trim() : undefined;
+    if (trimmedPhone !== undefined) {
+        if (!trimmedPhone) return { success: false, error: '申請人聯絡電話為必填' };
+        if (trimmedPhone.length > 50) return { success: false, error: '聯絡電話過長' };
+    }
+    const newAddr = patch.applicantAddress !== undefined
+        ? ((patch.applicantAddress ?? '').trim() || null)
+        : undefined;
+    if (newAddr !== undefined && newAddr && newAddr.length > 500) {
+        return { success: false, error: '戶籍地址過長' };
+    }
+
+    const client = await pool.connect();
+    try {
+        // 權限守門：case_officer / supervisor / admin（chairman/board_member 不能改）
+        const caseRes = await client.query(
+            `SELECT a.officer_id, a.applicant_phone, a.applicant_address
+             FROM applications a WHERE a.id = $1::bigint LIMIT 1`,
+            [applicationId]
+        );
+        if (caseRes.rowCount === 0) return { success: false, error: '案件不存在' };
+        const row = caseRes.rows[0];
+        const roleRes = await client.query(
+            `SELECT r.code FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+             WHERE ur.user_id = $1::bigint`,
+            [operatorUserId]
+        );
+        const roles = roleRes.rows.map((r: any) => r.code);
+        const isOfficer = String(row.officer_id) === String(operatorUserId) && roles.includes('case_officer');
+        const isPriv = roles.includes('admin') || roles.includes('supervisor');
+        if (!isOfficer && !isPriv) {
+            return { success: false, error: '僅指派之承辦人、主管或系統管理員可修改' };
+        }
+
+        const sets: string[] = [];
+        const params: unknown[] = [];
+        const changedFields: string[] = [];
+        if (trimmedPhone !== undefined && trimmedPhone !== (row.applicant_phone ?? '')) {
+            params.push(trimmedPhone);
+            sets.push(`applicant_phone = $${params.length}`);
+            changedFields.push('applicantPhone');
+        }
+        if (newAddr !== undefined && newAddr !== (row.applicant_address ?? null)) {
+            params.push(newAddr);
+            sets.push(`applicant_address = $${params.length}`);
+            changedFields.push('applicantAddress');
+        }
+        if (sets.length === 0) return { success: true, changedFields: [] };
+
+        sets.push('updated_at = NOW()');
+        params.push(applicationId);
+        await client.query(
+            `UPDATE applications SET ${sets.join(', ')} WHERE id = $${params.length}::bigint`,
+            params
+        );
+        return { success: true, changedFields };
+    } catch (err: any) {
+        console.error('updateApplicantContact error:', err);
+        return { success: false, error: err.message ?? '更新失敗' };
+    } finally {
+        client.release();
+    }
+}
+
 export interface UpdateApplicationBasicsPatch {
     applicantName?: string;
     /** 申請人聯絡電話；不可清空 */
     applicantPhone?: string;
+    /** 申請人戶籍地址；可空字串 */
+    applicantAddress?: string | null;
     /** 出生年月日 YYYY-MM-DD；不可清空 */
     applicantDob?: string;
     /** 癌別；不可清空 */
@@ -694,11 +906,15 @@ export async function updateApplicationBasics(
                     a.application_type, a.application_way, a.referral_unit_id,
                     a.referral_unit_name, a.referral_contact_name,
                     a.referral_contact_title, a.referral_contact_phone,
-                    a.applicant_phone, a.applicant_dob, a.cancer_type, a.cancer_stage,
+                    a.applicant_phone, a.applicant_address, a.applicant_dob, a.cancer_type, a.cancer_stage,
                     a.application_form, a.treatment_phase,
                     w.stage AS wf_stage
              FROM applications a
-             LEFT JOIN application_workflow w ON w.application_id = a.id
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
              WHERE a.id = $1::bigint
              LIMIT 1`,
             [applicationId]
@@ -831,6 +1047,21 @@ export async function updateApplicationBasics(
             }
         }
 
+        // ── Step e2b: applicant address handling（選填，可空） ─────────────
+        let addressActuallyChanged = false;
+        let nextAddress: string | null = row.applicant_address ?? null;
+        if (patch.applicantAddress !== undefined) {
+            const newAddr = (patch.applicantAddress ?? '').trim() || null;
+            if (newAddr && newAddr.length > 500) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '戶籍地址過長' };
+            }
+            if (newAddr !== (row.applicant_address ?? null)) {
+                addressActuallyChanged = true;
+                nextAddress = newAddr;
+            }
+        }
+
         // ── Step e3: DOB / 癌別 / 期數 — 必填且不可清空 ────────────────────
         const formatDob = (v: unknown): string => {
             if (!v) return '';
@@ -908,6 +1139,11 @@ export async function updateApplicationBasics(
             changedFields.push('applicantPhone');
             before.applicantPhone = row.applicant_phone ?? null;
             after.applicantPhone = nextPhone;
+        }
+        if (addressActuallyChanged) {
+            changedFields.push('applicantAddress');
+            before.applicantAddress = row.applicant_address ?? null;
+            after.applicantAddress = nextAddress;
         }
         if (dobChanged) {
             changedFields.push('applicantDob');
@@ -1001,6 +1237,10 @@ export async function updateApplicationBasics(
             if (phoneActuallyChanged) {
                 params.push(nextPhone);
                 sets.push(`applicant_phone = $${params.length}`);
+            }
+            if (addressActuallyChanged) {
+                params.push(nextAddress);
+                sets.push(`applicant_address = $${params.length}`);
             }
             if (dobChanged) {
                 params.push(nextDob);

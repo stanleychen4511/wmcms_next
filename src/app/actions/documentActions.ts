@@ -46,6 +46,8 @@ export interface DocumentEntry {
     rejectReason?: string;
     uploadedAt?: string;
     isRequired: boolean;
+    /** 是否可延後補件：true 表示收件當下未上傳也能進入家訪階段，但送董事審核前須齊全 */
+    allowSupplement: boolean;
     phase?: string; // 'apply' | 'reimbursement'
     storageLocationPath?: string | null;
 }
@@ -504,7 +506,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                        lp.full_path || ' / ' || l.location_name
                 FROM file_storage_location l JOIN loc_path lp ON l.parent_id = lp.id
             )
-            SELECT d.id::text, d.label, d.phase, d.is_required, d.sort_order,
+            SELECT d.id::text, d.label, d.phase, d.is_required, d.allow_supplement, d.sort_order,
                    lp.full_path AS storage_location_path
             FROM document_type_config d
             LEFT JOIN loc_path lp ON lp.id = d.storage_location_id
@@ -514,7 +516,8 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
 
         const docTypes = configRes.rows as {
             id: string; label: string; phase: string;
-            is_required: boolean; storage_location_path: string | null;
+            is_required: boolean; allow_supplement: boolean;
+            storage_location_path: string | null;
         }[];
 
         // 僅取 case-level 文件（scope='C'，即 disbursement_id IS NULL）
@@ -539,6 +542,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                     rejectReason: row.reject_reason,
                     uploadedAt: row.uploaded_at ? row.uploaded_at.toISOString() : undefined,
                     isRequired: doc.is_required,
+                    allowSupplement: doc.allow_supplement,
                     phase: doc.phase,
                     storageLocationPath: doc.storage_location_path,
                 };
@@ -548,6 +552,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                 label: doc.label,
                 status: '0' as const,
                 isRequired: doc.is_required,
+                allowSupplement: doc.allow_supplement,
                 phase: doc.phase,
                 storageLocationPath: doc.storage_location_path,
             };

@@ -30,6 +30,7 @@ import {
     submitExecutiveStage,
     rejectDisbursement,
     setDisbursementChecklist,
+    setDisbursementDonorConsent,
     generateDisbursementPaymentReceipt,
     sendDisbursementPaymentReceiptEmail,
     fetchLastPrintMeta,
@@ -53,6 +54,12 @@ interface Props {
     applicantId?: string;        // 用於 accountant 查看該申請人歷史醫療收據
     operatorUserId: string;
     operatorRoles: Role[];
+    /** 申請人聯絡電話 — 用於「編輯收據資料」表單預填，及產生收據 PDF */
+    applicantPhone?: string | null;
+    /** 申請人戶籍地址 — 同上 */
+    applicantAddress?: string | null;
+    /** 編輯收據資料儲存後通知 caller refresh appDetail */
+    onCaseDataChanged?: () => void;
     onCanCloseChange?: (canClose: boolean) => void;
 }
 
@@ -70,7 +77,7 @@ function canActOnStage(roles: Role[], stage: ReviewStage): boolean {
 
 // ─── 主元件 ──────────────────────────────────────────────────────────
 
-export function DisbursementPanel({ applicationId, applicantId, operatorUserId, operatorRoles, onCanCloseChange }: Props) {
+export function DisbursementPanel({ applicationId, applicantId, operatorUserId, operatorRoles, applicantPhone, applicantAddress, onCaseDataChanged, onCanCloseChange }: Props) {
     const { push: pushToast } = useToast();
     const [summary, setSummary] = useState<DisbursementSummary | null>(null);
     const [loading, setLoading] = useState(true);
@@ -269,6 +276,9 @@ export function DisbursementPanel({ applicationId, applicantId, operatorUserId, 
                             applicationId={applicationId}
                             operatorUserId={operatorUserId}
                             operatorRoles={operatorRoles}
+                            applicantPhone={applicantPhone}
+                            applicantAddress={applicantAddress}
+                            onCaseDataChanged={onCaseDataChanged}
                             onChanged={reload}
                         />
                     ))}
@@ -537,6 +547,9 @@ interface RowProps {
     applicationId: string;
     operatorUserId: string;
     operatorRoles: Role[];
+    applicantPhone?: string | null;
+    applicantAddress?: string | null;
+    onCaseDataChanged?: () => void;
     onChanged: () => void;
 }
 
@@ -549,8 +562,21 @@ const STAGE_COLORS: Record<ReviewStage, string> = {
     'X': 'bg-slate-200 text-slate-500',
 };
 
-function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId, operatorRoles, onChanged }: RowProps) {
+function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId, operatorRoles, applicantPhone, applicantAddress, onCaseDataChanged, onChanged }: RowProps) {
     const { push: pushToast } = useToast();
+    // 編輯領款收據資料的 inline form 狀態（涵蓋所有 PDF 用到的欄位）
+    const [showEditReceipt, setShowEditReceipt] = useState(false);
+    const [editPhone, setEditPhone] = useState('');
+    const [editAddress, setEditAddress] = useState('');
+    const [editAmount, setEditAmount] = useState<number | ''>('');
+    const [editPaymentMethod, setEditPaymentMethod] = useState<string>('代付醫院');
+    const [editPayeeName, setEditPayeeName] = useState('');
+    const [editPayeeRelation, setEditPayeeRelation] = useState('本人');
+    const [editPayeeRelationOther, setEditPayeeRelationOther] = useState('');
+    const [editBankName, setEditBankName] = useState('');
+    const [editBankBranch, setEditBankBranch] = useState('');
+    const [editBankAccount, setEditBankAccount] = useState('');
+    const [savingReceiptEdit, setSavingReceiptEdit] = useState(false);
     const [showReceiveForm, setShowReceiveForm] = useState(false);
     const [receivedAt, setReceivedAt] = useState(d.receivedAt ?? new Date().toISOString().split('T')[0]);
     const [uploading, setUploading] = useState(false);
@@ -640,6 +666,55 @@ function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId
         }
     };
 
+    // 上傳指定文件類型至本撥款（passbook=21, donor letter=22）
+    const uploadDocOfType = async (file: File, docTypeId: '21' | '22'): Promise<{ success: boolean; error?: string }> => {
+        setUploading(true);
+        try {
+            const docLabel = `${docTypeId === '21' ? '存摺封面' : '捐贈聲明書'}_${d.receiptNumber}`;
+            const uploaded = await uploadFileToBlob(file, {
+                pathPrefix: `uploads/${applicationId}/disb${d.id}`,
+            });
+            const upRes = await linkApplicationDocumentByUrl(
+                applicationId,
+                docTypeId,
+                docLabel,
+                uploaded.url,
+                uploaded.originalName,
+                uploaded.mimeType,
+                { disbursementId: d.id, operatorUserId },
+            );
+            return upRes.success
+                ? { success: true }
+                : { success: false, error: upRes.error ?? '上傳失敗' };
+        } catch (err: any) {
+            return { success: false, error: '上傳失敗：' + (err?.message ?? err) };
+        } finally {
+            setUploading(false);
+        }
+    };
+
+    const handlePassbookFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        e.target.value = '';
+        const r = await uploadDocOfType(file, '21');
+        if (r.success) { pushToast({ type: 'success', msg: '存摺封面已上傳' }); onChanged(); }
+        else pushToast({ type: 'error', msg: r.error ?? '上傳失敗' });
+    };
+    const handleDonorLetterFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
+        const file = e.target.files?.[0];
+        if (!file) return;
+        e.target.value = '';
+        const r = await uploadDocOfType(file, '22');
+        if (r.success) { pushToast({ type: 'success', msg: '捐贈聲明書已上傳' }); onChanged(); }
+        else pushToast({ type: 'error', msg: r.error ?? '上傳失敗' });
+    };
+    const handleSetDonorConsent = async (consent: boolean) => {
+        const res = await setDisbursementDonorConsent(operatorUserId, d.id, consent);
+        if (res.success) onChanged();
+        else pushToast({ type: 'error', msg: res.error });
+    };
+
     // 切換 checklist 欄位
     const handleToggleCheck = async (field: string, value: boolean) => {
         const res = await setDisbursementChecklist(operatorUserId, d.id, field, value);
@@ -660,6 +735,64 @@ function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId
             onChanged();
         } else {
             pushToast({ type: 'error', msg: res.error });
+        }
+    };
+
+    // 編輯收據資料（戶籍地址 + 聯絡電話）後重新產生 PDF
+    const handleSaveReceiptEdit = async () => {
+        const trimmedPhone = editPhone.trim();
+        if (!trimmedPhone) {
+            pushToast({ type: 'error', msg: '聯絡電話為必填' });
+            return;
+        }
+        if (typeof editAmount !== 'number' || editAmount <= 0) {
+            pushToast({ type: 'error', msg: '撥款金額必須大於 0' });
+            return;
+        }
+        if (!editPayeeName.trim()) {
+            pushToast({ type: 'error', msg: '受款人姓名為必填' });
+            return;
+        }
+        setSavingReceiptEdit(true);
+        try {
+            // (1) 案件層級：申請人電話 + 戶籍地址（用 updateApplicantContact 不受階段限制）
+            const { updateApplicantContact } = await import('../app/actions/applicationActions');
+            const r1 = await updateApplicantContact(applicationId, {
+                applicantPhone: trimmedPhone,
+                applicantAddress: editAddress.trim() || null,
+            }, operatorUserId);
+            if (!r1.success) {
+                pushToast({ type: 'error', msg: r1.error ?? '儲存案件資料失敗' });
+                return;
+            }
+            // (2) 撥款層級：金額、給付方式、銀行、受款人
+            const { updateDisbursement } = await import('../app/actions/paymentDisbursementActions');
+            const r2 = await updateDisbursement(operatorUserId, d.id, {
+                amount: editAmount,
+                paymentMethod: editPaymentMethod,
+                bankName: editBankName.trim(),
+                bankBranch: editBankBranch.trim(),
+                bankAccount: editBankAccount.trim(),
+                payeeName: editPayeeName.trim(),
+                payeeRelation: editPayeeRelation,
+                payeeRelationOther: editPayeeRelation === '其他' ? editPayeeRelationOther.trim() : '',
+            });
+            if (!r2.success) {
+                pushToast({ type: 'error', msg: r2.error ?? '儲存撥款資料失敗' });
+                return;
+            }
+            // (3) 重新產生 PDF
+            const gen = await generateDisbursementPaymentReceipt(operatorUserId, d.id);
+            if (!gen.success) {
+                pushToast({ type: 'error', msg: gen.error ?? '重新產生 PDF 失敗' });
+                return;
+            }
+            pushToast({ type: 'success', msg: '已更新資料並重新產生領款收據' });
+            setShowEditReceipt(false);
+            onCaseDataChanged?.();
+            onChanged();
+        } finally {
+            setSavingReceiptEdit(false);
         }
     };
 
@@ -791,6 +924,11 @@ function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId
             if (!d.officerDocCheck) return '請先勾選「線上/紙本文件齊全」';
             if (!d.paymentReceiptScanUploaded) return '尚未上傳領款收據紙本掃描';
             if (d.lastReceiptEmailStatus !== 'sent') return '尚未成功寄送領款收據 email';
+            if (!d.passbookCoverUploaded) return '尚未上傳存摺封面（每次撥款都需上傳）';
+            if (d.donorDisclosureConsent === null) return '請先選擇是否同意公開捐贈者姓名';
+            if (d.donorDisclosureConsent === false && !d.donorConsentLetterUploaded) {
+                return '勾選「不同意公開捐贈者姓名」時，需上傳捐贈/受補助者聲明書';
+            }
         } else if (d.reviewStage === '2') {
             if (!d.supervisorDocCheck) return '請先勾選「領款收據確認無誤」';
         } else if (d.reviewStage === '3') {
@@ -916,6 +1054,32 @@ function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId
                                     <Eye className="w-3 h-3" />檢視領款收據回函
                                 </button>
                             )}
+                            {/* 存摺封面（id=21）— 上傳後才顯示 */}
+                            {d.passbookCoverUrl && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setPreviewUrl(d.passbookCoverUrl!);
+                                        setPreviewLabel(`存摺封面（${d.externalCode || d.receiptNumber}）`);
+                                    }}
+                                    className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                                >
+                                    <Eye className="w-3 h-3" />檢視存摺封面
+                                </button>
+                            )}
+                            {/* 捐贈/受補助者聲明書（id=22）— 上傳後才顯示 */}
+                            {d.donorConsentLetterUrl && (
+                                <button
+                                    type="button"
+                                    onClick={() => {
+                                        setPreviewUrl(d.donorConsentLetterUrl!);
+                                        setPreviewLabel(`捐贈/受補助者聲明書（${d.externalCode || d.receiptNumber}）`);
+                                    }}
+                                    className="inline-flex items-center gap-1 text-xs text-blue-600 hover:underline"
+                                >
+                                    <Eye className="w-3 h-3" />檢視聲明書
+                                </button>
+                            )}
                             {d.medicalReceipts.map((mr, i) => (
                                 <button
                                     key={i}
@@ -998,16 +1162,40 @@ function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId
                         - 寄送 email：把該 PDF 寄給申請人
                         ※ 申請人簽回的紙本掃描另由 row 上方「檢視領款收據回函」按鈕提供 */}
                     <div className="flex items-center gap-2 flex-wrap">
-                        <button
-                            type="button"
-                            onClick={handleRegenerateReceipt}
-                            disabled={busy}
-                            className="inline-flex items-center gap-1 px-2.5 py-1 text-xs border border-emerald-300 text-emerald-700 hover:bg-emerald-50 rounded disabled:opacity-50"
-                            title={d.receiptFilePath ? '重新產生(覆蓋舊版 PDF)' : '此撥款尚未產生 PDF — 請按此產出'}
-                        >
-                            <FileText className="w-3.5 h-3.5" />
-                            {d.receiptFilePath ? '重新產生領款收據' : '產生領款收據'}
-                        </button>
+                        {/* 第一次產生：直接用 case data 產 PDF；已產生過：改為「編輯資料」開 inline form */}
+                        {!d.receiptFilePath ? (
+                            <button
+                                type="button"
+                                onClick={handleRegenerateReceipt}
+                                disabled={busy}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs border border-emerald-300 text-emerald-700 hover:bg-emerald-50 rounded disabled:opacity-50"
+                                title="此撥款尚未產生 PDF — 請按此產出"
+                            >
+                                <FileText className="w-3.5 h-3.5" />產生領款收據
+                            </button>
+                        ) : (
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setEditPhone(applicantPhone ?? '');
+                                    setEditAddress(applicantAddress ?? '');
+                                    setEditAmount(d.amount);
+                                    setEditPaymentMethod(d.paymentMethod ?? '代付醫院');
+                                    setEditPayeeName(d.payeeName ?? '');
+                                    setEditPayeeRelation(d.payeeRelation ?? '本人');
+                                    setEditPayeeRelationOther(d.payeeRelationOther ?? '');
+                                    setEditBankName(d.bankName ?? '');
+                                    setEditBankBranch(d.bankBranch ?? '');
+                                    setEditBankAccount(d.bankAccount ?? '');
+                                    setShowEditReceipt(v => !v);
+                                }}
+                                disabled={busy}
+                                className="inline-flex items-center gap-1 px-2.5 py-1 text-xs border border-emerald-300 text-emerald-700 hover:bg-emerald-50 rounded disabled:opacity-50"
+                                title="編輯戶籍地址 / 聯絡電話，並重新產生 PDF"
+                            >
+                                <FileText className="w-3.5 h-3.5" />編輯資料 + 重新產生
+                            </button>
+                        )}
                         <button
                             type="button"
                             onClick={() => {
@@ -1032,6 +1220,102 @@ function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId
                             <Mail className="w-3.5 h-3.5" />寄送 email
                         </button>
                     </div>
+                    {/* 編輯收據資料 inline form — 涵蓋所有 PDF 用到的欄位 */}
+                    {showEditReceipt && (
+                        <div className="bg-emerald-50/60 border border-emerald-200 rounded p-3 space-y-3">
+                            <p className="text-xs font-semibold text-emerald-800">編輯領款收據資料（儲存後會用新資料重新產生 PDF）</p>
+                            {/* 案件層級：申請人聯絡 */}
+                            <fieldset className="space-y-2">
+                                <legend className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">申請人聯絡（案件層級）</legend>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <label className="block">
+                                        <span className="text-xs text-slate-600">聯絡電話 <span className="text-red-500">*</span></span>
+                                        <input type="tel" value={editPhone} onChange={e => setEditPhone(e.target.value)} maxLength={50}
+                                            className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                                    </label>
+                                    <label className="block">
+                                        <span className="text-xs text-slate-600">戶籍地址</span>
+                                        <input type="text" value={editAddress} onChange={e => setEditAddress(e.target.value)} maxLength={500}
+                                            className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                                    </label>
+                                </div>
+                            </fieldset>
+                            {/* 撥款層級：金額、給付方式、銀行、受款人 */}
+                            <fieldset className="space-y-2">
+                                <legend className="text-[11px] font-semibold text-slate-500 uppercase tracking-wider">撥款資料（本筆）</legend>
+                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+                                    <label className="block">
+                                        <span className="text-xs text-slate-600">撥款金額 <span className="text-red-500">*</span></span>
+                                        <input type="number" min={1} value={editAmount === '' ? '' : editAmount}
+                                            onChange={e => setEditAmount(e.target.value === '' ? '' : Number(e.target.value))}
+                                            className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                                    </label>
+                                    <label className="block">
+                                        <span className="text-xs text-slate-600">給付方式</span>
+                                        <select value={editPaymentMethod} onChange={e => setEditPaymentMethod(e.target.value)}
+                                            className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
+                                            <option value="代付醫院">代付醫院</option>
+                                            <option value="匯款">匯款</option>
+                                            <option value="現金">現金</option>
+                                            <option value="其他">其他</option>
+                                        </select>
+                                    </label>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                    <label className="block">
+                                        <span className="text-xs text-slate-600">銀行名稱</span>
+                                        <input type="text" value={editBankName} onChange={e => setEditBankName(e.target.value)} maxLength={100}
+                                            className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                                    </label>
+                                    <label className="block">
+                                        <span className="text-xs text-slate-600">分行</span>
+                                        <input type="text" value={editBankBranch} onChange={e => setEditBankBranch(e.target.value)} maxLength={100}
+                                            className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                                    </label>
+                                    <label className="block">
+                                        <span className="text-xs text-slate-600">帳號</span>
+                                        <input type="text" value={editBankAccount} onChange={e => setEditBankAccount(e.target.value)} maxLength={50}
+                                            className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                                    </label>
+                                </div>
+                                <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+                                    <label className="block">
+                                        <span className="text-xs text-slate-600">受款人姓名 <span className="text-red-500">*</span></span>
+                                        <input type="text" value={editPayeeName} onChange={e => setEditPayeeName(e.target.value)} maxLength={100}
+                                            className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                                    </label>
+                                    <label className="block">
+                                        <span className="text-xs text-slate-600">與申請人關係</span>
+                                        <select value={editPayeeRelation} onChange={e => setEditPayeeRelation(e.target.value)}
+                                            className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded bg-white focus:outline-none focus:ring-2 focus:ring-emerald-300">
+                                            <option value="本人">本人</option>
+                                            <option value="配偶">配偶</option>
+                                            <option value="子女">子女</option>
+                                            <option value="父母">父母</option>
+                                            <option value="其他">其他</option>
+                                        </select>
+                                    </label>
+                                    {editPayeeRelation === '其他' && (
+                                        <label className="block">
+                                            <span className="text-xs text-slate-600">其他關係說明</span>
+                                            <input type="text" value={editPayeeRelationOther} onChange={e => setEditPayeeRelationOther(e.target.value)} maxLength={50}
+                                                className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                                        </label>
+                                    )}
+                                </div>
+                            </fieldset>
+                            <div className="flex gap-2">
+                                <button type="button" onClick={handleSaveReceiptEdit} disabled={savingReceiptEdit}
+                                    className="px-3 py-1 text-xs bg-emerald-600 hover:bg-emerald-700 text-white rounded disabled:opacity-50">
+                                    {savingReceiptEdit ? '處理中…' : '儲存並重新產生'}
+                                </button>
+                                <button type="button" onClick={() => setShowEditReceipt(false)} disabled={savingReceiptEdit}
+                                    className="px-3 py-1 text-xs border border-slate-300 rounded hover:bg-slate-50">
+                                    取消
+                                </button>
+                            </div>
+                        </div>
+                    )}
                     {/* 三個狀態 badge */}
                     <div className="flex items-center gap-2 flex-wrap text-[11px]">
                         {d.receiptFilePath && (
@@ -1102,6 +1386,58 @@ function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId
                                     取消
                                 </button>
                             </div>
+                        </div>
+                    )}
+                    {/* 存摺封面（每次撥款必傳） + 捐贈者公開同意 + 條件式聲明書 */}
+                    {canActHere && (
+                        <div className="pt-2 border-t border-slate-100 space-y-2">
+                            {/* 存摺封面 */}
+                            <div className="flex items-center gap-2 flex-wrap text-xs">
+                                <span className="text-slate-700 font-medium">存摺封面：</span>
+                                <label className={`inline-flex items-center gap-1 px-2 py-1 text-xs border rounded cursor-pointer ${uploading ? 'opacity-50' : 'hover:bg-slate-50'} ${d.passbookCoverUploaded ? 'border-emerald-300 text-emerald-700' : 'border-rose-300 text-rose-700'}`}>
+                                    <Upload className="w-3 h-3" />
+                                    {d.passbookCoverUploaded ? '重新上傳存摺封面' : '上傳存摺封面（必備）'}
+                                    <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={handlePassbookFileChange} disabled={uploading} />
+                                </label>
+                                {d.passbookCoverUploaded && (
+                                    <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded">
+                                        <CheckCircle className="w-3 h-3" />已上傳
+                                    </span>
+                                )}
+                            </div>
+                            {/* 是否同意公開捐贈者姓名 */}
+                            <div className="flex items-center gap-3 flex-wrap text-xs">
+                                <span className="text-slate-700 font-medium">是否同意公開捐贈者姓名：</span>
+                                <label className="inline-flex items-center gap-1 cursor-pointer">
+                                    <input type="radio" name={`donorConsent-${d.id}`} checked={d.donorDisclosureConsent === true}
+                                        onChange={() => handleSetDonorConsent(true)} className="accent-emerald-600" />
+                                    <span>同意</span>
+                                </label>
+                                <label className="inline-flex items-center gap-1 cursor-pointer">
+                                    <input type="radio" name={`donorConsent-${d.id}`} checked={d.donorDisclosureConsent === false}
+                                        onChange={() => handleSetDonorConsent(false)} className="accent-rose-600" />
+                                    <span>不同意</span>
+                                </label>
+                                {d.donorDisclosureConsent === null && (
+                                    <span className="text-rose-600">（未填）</span>
+                                )}
+                            </div>
+                            {/* 不同意時 → 需上傳聲明書 */}
+                            {d.donorDisclosureConsent === false && (
+                                <div className="flex items-center gap-2 flex-wrap text-xs pl-4">
+                                    <span className="text-slate-700">捐贈/受補助者聲明書：</span>
+                                    <label className={`inline-flex items-center gap-1 px-2 py-1 text-xs border rounded cursor-pointer ${uploading ? 'opacity-50' : 'hover:bg-slate-50'} ${d.donorConsentLetterUploaded ? 'border-emerald-300 text-emerald-700' : 'border-rose-300 text-rose-700'}`}>
+                                        <Upload className="w-3 h-3" />
+                                        {d.donorConsentLetterUploaded ? '重新上傳聲明書' : '上傳聲明書（必備）'}
+                                        <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={handleDonorLetterFileChange} disabled={uploading} />
+                                    </label>
+                                    {d.donorConsentLetterUploaded && (
+                                        <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded">
+                                            <CheckCircle className="w-3 h-3" />已上傳
+                                        </span>
+                                    )}
+                                </div>
+                            )}
                         </div>
                     )}
                     {/* Officer 檢核 */}
@@ -1286,18 +1622,25 @@ function DisbursementRow({ seqNo, disbursement: d, applicationId, operatorUserId
                     )}
                     {/* 送出 / 完成 */}
                     {!showReject && (
-                        <button
-                            onClick={handleSubmit}
-                            disabled={busy || !!submitGateMissing}
-                            title={submitGateMissing ?? ''}
-                            className="ml-auto inline-flex items-center gap-1.5 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded disabled:opacity-50 disabled:cursor-not-allowed"
-                        >
-                            {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
-                            {d.reviewStage === '1' ? '送出至主管'
-                            : d.reviewStage === '2' ? '送出至會計'
-                            : d.reviewStage === '3' ? '送出至執行長'
-                            : '【完成】撥款'}
-                        </button>
+                        <div className="ml-auto flex items-center gap-2">
+                            {submitGateMissing && (
+                                <span className="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded px-2 py-1">
+                                    ⚠ {submitGateMissing}
+                                </span>
+                            )}
+                            <button
+                                onClick={handleSubmit}
+                                disabled={busy || !!submitGateMissing}
+                                title={submitGateMissing ?? ''}
+                                className="inline-flex items-center gap-1.5 px-4 py-1.5 bg-indigo-600 hover:bg-indigo-700 text-white text-sm font-medium rounded disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                {busy ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Send className="w-3.5 h-3.5" />}
+                                {d.reviewStage === '1' ? '送出至主管'
+                                : d.reviewStage === '2' ? '送出至會計'
+                                : d.reviewStage === '3' ? '送出至執行長'
+                                : '【完成】撥款'}
+                            </button>
+                        </div>
                     )}
                 </div>
             )}

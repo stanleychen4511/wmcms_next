@@ -22,15 +22,15 @@ export interface ApplicantData {
     subsidyType: SubsidySubtype;
     age: number;
     realEstateValue: number;    // 萬
-    /** 經濟弱勢用：存款（夫妻取平均，萬） */
+    /** 經濟弱勢用：存款（配偶取平均，萬） */
     deposit?: number;
-    /** 經濟弱勢用：每月收入（夫妻取平均，萬） */
+    /** 經濟弱勢用：每月收入（配偶取平均，萬） */
     monthlyIncome?: number;
     /** 小康家庭用：婚姻狀態 */
     maritalStatus?: MaritalStatus;
     /** 小康家庭用：子女狀態 */
     childrenStatus?: ChildrenStatus;
-    /** 小康家庭用：年收入（已婚=夫妻合計、單親/單身=個人，萬） */
+    /** 小康家庭用：年收入（已婚=配偶合計、單親/單身=個人，萬） */
     annualIncome?: number;
     /** 小康家庭用：存款＋有價證券（萬） */
     movableAssets?: number;
@@ -79,9 +79,9 @@ export function checkEligibility(
     // ── 共同條件 2：不動產 ─────────────────────────────────────────────────
     const realEstate = num(data.realEstateValue);
     if (realEstate < 0) {
-        reasons.push(`不動產未填寫（須未超過 ${c.realEstateMax} 萬）`);
+        reasons.push(`不動產未填寫（依據國稅局財產清冊中累計未超過 ${c.realEstateMax} 萬）`);
     } else if (realEstate > c.realEstateMax) {
-        reasons.push(`不動產 ${realEstate} 萬（須未超過 ${c.realEstateMax} 萬）`);
+        reasons.push(`不動產 ${realEstate} 萬（依據國稅局財產清冊中累計未超過 ${c.realEstateMax} 萬）`);
         reasonCodes.push({ code: '05', value: wanToYuan(realEstate) });
     }
 
@@ -91,16 +91,16 @@ export function checkEligibility(
         const deposit = num(data.deposit);
         const monthlyIncome = num(data.monthlyIncome);
         if (deposit < 0) {
-            reasons.push(`【經濟弱勢】存款未填寫（須 ≤ ${c.econDepositMax} 萬，夫妻取平均）`);
+            reasons.push(`【經濟弱勢】存款未填寫（須 ≤ ${c.econDepositMax} 萬，配偶取平均）`);
         } else if (deposit > c.econDepositMax) {
-            reasons.push(`【經濟弱勢】存款 ${deposit} 萬（須 ≤ ${c.econDepositMax} 萬，夫妻取平均）`);
+            reasons.push(`【經濟弱勢】存款 ${deposit} 萬（須 ≤ ${c.econDepositMax} 萬，配偶取平均）`);
             reasonCodes.push({ code: '04', value: wanToYuan(deposit) });
         }
         if (monthlyIncome < 0) {
-            reasons.push(`【經濟弱勢】月收入未填寫（須 ≤ ${c.econMonthlyIncomeMax} 萬，夫妻取平均）`);
+            reasons.push(`【經濟弱勢】月收入未填寫（須 ≤ ${c.econMonthlyIncomeMax} 萬，配偶取平均）`);
         } else if (monthlyIncome > c.econMonthlyIncomeMax) {
             // 月收入 → 推算年收入過高（×12）
-            reasons.push(`【經濟弱勢】月收入 ${monthlyIncome} 萬（須 ≤ ${c.econMonthlyIncomeMax} 萬，夫妻取平均）`);
+            reasons.push(`【經濟弱勢】月收入 ${monthlyIncome} 萬（須 ≤ ${c.econMonthlyIncomeMax} 萬，配偶取平均）`);
             reasonCodes.push({ code: '03', value: wanToYuan(monthlyIncome * 12) });
         }
     } else if (data.subsidyType === '2') {
@@ -120,7 +120,7 @@ export function checkEligibility(
             } else {
                 const income = num(data.annualIncome);
                 const assets = num(data.movableAssets);
-                const incomeLabel = m === '1' ? '夫妻合計年收入' : '個人年收入';
+                const incomeLabel = m === '1' ? '配偶合計年收入' : '個人年收入';
                 if (income < 0) {
                     reasons.push(`【小康家庭】${incomeLabel}未填寫（須 ${entry.incomeMin}～${entry.incomeMax} 萬）`);
                 } else if (income < entry.incomeMin) {

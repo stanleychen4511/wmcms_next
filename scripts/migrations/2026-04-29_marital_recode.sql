@@ -42,7 +42,7 @@ ALTER TABLE applications
     CHECK (marital_status IS NULL OR marital_status IN ('1', '2', '3'));
 
 COMMENT ON COLUMN applications.marital_status IS
-    '婚姻狀態（115 年辦法）：1=已婚（夫妻合計收入）、2=單親（個人收入）、3=單身（個人收入）；NULL 為舊資料未填';
+    '婚姻狀態（115 年辦法）：1=已婚（配偶合計收入）、2=單親（個人收入）、3=單身（個人收入）；NULL 為舊資料未填';
 
 -- 4. 經濟弱勢專屬欄位
 ALTER TABLE applications
@@ -50,8 +50,8 @@ ALTER TABLE applications
     ADD COLUMN IF NOT EXISTS econ_monthly_income  NUMERIC(12, 2);
 
 COMMENT ON COLUMN applications.econ_deposit
-    IS '【經濟弱勢專屬】存款（夫妻取平均，萬元）— 115 年辦法第四條第三項第 1 款';
+    IS '【經濟弱勢專屬】存款（配偶取平均，萬元）— 115 年辦法第四條第三項第 1 款';
 COMMENT ON COLUMN applications.econ_monthly_income
-    IS '【經濟弱勢專屬】每月收入（夫妻取平均，萬元）— 115 年辦法第四條第三項第 1 款';
+    IS '【經濟弱勢專屬】每月收入（配偶取平均，萬元）— 115 年辦法第四條第三項第 1 款';
 
 COMMIT;

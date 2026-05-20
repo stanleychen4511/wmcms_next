@@ -52,8 +52,24 @@ export async function fetchApplicantHomeVisits(
     }
     if (!/^\d+$/.test(applicantUserId)) return { success: false, error: '無效的申請人 ID' };
 
+    // 志工只能看自己負責的家訪（user feedback #7）；其他角色看全部
+    const roleRes = await pool.query(
+        `SELECT r.code FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1::bigint`,
+        [operatorUserId]
+    );
+    const userRoles = roleRes.rows.map((r: any) => r.code);
+    const isVolunteerOnly = userRoles.includes('volunteer')
+        && !userRoles.some((r: string) => ['admin', 'supervisor', 'case_officer', 'executive', 'chairman', 'board_member', 'accountant'].includes(r));
+
     const client = await pool.connect();
     try {
+        const params: unknown[] = [applicantUserId];
+        let visitorFilter = '';
+        if (isVolunteerOnly) {
+            params.push(operatorUserId);
+            visitorFilter = `AND hv.visitor_id = $${params.length}::bigint`;
+        }
         const r = await client.query(
             `SELECT DISTINCT ON (a.id)
                 hv.id, hv.application_id, hv.visit_date,
@@ -68,9 +84,9 @@ export async function fetchApplicantHomeVisits(
                 a.case_number, a.status AS case_status
              FROM home_visit hv
              JOIN applications a ON a.id = hv.application_id
-             WHERE a.applicant_id = $1::bigint
+             WHERE a.applicant_id = $1::bigint ${visitorFilter}
              ORDER BY a.id DESC, hv.visit_date DESC NULLS LAST, hv.id DESC`,
-            [applicantUserId]
+            params
         );
         const data: ApplicantHomeVisit[] = r.rows.map((row: any) => ({
             homeVisitId: String(row.id),
@@ -111,7 +127,10 @@ export interface HomeVisitData {
     visit_date?: string;
     visitor_title?: string;       // 志工 / 個管師
     visitor_name?: string;
-    visit_photo_urls?: string[];  // 家訪照片雲端連結（至少 1 張）
+    visit_photo_urls?: string[];  // 家訪照片 URL（至少 1 張；不家訪時免）
+    /** user feedback #18：經濟弱勢可選不家訪 */
+    visit_skipped?: boolean;
+    skip_reason?: string;
     self_reported_condition?: string;
     disease_reaction_status?: string;
     disease_reaction_other?: string;
@@ -144,6 +163,8 @@ export async function fetchHomeVisit(applicationId: string): Promise<HomeVisitDa
             visitor_title: row.visitor_title ?? undefined,
             visitor_name: row.visitor_name ?? undefined,
             visit_photo_urls: Array.isArray(row.visit_photo_urls) ? row.visit_photo_urls : [],
+            visit_skipped: !!row.visit_skipped,
+            skip_reason: row.skip_reason ?? undefined,
             self_reported_condition: row.self_reported_condition,
             disease_reaction_status: row.disease_reaction_status,
             disease_reaction_other: row.disease_reaction_other,
@@ -172,6 +193,41 @@ export async function saveHomeVisit(
     data: HomeVisitData,
     visitorAccount?: string
 ): Promise<{ success: boolean; error?: string }> {
+    // user feedback #8 #18 — 守門：不家訪須有原因；家訪則須填滿（含照片至少 1 張）
+    if (data.visit_skipped) {
+        if (!data.skip_reason || data.skip_reason.trim().length < 3) {
+            return { success: false, error: '不家訪原因至少需 3 字' };
+        }
+    } else {
+        if (!data.visit_date) return { success: false, error: '請填寫訪視日期' };
+        if (!data.visitor_title || (data.visitor_title !== '志工' && data.visitor_title !== '個管師')) {
+            return { success: false, error: '請選擇訪視員職稱（志工 / 個管師）' };
+        }
+        if (!data.visitor_name || data.visitor_name.trim().length < 1) {
+            return { success: false, error: '請填寫訪視員姓名' };
+        }
+        if (!Array.isArray(data.visit_photo_urls) || data.visit_photo_urls.length < 1) {
+            return { success: false, error: '家訪照片至少需上傳 1 張' };
+        }
+        // 其他欄位也必填（user 要求所有欄位都必填）
+        const required: Array<[string, unknown]> = [
+            ['本人陳述', data.self_reported_condition],
+            ['對病情的反應', data.disease_reaction_status],
+            ['治療態度', data.treatment_attitude_status],
+            ['主要照顧者', data.primary_caregiver],
+            ['家庭互動', data.family_interaction_status],
+            ['當事人想法', data.impacted_party_thoughts],
+            ['治療支持', data.treatment_support_status],
+            ['需要補助原因', data.subsidy_need_reason],
+            ['訪視員建議', data.visitor_recommendations],
+        ];
+        for (const [label, v] of required) {
+            if (!v || String(v).trim() === '') {
+                return { success: false, error: `欄位「${label}」必填` };
+            }
+        }
+    }
+
     const client = await pool.connect();
     try {
         const existing = await client.query(
@@ -181,6 +237,7 @@ export async function saveHomeVisit(
 
         const fields = [
             'visit_date', 'visitor_title', 'visitor_name', 'visit_photo_urls',
+            'visit_skipped', 'skip_reason',
             'self_reported_condition',
             'disease_reaction_status', 'disease_reaction_other',
             'treatment_attitude_status', 'treatment_attitude_other',
@@ -190,10 +247,11 @@ export async function saveHomeVisit(
             'subsidy_need_reason', 'visitor_recommendations', 'visitor_recommendations_other',
         ] as const;
 
-        // visit_photo_urls 是 TEXT[]；其他 nullable 欄位空值轉 NULL
+        // visit_photo_urls 是 TEXT[]；visit_skipped 是 BOOLEAN；其他 nullable 欄位空值轉 NULL
         const values = fields.map(f => {
             const v = (data as any)[f];
             if (f === 'visit_photo_urls') return Array.isArray(v) ? v : [];
+            if (f === 'visit_skipped') return !!v;
             return v ?? null;
         });
 

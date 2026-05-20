@@ -31,11 +31,18 @@ export const decryptAES = (encryptedBuffer: Buffer, ivBuffer: Buffer) => {
     }
 };
 
-export const hashPassword = (password: string, salt: string) => {
+/**
+ * HMAC-SHA256 雜湊密碼。
+ *
+ * salt 同時接受 string 與 Buffer：
+ *   - 32-byte Buffer：寫入新帳號時用此格式（CLAUDE.md 規定）；login 時讀回的 Buffer 直接餵 HMAC。
+ *   - hex string：CLI 腳本或 in-memory 計算時方便。
+ */
+export const hashPassword = (password: string, salt: string | Buffer) => {
     return crypto.createHmac('sha256', salt).update(password).digest('hex');
 };
 
-export const generateBlindIndex = (text: string, salt: string) => {
+export const generateBlindIndex = (text: string, salt: string | Buffer) => {
     if (!text) return null;
     return crypto.createHmac('sha256', salt).update(text).digest('hex');
 };

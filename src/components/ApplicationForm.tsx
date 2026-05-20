@@ -216,8 +216,13 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
                     {errors.age && <p className="text-red-500 text-xs mt-1">{errors.age.message}</p>}
                 </div>
 
+                {/* 不動產：經濟弱勢不限制（user feedback #1），故只在小康家庭時顯示 */}
+                {isMidClass && (
                 <div>
-                    <label className="block text-sm font-medium text-gray-700">不動產總值（戶籍內直系合計）</label>
+                    <label className="block text-sm font-medium text-gray-700">
+                        不動產現值（戶籍內直系合計）
+                        <span className="text-xs text-gray-500 font-normal ml-1">（依國稅局財產清冊累計）</span>
+                    </label>
                     <div className="relative mt-1">
                         <input
                             type="text" inputMode="numeric" pattern="[0-9]*" maxLength={5}
@@ -230,13 +235,15 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
                     </div>
                     {errors.realEstateValue && <p className="text-red-500 text-xs mt-1">{errors.realEstateValue.message}</p>}
                 </div>
+                )}
 
                 {/* 小康家庭專屬欄位 */}
                 {isMidClass && (
                     <>
                         <div>
                             <label className="block text-sm font-medium text-gray-700">
-                                {maritalStatus === '1' ? '夫妻合計年收入' : '個人年收入'}
+                                {maritalStatus === '1' ? '配偶合計年收入' : '個人年收入'}
+                                <span className="text-xs text-gray-500 font-normal ml-1">（依最新年度之綜所稅清單）</span>
                             </label>
                             <div className="relative mt-1">
                                 <input
@@ -273,7 +280,7 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
                     <>
                         <div>
                             <label className="block text-sm font-medium text-gray-700">
-                                存款（夫妻取平均）
+                                存款（配偶取平均）
                             </label>
                             <div className="relative mt-1">
                                 <input
@@ -290,7 +297,7 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
 
                         <div>
                             <label className="block text-sm font-medium text-gray-700">
-                                每月收入（夫妻取平均）
+                                每月收入（配偶取平均）
                             </label>
                             <div className="relative mt-1">
                                 <input

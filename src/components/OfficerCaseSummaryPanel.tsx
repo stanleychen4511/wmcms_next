@@ -21,18 +21,20 @@ interface Props {
     initialValue: string | null;
     /** 可否編輯：受限於角色與案件狀態 */
     editable: boolean;
+    /** 視覺強調樣式（user feedback #17：董事審核頁要明顯突出） */
+    emphasize?: boolean;
     onSaved?: (newValue: string) => void;
 }
 
-const PLACEHOLDER = `建議以 5 點條列說明本案重點：
-1. 申請人狀況（病情、家庭、經濟）
-2. 補助項目與必要性
-3. 個管師評估意見
-4. 家訪重點摘要
-5. 其他（建議補助金額、特殊考量等）`;
+// user feedback #17：placeholder 改成 4 點建議格式
+const PLACEHOLDER = `建議以 4 點條列說明本案重點：
+1. 申請人病情及醫師評估治療的必要性
+2. 申請人說明預計療程與費用之計算
+3. 本案審核需注意之處（例：證明書說明不足、療程計算、家訪環境互動特殊、建議補助金額等）
+4. 本案為電子/紙本申請，後續核銷方式為何`;
 
 export function OfficerCaseSummaryPanel({
-    applicationId, operatorUserId, initialValue, editable, onSaved,
+    applicationId, operatorUserId, initialValue, editable, emphasize, onSaved,
 }: Props) {
     const [value, setValue] = useState(initialValue ?? '');
     const [saving, setSaving] = useState(false);
@@ -57,11 +59,16 @@ export function OfficerCaseSummaryPanel({
     };
 
     return (
-        <div className="bg-white border border-slate-200 rounded-lg p-4 space-y-3">
+        <div className={emphasize
+            ? "bg-amber-50 border-2 border-amber-300 rounded-lg p-4 space-y-3 shadow-sm"
+            : "bg-white border border-slate-200 rounded-lg p-4 space-y-3"}
+        >
             <div className="flex items-center gap-2">
-                <ClipboardList className="w-4 h-4 text-indigo-600" />
-                <h4 className="text-sm font-bold text-slate-700">案件說明（個管師填寫）</h4>
-                {!editable && (
+                <ClipboardList className={`w-4 h-4 ${emphasize ? 'text-amber-700' : 'text-indigo-600'}`} />
+                <h4 className={`text-sm font-bold ${emphasize ? 'text-amber-800' : 'text-slate-700'}`}>
+                    {emphasize ? '📋 個管師案件說明（請董事務必參考）' : '案件說明（個管師填寫）'}
+                </h4>
+                {!editable && !emphasize && (
                     <span className="text-xs px-2 py-0.5 bg-slate-100 text-slate-500 rounded-full">唯讀</span>
                 )}
             </div>

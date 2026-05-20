@@ -1,4 +1,4 @@
-export type Role = 'applicant' | 'case_officer' | 'supervisor' | 'accountant' | 'board_member' | 'admin' | 'volunteer' | 'chairman' | 'executive';
+export type Role = 'applicant' | 'case_officer' | 'supervisor' | 'accountant' | 'board_member' | 'admin' | 'volunteer' | 'chairman' | 'executive' | 'social_worker';
 export interface UserAccount {
     id: string;
     account: string; // The login account
@@ -17,6 +17,8 @@ export interface CaseSummary {
     applicationId: string;       // latest application's DB id
     caseNumber: string;          // latest application's case_number
     applicantName: string;
+    /** 申請人聯絡電話（latest application 的 applicant_phone；可能為空） */
+    applicantPhone?: string | null;
     applicationCount: number;
     totalAmount: number;
     appliedAt: string; // ISO date string e.g. "2025-11-03"

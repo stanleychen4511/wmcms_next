@@ -52,8 +52,8 @@ export async function ensureDefaultSettings(): Promise<void> {
         { key: 'elig_age_min',                  value: '25',   description: '【115 辦法】申請人年齡下限（歲）' },
         { key: 'elig_age_max',                  value: '65',   description: '【115 辦法】申請人年齡上限（歲）' },
         { key: 'elig_real_estate_max',          value: '2500', description: '【115 辦法】不動產上限：戶籍內直系合計（萬元）' },
-        { key: 'elig_econ_deposit_max',         value: '16',   description: '【115 辦法-經濟弱勢】存款上限（夫妻取平均，萬元）' },
-        { key: 'elig_econ_monthly_income_max',  value: '3',    description: '【115 辦法-經濟弱勢】每月收入上限（夫妻取平均，萬元）' },
+        { key: 'elig_econ_deposit_max',         value: '16',   description: '【115 辦法-經濟弱勢】存款上限（配偶取平均，萬元）' },
+        { key: 'elig_econ_monthly_income_max',  value: '3',    description: '【115 辦法-經濟弱勢】每月收入上限（配偶取平均，萬元）' },
     ];
     const client = await pool.connect();
     try {

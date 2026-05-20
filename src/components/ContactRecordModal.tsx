@@ -24,6 +24,7 @@ import {
     type ApplicantSearchResult,
 } from '../app/actions/contactRecordActions';
 import { ApplicantPickerModal } from './ApplicantPickerModal';
+import { ImageLightbox, looksLikeImageUrl } from './ImageLightbox';
 import { useModalDismiss } from '../hooks/useModalDismiss';
 import {
     RECORD_TYPE_LABEL,
@@ -104,6 +105,10 @@ export function ContactRecordModal({
     const [pickerOpen, setPickerOpen] = useState(false);
 
     const [saving, setSaving] = useState(false);
+
+    // 媒體預覽 lightbox — 點縮圖開啟；以 imageUrls（過濾掉「不是直接圖片連結」的 URL）為基底
+    const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
+    const imageUrls = mediaUrls.filter(u => looksLikeImageUrl(u.trim()));
 
     // ─── 電話歷史檢索 ────────────────────────────────────────────────────
     //   觸發時機：使用者停打字 400ms 後自動查（debounced）
@@ -516,26 +521,60 @@ export function ContactRecordModal({
                     {!isPhone && (
                         <div className="space-y-1.5">
                             <label className="text-xs font-medium text-slate-600">媒體連結（圖片/影片 URL）</label>
-                            {mediaUrls.map((url, idx) => (
-                                <div key={idx} className="flex items-center gap-2">
-                                    <input
-                                        type="url"
-                                        value={url}
-                                        onChange={e => setMediaUrl(idx, e.target.value)}
-                                        placeholder="https://photos.google.com/..."
-                                        className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                                    />
-                                    {mediaUrls.length > 1 && (
-                                        <button
-                                            type="button"
-                                            onClick={() => removeMediaUrl(idx)}
-                                            className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
-                                        >
-                                            <Trash2 className="w-4 h-4" />
-                                        </button>
-                                    )}
-                                </div>
-                            ))}
+                            {mediaUrls.map((url, idx) => {
+                                const trimmed = url.trim();
+                                const isImage = looksLikeImageUrl(trimmed);
+                                const imageIdx = isImage ? imageUrls.indexOf(url) : -1;
+                                return (
+                                    <div key={idx} className="space-y-1.5">
+                                        <div className="flex items-center gap-2">
+                                            <input
+                                                type="url"
+                                                value={url}
+                                                onChange={e => setMediaUrl(idx, e.target.value)}
+                                                placeholder="https://photos.google.com/... 或直接貼上 .jpg/.png 圖片網址"
+                                                className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                            />
+                                            {mediaUrls.length > 1 && (
+                                                <button
+                                                    type="button"
+                                                    onClick={() => removeMediaUrl(idx)}
+                                                    className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
+                                                >
+                                                    <Trash2 className="w-4 h-4" />
+                                                </button>
+                                            )}
+                                        </div>
+                                        {/* 圖片連結 → 顯示縮圖、點擊放大；非圖片 → 顯示「開啟連結」按鈕 */}
+                                        {trimmed && isImage && imageIdx >= 0 && (
+                                            <button
+                                                type="button"
+                                                onClick={() => setLightboxIdx(imageIdx)}
+                                                className="block border border-slate-200 rounded-lg overflow-hidden cursor-zoom-in hover:border-indigo-400 transition"
+                                                title="點擊放大檢視"
+                                            >
+                                                {/* eslint-disable-next-line @next/next/no-img-element */}
+                                                <img
+                                                    src={trimmed}
+                                                    alt={`媒體 ${idx + 1}`}
+                                                    className="h-28 max-w-[240px] object-cover bg-slate-50"
+                                                    onError={(e) => { (e.currentTarget.parentElement as HTMLElement).style.display = 'none'; }}
+                                                />
+                                            </button>
+                                        )}
+                                        {trimmed && !isImage && (
+                                            <a
+                                                href={trimmed}
+                                                target="_blank"
+                                                rel="noopener noreferrer"
+                                                className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800 underline"
+                                            >
+                                                開啟連結（非直接圖片網址）
+                                            </a>
+                                        )}
+                                    </div>
+                                );
+                            })}
                             <button
                                 type="button"
                                 onClick={addMediaUrl}
@@ -579,6 +618,16 @@ export function ContactRecordModal({
                         setPickerOpen(false);
                     }}
                     onClose={() => setPickerOpen(false)}
+                />
+            )}
+
+            {/* 媒體圖片放大檢視 */}
+            {lightboxIdx !== null && imageUrls.length > 0 && (
+                <ImageLightbox
+                    images={imageUrls.map(u => u.trim())}
+                    index={Math.min(lightboxIdx, imageUrls.length - 1)}
+                    onChange={setLightboxIdx}
+                    onClose={() => setLightboxIdx(null)}
                 />
             )}
         </div>

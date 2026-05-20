@@ -158,7 +158,11 @@ export async function saveMemberReviewOpinion(
         const caseRes = await client.query(
             `SELECT a.status, w.stage
              FROM applications a
-             LEFT JOIN application_workflow w ON w.application_id = a.id
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
              WHERE a.id = $1::bigint LIMIT 1`,
             [applicationId]
         );
@@ -178,9 +182,19 @@ export async function saveMemberReviewOpinion(
              WHERE group_id = $1::bigint AND user_id = $2::bigint LIMIT 1`,
             [groupId, operatorUserId]
         );
-        if ((memRes.rowCount ?? 0) === 0) {
+        let isMember = (memRes.rowCount ?? 0) > 0;
+        if (!isMember) {
+            // chairman 也可填意見/簽章（user feedback #9 — 第三審）
+            const chairRes = await client.query(
+                `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = $1::bigint AND r.code = 'chairman' LIMIT 1`,
+                [operatorUserId]
+            );
+            if ((chairRes.rowCount ?? 0) > 0) isMember = true;
+        }
+        if (!isMember) {
             await client.query('ROLLBACK');
-            return { success: false, error: '您不是本案派組的成員' };
+            return { success: false, error: '您不是本案派組的成員（亦非董事長）' };
         }
 
         // (c) UPSERT — 若已有 row 則更新欄位（保留現有 signature_data_url / signed_at）；
@@ -219,6 +233,9 @@ export async function saveMemberReviewOpinion(
             );
         }
 
+        // 重新計算並同步 applications.approved_amount（chairman 第三審 / 派組多數決）
+        await recomputeApplicationApprovedAmount(client, applicationId);
+
         await client.query('COMMIT');
 
         void writeAuditLog({
@@ -245,6 +262,89 @@ export async function saveMemberReviewOpinion(
 
 // ─── Submit a single signature ───────────────────────────────────────────────
 
+/**
+ * 重新計算並寫入 applications.approved_amount，基於目前所有 board_review_signatures 的彙整。
+ *
+ * 觸發更新的時機（使用者指定）：
+ *   1) 派組所有成員都已簽，且決定/金額一致 → 第 2 位董事簽完即更新
+ *   2) 派組所有成員都已簽但意見不一致（同意/否 OR 金額不同） → 必須等 chairman 簽完才更新
+ *   3) 其他情況（還沒全簽、需要 chairman 但 chairman 還沒簽）→ 不動 applications.approved_amount
+ *
+ * 在 client transaction 內呼叫；失敗時拋 exception 讓 caller rollback。
+ */
+async function recomputeApplicationApprovedAmount(client: any, applicationId: string): Promise<void> {
+    // 取派組所有成員 + 他們的簽章狀況
+    const memRes = await client.query(
+        `SELECT bgm.user_id,
+                bs.member_approved,
+                bs.member_amount,
+                bs.signature_data_url
+         FROM board_review_assignments bra
+         JOIN board_group_members bgm ON bgm.group_id = bra.group_id
+         LEFT JOIN board_review_signatures bs
+                ON bs.application_id = bra.application_id
+               AND bs.signer_user_id = bgm.user_id
+         WHERE bra.application_id = $1::bigint`,
+        [applicationId]
+    );
+    const members = memRes.rows;
+    const totalMembers = members.length;
+    if (totalMembers === 0) return; // 未派組
+
+    const signedMembers = members.filter(
+        (m: any) => m.signature_data_url && m.signature_data_url !== ''
+    );
+    // 規則 3a：還沒全員簽完 → 不更新
+    if (signedMembers.length < totalMembers) return;
+
+    // 全員都簽了 → 看是否需要 chairman 第三審
+    const decisions = signedMembers.map((m: any) =>
+        m.member_approved == null ? 'null' : String(m.member_approved)
+    );
+    const amounts = signedMembers.map((m: any) =>
+        m.member_amount == null ? 'null' : String(m.member_amount)
+    );
+    const needChairman = (new Set(decisions)).size > 1 || (new Set(amounts)).size > 1;
+
+    if (needChairman) {
+        // 規則 2：等 chairman 已簽才更新
+        const chairRes = await client.query(
+            `SELECT bs.member_approved, bs.member_amount
+             FROM board_review_signatures bs
+             JOIN user_roles ur ON ur.user_id = bs.signer_user_id
+             JOIN roles r ON r.id = ur.role_id
+             WHERE bs.application_id = $1::bigint
+               AND r.code = 'chairman'
+               AND bs.signature_data_url IS NOT NULL
+               AND bs.signature_data_url <> ''
+             LIMIT 1`,
+            [applicationId]
+        );
+        if ((chairRes.rowCount ?? 0) === 0) return; // chairman 還沒簽 → 不動
+        const c = chairRes.rows[0];
+        const newAmount = c.member_approved === true && c.member_amount != null
+            ? Number(c.member_amount)
+            : 0;
+        await client.query(
+            `UPDATE applications SET approved_amount = $1, updated_at = NOW() WHERE id = $2::bigint`,
+            [newAmount, applicationId]
+        );
+        return;
+    }
+
+    // 規則 1：全員意見/金額一致 → 直接採用
+    // （decisions / amounts size === 1，所以全部相同；通過時取那個金額，否則 0）
+    const firstDecision = signedMembers[0].member_approved;
+    const firstAmount = signedMembers[0].member_amount;
+    const newAmount = firstDecision === true && firstAmount != null
+        ? Number(firstAmount)
+        : 0;
+    await client.query(
+        `UPDATE applications SET approved_amount = $1, updated_at = NOW() WHERE id = $2::bigint`,
+        [newAmount, applicationId]
+    );
+}
+
 export async function submitBoardSignature(
     applicationId: string,
     signatureDataUrl: string,
@@ -266,7 +366,11 @@ export async function submitBoardSignature(
         const caseRes = await client.query(
             `SELECT a.status, w.stage
              FROM applications a
-             LEFT JOIN application_workflow w ON w.application_id = a.id
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
              WHERE a.id = $1::bigint LIMIT 1`,
             [applicationId]
         );
@@ -290,15 +394,27 @@ export async function submitBoardSignature(
         }
         const assignedGroupId = String(asgRes.rows[0].group_id);
 
-        // (c) operator is current member
+        // (c) operator is current member OR chairman (user feedback #9 — 董事長為第 3 人，意見不一致時介入)
         const memRes = await client.query(
             `SELECT 1 FROM board_group_members
              WHERE group_id = $1::bigint AND user_id = $2::bigint LIMIT 1`,
             [assignedGroupId, operatorUserId]
         );
-        if ((memRes.rowCount ?? 0) === 0) {
+        let isMember = (memRes.rowCount ?? 0) > 0;
+        if (!isMember) {
+            // 檢查是否為 chairman；chairman 可以以「第 3 人」身分簽章
+            const chairRes = await client.query(
+                `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = $1::bigint AND r.code = 'chairman' LIMIT 1`,
+                [operatorUserId]
+            );
+            if ((chairRes.rowCount ?? 0) > 0) {
+                isMember = true;  // chairman 視同特殊組員
+            }
+        }
+        if (!isMember) {
             await client.query('ROLLBACK');
-            return { success: false, error: '您不是本案派組的成員，無法簽章' };
+            return { success: false, error: '您不是本案派組的成員（亦非董事長），無法簽章' };
         }
 
         // (d) password re-auth
@@ -369,6 +485,9 @@ export async function submitBoardSignature(
              meta?.userAgent ?? null, meta?.ipAddress ?? null,
              memberApproved, memberAmount, memberComments]
         );
+
+        // 重新計算並同步 applications.approved_amount（chairman 第三審 / 派組多數決）
+        await recomputeApplicationApprovedAmount(client, applicationId);
 
         await client.query('COMMIT');
 
@@ -453,6 +572,62 @@ export async function fetchBoardReviewSignatures(
                 memberComments: r.member_comments ?? null,
             };
         });
+
+        // user feedback #9：兩位董事意見不一致（同意/否 OR 金額不同）→ 把董事長以「第 3 人」身分加入清單
+        const signedMembers = members.filter(m => m.status === 'signed');
+        const uniqueDecisions = new Set(signedMembers.map(m =>
+            m.memberApproved === true ? 't' : m.memberApproved === false ? 'f' : 'n'
+        ));
+        const uniqueAmounts = new Set(signedMembers.map(m =>
+            m.memberAmount == null ? 'null' : String(m.memberAmount)
+        ));
+        const needChairman = signedMembers.length >= 2 && (uniqueDecisions.size > 1 || uniqueAmounts.size > 1);
+        if (needChairman) {
+            const chairRes = await client.query(
+                `SELECT u.id::text AS user_id, u.account, u.name_enc, u.name_iv,
+                        s.signature_data_url, s.content_hash, s.signed_at,
+                        s.member_approved, s.member_amount, s.member_comments
+                 FROM users u
+                 JOIN user_roles ur ON ur.user_id = u.id
+                 JOIN roles r ON r.id = ur.role_id AND r.code = 'chairman'
+                 LEFT JOIN board_review_signatures s
+                        ON s.application_id = $1::bigint AND s.signer_user_id = u.id
+                 WHERE u.is_active = TRUE
+                 LIMIT 1`,
+                [applicationId]
+            );
+            if ((chairRes.rowCount ?? 0) > 0) {
+                const cr = chairRes.rows[0];
+                const cname = cr.name_enc && cr.name_iv ? (decryptAES(cr.name_enc, cr.name_iv) || '未知') : '未知';
+                let cstatus: SignatureStatus = 'pending';
+                if (cr.signature_data_url && cr.signature_data_url !== '') {
+                    const expected = memberHashFromValues(
+                        applicationId, String(cr.user_id),
+                        cr.member_approved ?? null,
+                        cr.member_amount != null ? Number(cr.member_amount) : null,
+                        cr.member_comments ?? null,
+                        groupId,
+                    );
+                    if (cr.content_hash === expected) {
+                        cstatus = 'signed';
+                        signedCount += 1;
+                    } else {
+                        cstatus = 'invalid';
+                    }
+                }
+                members.push({
+                    signerUserId: String(cr.user_id),
+                    name: `${cname}（董事長・第三審）`,
+                    account: cr.account,
+                    status: cstatus,
+                    signedAt: cr.signed_at ? new Date(cr.signed_at).toISOString() : null,
+                    thumbnail: cr.signature_data_url ? String(cr.signature_data_url).slice(0, 120) : null,
+                    memberApproved: cr.member_approved ?? null,
+                    memberAmount: cr.member_amount != null ? Number(cr.member_amount) : null,
+                    memberComments: cr.member_comments ?? null,
+                });
+            }
+        }
 
         return {
             success: true,

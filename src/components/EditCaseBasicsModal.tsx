@@ -10,6 +10,8 @@ export interface EditCaseBasicsInitial {
     applicantName: string;
     /** 申請人聯絡電話（必填） */
     applicantPhone?: string | null;
+    /** 申請人戶籍地址（選填，但領款收據需要） */
+    applicantAddress?: string | null;
     /** 出生年月日 YYYY-MM-DD（必填） */
     applicantDob?: string | null;
     /** 癌別（必填） */
@@ -52,6 +54,7 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
     const [applicantName, setApplicantName] = useState(initial.applicantName ?? '');
     const [applicantPhone, setApplicantPhone] = useState(initial.applicantPhone ?? '');
     const [phoneError, setPhoneError] = useState('');
+    const [applicantAddress, setApplicantAddress] = useState(initial.applicantAddress ?? '');
     const [applicantDob, setApplicantDob] = useState(initial.applicantDob ?? '');
     const [dobError, setDobError] = useState('');
     const [cancerType, setCancerType] = useState(initial.cancerType ?? '');
@@ -195,6 +198,10 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
             if (trimmedName !== (initial.applicantName ?? '')) patch.applicantName = trimmedName;
             const trimmedPhone = applicantPhone.trim();
             if (trimmedPhone !== (initial.applicantPhone ?? '')) patch.applicantPhone = trimmedPhone;
+            const trimmedAddress = applicantAddress.trim();
+            if (trimmedAddress !== (initial.applicantAddress ?? '').trim()) {
+                patch.applicantAddress = trimmedAddress || null;
+            }
             const trimmedDob = applicantDob.trim();
             if (trimmedDob !== (initial.applicantDob ?? '')) patch.applicantDob = trimmedDob;
             const trimmedCancerType = cancerType.trim();
@@ -291,6 +298,22 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
                             }`}
                         />
                         {phoneError && <p className="text-xs text-red-500 mt-1">{phoneError}</p>}
+                    </div>
+
+                    {/* 申請人戶籍地址（領款收據用） */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1">
+                            戶籍地址
+                            <span className="text-xs text-slate-400 font-normal ml-2">（產生領款收據 PDF 時會填入）</span>
+                        </label>
+                        <input
+                            type="text"
+                            value={applicantAddress}
+                            onChange={e => setApplicantAddress(e.target.value)}
+                            maxLength={500}
+                            placeholder="例：台北市信義區市府路1號"
+                            className="w-full px-3 py-2 border border-slate-300 rounded-lg text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 transition"
+                        />
                     </div>
 
                     {/* 出生年月日 + 癌別 + 期數 */}

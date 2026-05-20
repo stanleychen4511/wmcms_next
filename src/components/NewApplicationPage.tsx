@@ -1,15 +1,18 @@
 import { useState, useEffect } from 'react';
-import { ArrowLeft, FilePlus, Search, CheckCircle, XCircle } from 'lucide-react';
+import { ArrowLeft, FilePlus, Search, CheckCircle, XCircle, Phone, AlertTriangle } from 'lucide-react';
 import { checkApplicationStatus } from '../app/actions/applicationActions';
 import { twIdError } from '../lib/validateTwId';
 import { AppHeader } from './AppHeader';
 import { useToast } from './FloatingToast';
 import { ApplicationForm } from './ApplicationForm';
+import { ContactSearchModal } from './ContactSearchModal';
 import type { ApplicantFormValues } from '../schemas/applicant';
 
 interface NewApplicationPageProps {
     username: string;
     userAccount: string;
+    /** 當前操作者 user.id — 給聯絡紀錄查詢 modal 用 */
+    userId: string;
     onBack: () => void;
     onGoHome: () => void;
     onLogout: () => void;
@@ -23,15 +26,51 @@ interface LookupCardProps {
     result: {
         hasRecord: boolean;
         hasActive: boolean;
-        totalApprovedAmount: number;
+        totalApprovedSubtype1: number;
+        totalApprovedSubtype2: number;
         applicantName?: string;
     };
     eligible: boolean;
-    maxApplyAmount: number;
-    remaining: number;
+    /** 後台動態管理的子類型上限 */
+    subtypeMaxAmounts: Record<'1' | '2', number>;
+    /** 當前選擇的子類型 — 高亮對應列；空字串時不高亮 */
+    selectedSubtype: '1' | '2' | '';
 }
 
-function LookupCard({ result, eligible, maxApplyAmount, remaining }: LookupCardProps) {
+function LookupCard({ result, eligible, subtypeMaxAmounts, selectedSubtype }: LookupCardProps) {
+    const maxA = subtypeMaxAmounts['1'] ?? 0;
+    const maxB = subtypeMaxAmounts['2'] ?? 0;
+    const remainA = Math.max(0, maxA - (result.totalApprovedSubtype1 ?? 0));
+    const remainB = Math.max(0, maxB - (result.totalApprovedSubtype2 ?? 0));
+
+    const renderRow = (
+        label: string, code: '1' | '2',
+        max: number, cum: number, remain: number,
+    ) => {
+        const highlight = selectedSubtype === code;
+        const atLimit = remain <= 0;
+        return (
+            <div className={[
+                'flex items-baseline gap-2 px-2 py-1 rounded',
+                highlight ? 'bg-blue-50 ring-1 ring-blue-200' : '',
+            ].join(' ')}>
+                <span className={`text-xs ${highlight ? 'font-semibold text-blue-700' : 'text-slate-500'} shrink-0`}>
+                    {label}
+                </span>
+                <span className="text-xs text-slate-400 shrink-0">上限</span>
+                <span className="text-sm font-medium text-slate-700 shrink-0">NT$ {max.toLocaleString()}</span>
+                <span className="text-xs text-slate-400 shrink-0 ml-1">已累積</span>
+                <span className={`text-sm font-medium shrink-0 ${cum > 0 ? 'text-slate-700' : 'text-slate-400'}`}>
+                    {cum > 0 ? `NT$ ${cum.toLocaleString()}` : '—'}
+                </span>
+                <span className="ml-auto text-xs text-slate-400 shrink-0">尚可申請</span>
+                <span className={`text-sm font-bold shrink-0 ${atLimit ? 'text-red-600' : 'text-emerald-700'}`}>
+                    {atLimit ? '已達上限' : `NT$ ${remain.toLocaleString()}`}
+                </span>
+            </div>
+        );
+    };
+
     return (
         <div
             className={[
@@ -70,31 +109,15 @@ function LookupCard({ result, eligible, maxApplyAmount, remaining }: LookupCardP
                                 <span className="font-medium text-emerald-700">無</span>
                             )}
                         </p>
-                        <p>
-                            <span className="text-slate-500">累積核准補助金額：</span>
-                            {result.totalApprovedAmount > 0 ? (
-                                <span className={`font-semibold ml-1 ${result.totalApprovedAmount >= maxApplyAmount ? 'text-red-600' : 'text-slate-800'}`}>
-                                    NT${result.totalApprovedAmount.toLocaleString()}
-                                    {result.totalApprovedAmount >= maxApplyAmount && (
-                                        <span className="ml-1 text-xs font-normal text-red-500">（已達 35 萬上限）</span>
-                                    )}
-                                </span>
-                            ) : (
-                                <span className="font-medium text-slate-500 ml-1">—</span>
-                            )}
-                        </p>
-                        <p>
-                            <span className="text-slate-500">尚可申請餘額：</span>
-                            <span className={`font-semibold ml-1 ${remaining <= 0 ? 'text-red-600' : 'text-emerald-700'}`}>
-                                NT${remaining.toLocaleString()}
-                            </span>
-                        </p>
                     </>
                 ) : (
-                    <p className="text-slate-600">
-                        查無任何申請紀錄，可受理新申請。
-                    </p>
+                    <p className="text-slate-600">查無任何申請紀錄，可受理新申請。</p>
                 )}
+                {/* 個別顯示兩子類型的累積與剩餘 — 選中的子類型高亮 */}
+                <div className="pt-2 mt-2 border-t border-white/40 space-y-1">
+                    {renderRow('經濟弱勢', '1', maxA, result.totalApprovedSubtype1 ?? 0, remainA)}
+                    {renderRow('小康家庭', '2', maxB, result.totalApprovedSubtype2 ?? 0, remainB)}
+                </div>
             </div>
         </div>
     );
@@ -105,11 +128,14 @@ function LookupCard({ result, eligible, maxApplyAmount, remaining }: LookupCardP
 export function NewApplicationPage({
     username,
     userAccount,
+    userId,
     onBack,
     onGoHome,
     onLogout,
     onSubmitSuccess,
 }: NewApplicationPageProps) {
+    /** 聯絡紀錄查詢 modal — 新增案件前可先用身分證查申請人是否有過聯絡紀錄 */
+    const [contactSearchOpen, setContactSearchOpen] = useState(false);
     const { push: pushToast } = useToast();
     const [name, setName] = useState('');
     const [idNumber, setIdNumber] = useState('');
@@ -225,7 +251,14 @@ export function NewApplicationPage({
     const [appTypeError, setAppTypeError] = useState('');
     const [nameError, setNameError] = useState('');
     const [idError, setIdError] = useState('');
-    const [lookupResult, setLookupResult] = useState<{ hasRecord: boolean; hasActive: boolean; totalApprovedAmount: number; applicantName?: string } | null>(null);
+    const [lookupResult, setLookupResult] = useState<{
+        hasRecord: boolean;
+        hasActive: boolean;
+        totalApprovedAmount: number;
+        totalApprovedSubtype1: number;
+        totalApprovedSubtype2: number;
+        applicantName?: string;
+    } | null>(null);
     const [eligible, setEligible] = useState(false);
     const [isLoadingQuery, setIsLoadingQuery] = useState(false);
     const [isSubmitting, setIsSubmitting] = useState(false);
@@ -242,6 +275,24 @@ export function NewApplicationPage({
     const maxApplyAmount = subsidySubtype === '1' || subsidySubtype === '2'
         ? subtypeMaxAmounts[subsidySubtype]
         : Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2']);
+
+    /** 依「目前選擇的子類型 + 該子類型已累積核准金額」算出本次可申請金額上限 */
+    const effectiveApplyCap = (() => {
+        if (!subsidySubtype) return 0;
+        const max = subtypeMaxAmounts[subsidySubtype] ?? 0;
+        const cum = subsidySubtype === '1'
+            ? (lookupResult?.totalApprovedSubtype1 ?? 0)
+            : (lookupResult?.totalApprovedSubtype2 ?? 0);
+        return Math.max(0, max - cum);
+    })();
+
+    /** #24 申請金額預設為當前子類型的剩餘額度；當使用者尚未手動修改時自動填入 */
+    useEffect(() => {
+        if (applyAmount !== '' && applyAmount !== 0) return; // 已輸入則不覆蓋
+        if (!lookupResult || !subsidySubtype) return;
+        if (effectiveApplyCap > 0) setApplyAmount(effectiveApplyCap);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [lookupResult, subsidySubtype, effectiveApplyCap]);
 
     // Lazy-load referral units only when user picks '轉介'
     useEffect(() => {
@@ -269,12 +320,13 @@ export function NewApplicationPage({
         setQueried(false);
     };
 
-    // Validate fields needed for lookup (id + type)
+    // Validate fields needed for lookup (id + subtype + type)
     const validateForLookup = (): boolean => {
         let ok = true;
         const idErr = twIdError(idNumber.trim());
         if (idErr) { setIdError(idErr); ok = false; } else { setIdError(''); }
         if (!applicationType) { setAppTypeError('請選擇申請類別'); ok = false; } else { setAppTypeError(''); }
+        if (!subsidySubtype) { setSubsidySubtypeError('請選擇補助子類型'); ok = false; } else { setSubsidySubtypeError(''); }
         return ok;
     };
 
@@ -328,8 +380,10 @@ export function NewApplicationPage({
         if (amtNum <= 0) {
             setApplyAmountError('請輸入申請金額');
             ok = false;
-        } else if (amtNum > maxApplyAmount) {
-            setApplyAmountError(`申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元`);
+        } else if (amtNum > effectiveApplyCap) {
+            // 雙保險：理論上 input 即時 clamp 不會發生，仍保留 server-side 保護
+            setApplyAmount(effectiveApplyCap);
+            setApplyAmountError(`上限為 NT$${effectiveApplyCap.toLocaleString()} 元`);
             ok = false;
         } else {
             setApplyAmountError('');
@@ -404,24 +458,33 @@ export function NewApplicationPage({
                 hasRecord: apiRes.found,
                 hasActive: !!apiRes.hasActiveApplication,
                 totalApprovedAmount: apiRes.totalApprovedAmount || 0,
-                applicantName: apiRes.found ? name.trim() : undefined,
+                totalApprovedSubtype1: apiRes.totalApprovedSubtype1 || 0,
+                totalApprovedSubtype2: apiRes.totalApprovedSubtype2 || 0,
+                applicantName: apiRes.found && name.trim() ? name.trim() : undefined,
             };
 
             setLookupResult(mappedResult);
             setQueried(true);
 
-            // Determine eligibility
+            // Determine eligibility — 以「選擇的子類型」的累積 vs 該子類型上限判斷
+            const selectedCum = subsidySubtype === '1'
+                ? mappedResult.totalApprovedSubtype1
+                : subsidySubtype === '2'
+                    ? mappedResult.totalApprovedSubtype2
+                    : 0;
+            const selectedMax = subsidySubtype ? (subtypeMaxAmounts[subsidySubtype] ?? 0) : 0;
             if (mappedResult.hasActive) {
                 setEligible(false);
                 pushToast({
                     type: 'error',
                     msg: '該申請人目前已有進行中的申請案件，無法重複申請，請待現有案件結案後再行申請。',
                 });
-            } else if (mappedResult.totalApprovedAmount >= maxApplyAmount) {
+            } else if (selectedMax > 0 && selectedCum >= selectedMax) {
                 setEligible(false);
+                const label = subsidySubtype === '1' ? '經濟弱勢' : '小康家庭';
                 pushToast({
                     type: 'info',
-                    msg: `該申請人累積核准補助金額（NT$${mappedResult.totalApprovedAmount.toLocaleString()}）已達補助上限 NT$${maxApplyAmount.toLocaleString()} 元，無法再申請。`,
+                    msg: `該申請人在「${label}」累積核准補助金額（NT$${selectedCum.toLocaleString()}）已達上限 NT$${selectedMax.toLocaleString()} 元，此子類型無法再申請。`,
                 });
             } else {
                 setEligible(true);
@@ -536,42 +599,38 @@ export function NewApplicationPage({
                         <ArrowLeft className="w-4 h-4" />
                         返回首頁
                     </button>
-                    <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
-                        <FilePlus className="w-6 h-6 text-green-600" />
-                        新增申請案件
-                    </h2>
-                    <p className="text-sm text-slate-500 mt-1">
-                        填寫身分證字號與申請類別後可先查詢申請資格；姓名與金額於確認資格後填寫即可。
-                    </p>
+                    <div className="flex items-center justify-between gap-3 flex-wrap">
+                        <div>
+                            <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
+                                <FilePlus className="w-6 h-6 text-green-600" />
+                                新增申請案件
+                            </h2>
+                            <p className="text-sm text-slate-500 mt-1">
+                                填寫身分證字號與申請類別後可先查詢申請資格；姓名與金額於確認資格後填寫即可。
+                            </p>
+                        </div>
+                        <button
+                            type="button"
+                            onClick={() => setContactSearchOpen(true)}
+                            className="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-medium bg-blue-600 hover:bg-blue-700 text-white rounded-lg shadow-sm transition"
+                            title="以身分證 / 姓名 / 電話查申請人是否有過聯絡或關懷紀錄"
+                        >
+                            <Phone className="w-4 h-4" />
+                            聯絡記錄查詢
+                        </button>
+                    </div>
                 </div>
 
-                {/* Form card */}
+                {/* ===== 查詢區 card：身分證 + 申請類別 + 補助子類型 + 查詢按鈕 ===== */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-5">
-                    {/* 姓名 */}
                     <div>
-                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                            申請人姓名
-                            <span className="text-red-500 ml-1">*</span>
-                        </label>
-                        <input
-                            type="text"
-                            value={name}
-                            onChange={e => handleNameChange(e.target.value)}
-                            maxLength={50}
-                            placeholder="請輸入申請人全名"
-                            className={[
-                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
-                                nameError
-                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
-                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
-                            ].join(' ')}
-                        />
-                        {nameError && (
-                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
-                                <XCircle className="w-3 h-3" />
-                                {nameError}
-                            </p>
-                        )}
+                        <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
+                            <Search className="w-5 h-5 text-blue-600" />
+                            申請狀態查詢
+                        </h3>
+                        <p className="text-xs text-slate-500 mt-1">
+                            請先輸入身分證、選擇申請類別與補助子類型，按下「申請狀態查詢」確認可申請金額後再填寫其他資料。
+                        </p>
                     </div>
 
                     {/* 身分證 */}
@@ -601,6 +660,154 @@ export function NewApplicationPage({
                         )}
                         <p className="text-xs text-slate-400 mt-1">格式：1 個大寫英文字母 + 9 位數字，共 10 碼</p>
                     </div>
+
+                    {/* 申請類別 */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            申請類別
+                            <span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <select
+                            value={applicationType}
+                            onChange={e => { setApplicationType(e.target.value); setAppTypeError(''); }}
+                            className={[
+                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                appTypeError
+                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                            ].join(' ')}
+                        >
+                            <option value="">請選擇申請類別</option>
+                            <option value="A">A 類－自費醫療補助</option>
+                            <option value="B">B 類－臨終安寧自費醫療補助</option>
+                            <option value="C">C 類－預立醫療照護諮商補助</option>
+                            <option value="D">D 類－醫事人員進修補助</option>
+                        </select>
+                        {appTypeError && (
+                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                <XCircle className="w-3 h-3" />
+                                {appTypeError}
+                            </p>
+                        )}
+                    </div>
+
+                    {/* 補助子類型（115 年辦法） */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            補助子類型（115 年辦法）
+                            <span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <div className="space-y-2">
+                            {[
+                                { v: '1' as const, label: '經濟弱勢', limit: subtypeMaxAmounts['1'], extra: '僅接受轉介' },
+                                { v: '2' as const, label: '小康家庭', limit: subtypeMaxAmounts['2'], extra: '自提或轉介均可' },
+                            ].map(opt => (
+                                <label key={opt.v} className="flex items-start gap-2 cursor-pointer">
+                                    <input
+                                        type="radio"
+                                        name="subsidy_subtype_top"
+                                        value={opt.v}
+                                        checked={subsidySubtype === opt.v}
+                                        onChange={() => {
+                                            setSubsidySubtype(opt.v);
+                                            setSubsidySubtypeError('');
+                                            if (opt.v === '1') setApplicationWay('2');
+                                            // 子類型變動 → 重新查詢以更新可申請金額
+                                            setLookupResult(null);
+                                            setEligible(false);
+                                            setQueried(false);
+                                        }}
+                                        className="mt-0.5 w-4 h-4 accent-blue-600"
+                                    />
+                                    <span className="text-sm">
+                                        <span className="font-medium text-slate-700">
+                                            {opt.label}
+                                            {opt.limit > 0 && (
+                                                <span className="font-normal text-slate-500 ml-1">
+                                                    （補助上限 NT${opt.limit.toLocaleString()}）
+                                                </span>
+                                            )}
+                                        </span>
+                                        <span className="block text-xs text-slate-500">{opt.extra}</span>
+                                    </span>
+                                </label>
+                            ))}
+                        </div>
+                        {subsidySubtypeError && (
+                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                <XCircle className="w-3 h-3" />
+                                {subsidySubtypeError}
+                            </p>
+                        )}
+                    </div>
+
+                    {/* Query button */}
+                    <div className="pt-1">
+                        <button
+                            onClick={handleLookup}
+                            disabled={isLoadingQuery}
+                            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-all shadow-sm disabled:opacity-50"
+                        >
+                            {isLoadingQuery ? (
+                                <>
+                                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
+                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
+                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
+                                    </svg>
+                                    查詢中…
+                                </>
+                            ) : (
+                                <>
+                                    <Search className="w-4 h-4" />
+                                    申請狀態查詢
+                                </>
+                            )}
+                        </button>
+                    </div>
+                </div>
+
+                {/* Lookup result (top) — 查詢後立即顯示 */}
+                {queried && lookupResult !== null && (
+                    <LookupCard
+                        result={lookupResult}
+                        eligible={eligible}
+                        subtypeMaxAmounts={subtypeMaxAmounts}
+                        selectedSubtype={subsidySubtype}
+                    />
+                )}
+
+                {/* ===== 詳細資料 card — 查詢後再填寫 ===== */}
+                <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-5">
+                    {/* 姓名 */}
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            申請人姓名
+                            <span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <input
+                            type="text"
+                            value={name}
+                            onChange={e => handleNameChange(e.target.value)}
+                            maxLength={50}
+                            placeholder="請輸入申請人全名"
+                            className={[
+                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                nameError
+                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                            ].join(' ')}
+                        />
+                        {nameError && (
+                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                <XCircle className="w-3 h-3" />
+                                {nameError}
+                            </p>
+                        )}
+                    </div>
+
+                    {/* (身分證已移至上方查詢區，下方不重複；保留位置註解供開發查找) */}
+                    {/* (申請類別已移至上方查詢區) */}
+                    {/* (補助子類型已移至上方查詢區) */}
 
                     {/* Email */}
                     <div>
@@ -772,93 +979,6 @@ export function NewApplicationPage({
                             </div>
                             {treatmentPhaseError && <p className="text-xs text-red-500 mt-1">{treatmentPhaseError}</p>}
                         </div>
-                    </div>
-
-                    {/* 申請類別 */}
-                    <div>
-                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                            申請類別
-                            <span className="text-red-500 ml-1">*</span>
-                        </label>
-                        <select
-                            value={applicationType}
-                            onChange={e => { setApplicationType(e.target.value); setAppTypeError(''); }}
-                            className={[
-                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
-                                appTypeError
-                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
-                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
-                            ].join(' ')}
-                        >
-                            <option value="">請選擇申請類別</option>
-                            <option value="A">A 類－自費醫療補助</option>
-                            <option value="B">B 類－臨終安寧自費醫療補助</option>
-                            <option value="C">C 類－預立醫療照護諮商補助</option>
-                            <option value="D">D 類－醫事人員進修補助</option>
-                        </select>
-                        {appTypeError && (
-                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
-                                <XCircle className="w-3 h-3" />
-                                {appTypeError}
-                            </p>
-                        )}
-                    </div>
-
-                    {/* 補助子類型（115 年辦法） */}
-                    <div>
-                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                            補助子類型（115 年辦法）
-                            <span className="text-red-500 ml-1">*</span>
-                        </label>
-                        <div className="space-y-2">
-                            {[
-                                {
-                                    v: '1' as const,
-                                    label: '經濟弱勢',
-                                    limit: subtypeMaxAmounts['1'],
-                                    extra: '僅接受轉介',
-                                },
-                                {
-                                    v: '2' as const,
-                                    label: '小康家庭',
-                                    limit: subtypeMaxAmounts['2'],
-                                    extra: '自提或轉介均可',
-                                },
-                            ].map(opt => (
-                                <label key={opt.v} className="flex items-start gap-2 cursor-pointer">
-                                    <input
-                                        type="radio"
-                                        name="subsidy_subtype"
-                                        value={opt.v}
-                                        checked={subsidySubtype === opt.v}
-                                        onChange={() => {
-                                            setSubsidySubtype(opt.v);
-                                            setSubsidySubtypeError('');
-                                            // 經濟弱勢自動切換為轉介
-                                            if (opt.v === '1') setApplicationWay('2');
-                                        }}
-                                        className="mt-0.5 w-4 h-4 accent-blue-600"
-                                    />
-                                    <span className="text-sm">
-                                        <span className="font-medium text-slate-700">
-                                            {opt.label}
-                                            {opt.limit > 0 && (
-                                                <span className="font-normal text-slate-500 ml-1">
-                                                    （補助上限 NT${opt.limit.toLocaleString()}）
-                                                </span>
-                                            )}
-                                        </span>
-                                        <span className="block text-xs text-slate-500">{opt.extra}</span>
-                                    </span>
-                                </label>
-                            ))}
-                        </div>
-                        {subsidySubtypeError && (
-                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
-                                <XCircle className="w-3 h-3" />
-                                {subsidySubtypeError}
-                            </p>
-                        )}
                     </div>
 
                     {/* 資格預審資料（婚姻 / 子女 / 收入 / 動產 / 不動產 / 經濟弱勢專屬） */}
@@ -1109,18 +1229,26 @@ export function NewApplicationPage({
                                 value={applyAmount}
                                 onChange={e => {
                                     const raw = e.target.value.replace(/\D/g, '');
-                                    const v = raw === '' ? '' : Number(raw);
-                                    setApplyAmount(v as number | '');
-                                    if (v !== '' && Number(v) > maxApplyAmount) {
-                                        setApplyAmountError(`申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元`);
+                                    let v: number | '' = raw === '' ? '' : Number(raw);
+                                    // 即時 clamp：超過上限直接修正為上限
+                                    if (v !== '' && effectiveApplyCap > 0 && v > effectiveApplyCap) {
+                                        v = effectiveApplyCap;
+                                    }
+                                    setApplyAmount(v);
+                                    if (v !== '' && effectiveApplyCap > 0 && Number(v) >= effectiveApplyCap) {
+                                        setApplyAmountError(`上限為 NT$${effectiveApplyCap.toLocaleString()} 元`);
                                     } else {
                                         setApplyAmountError('');
                                     }
                                 }}
-                                placeholder={`上限 ${maxApplyAmount.toLocaleString()} 元`}
+                                placeholder={effectiveApplyCap > 0
+                                    ? `上限 ${effectiveApplyCap.toLocaleString()} 元`
+                                    : '請先執行申請狀態查詢並選擇補助子類型'}
+                                disabled={!queried || !subsidySubtype || effectiveApplyCap <= 0}
                                 className={[
-                                    'w-full px-3 py-2.5 pr-8 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
-                                    applyAmountError
+                                    'w-full px-3 py-2.5 pr-8 rounded-lg border text-sm focus:outline-none focus:ring-2 transition disabled:bg-slate-100 disabled:cursor-not-allowed',
+                                    // 「上限為...」屬於資訊提示而非錯誤，欄位維持灰色；其他訊息才標紅
+                                    applyAmountError && !applyAmountError.startsWith('上限為')
                                         ? 'border-red-400 focus:ring-red-200 bg-red-50'
                                         : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
                                 ].join(' ')}
@@ -1128,42 +1256,21 @@ export function NewApplicationPage({
                             <span className="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 text-sm pointer-events-none">元</span>
                         </div>
                         {applyAmountError && (
-                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
-                                <XCircle className="w-3 h-3" />
-                                {applyAmountError}
-                            </p>
+                            applyAmountError.startsWith('上限為') ? (
+                                <p className="text-xs text-amber-700 mt-1 flex items-center gap-1">
+                                    <AlertTriangle className="w-3 h-3 text-amber-500" />
+                                    {applyAmountError}
+                                </p>
+                            ) : (
+                                <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                    <XCircle className="w-3 h-3" />
+                                    {applyAmountError}
+                                </p>
+                            )
                         )}
                     </div>
 
-                    {/* Query button */}
-                    <div className="pt-1">
-                        <button
-                            onClick={handleLookup}
-                            disabled={isLoadingQuery}
-                            className="flex items-center gap-2 bg-blue-600 hover:bg-blue-700 active:scale-95 text-white px-5 py-2.5 rounded-lg text-sm font-medium transition-all shadow-sm disabled:opacity-50"
-                        >
-                            {isLoadingQuery ? (
-                                <>
-                                    <svg className="w-4 h-4 animate-spin" fill="none" viewBox="0 0 24 24">
-                                        <circle className="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" strokeWidth="4" />
-                                        <path className="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v4l3-3-3-3v4a8 8 0 00-8 8h4z" />
-                                    </svg>
-                                    查詢中…
-                                </>
-                            ) : (
-                                <>
-                                    <Search className="w-4 h-4" />
-                                    申請狀態查詢
-                                </>
-                            )}
-                        </button>
-                    </div>
                 </div>
-
-                {/* Lookup result */}
-                {queried && lookupResult !== null && (
-                    <LookupCard result={lookupResult} eligible={eligible} maxApplyAmount={maxApplyAmount} remaining={maxApplyAmount - lookupResult.totalApprovedAmount} />
-                )}
 
                 {/* Submit section */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
@@ -1205,6 +1312,13 @@ export function NewApplicationPage({
                 </div>
             </main>
 
+            {/* 聯絡記錄查詢 modal — 與首頁同一個元件，可用身分證查申請人過往聯絡 / 關懷紀錄 */}
+            {contactSearchOpen && (
+                <ContactSearchModal
+                    operatorUserId={userId}
+                    onClose={() => setContactSearchOpen(false)}
+                />
+            )}
         </div>
     );
 }

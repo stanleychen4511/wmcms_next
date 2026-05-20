@@ -16,6 +16,17 @@ interface CaseListPageProps {
     pendingAlertIds?: Set<string>;
     /** Map of applicationId → reminderCount, only includes cases at/over threshold */
     thresholdReminderCounts?: Map<string, number>;
+    /** 「輪到我處理」案件 id 集合（user feedback #12） */
+    myTurnAppIds?: Set<string>;
+    /** 「輪到我處理」filter 開關 */
+    myTurnFilterActive?: boolean;
+    onToggleMyTurnFilter?: (v: boolean) => void;
+    /** 「未補件」filter 開關（從首頁未補件 modal 點進來自動勾起） */
+    pendingOnlyActive?: boolean;
+    onTogglePendingOnly?: (v: boolean) => void;
+    /** 「未派案」filter 開關（從首頁未派案 modal 點進來自動勾起） */
+    unassignedFilterActive?: boolean;
+    onToggleUnassignedFilter?: (v: boolean) => void;
     /** 各子類型補助上限（依 115 辦法）：'1'=經濟弱勢、'2'=小康家庭。每張 case 依 subsidySubtype 取對應值 */
     subtypeMaxAmounts?: Record<'1' | '2', number>;
     onMount?: () => void;
@@ -87,6 +98,9 @@ function loadSavedFilters() {
 export function CaseListPage({
     username, userId, userRoles, cases, allOfficers, officersWithId,
     isLoading, pendingAlertIds = new Set(), thresholdReminderCounts = new Map(),
+    myTurnAppIds = new Set<string>(), myTurnFilterActive = false, onToggleMyTurnFilter,
+    pendingOnlyActive, onTogglePendingOnly,
+    unassignedFilterActive, onToggleUnassignedFilter,
     subtypeMaxAmounts = { '1': 30000, '2': 350000 },
     onMount, onAssign, onSelectCase, onLogout, onGoHome,
 }: CaseListPageProps) {
@@ -108,12 +122,33 @@ export function CaseListPage({
     useEffect(() => { onMount?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
     const [nameQuery,      setNameQuery]      = useState<string>(saved?.nameQuery      ?? '');
+    /** #24: 當 nameQuery 為身分證格式時，server-side 查到的 applicant id（null = 未查或查無此人） */
+    const [idMatchApplicantId, setIdMatchApplicantId] = useState<string | null>(null);
+    useEffect(() => {
+        const q = nameQuery.trim().toUpperCase();
+        if (!/^[A-Z]\d{9}$/.test(q)) { setIdMatchApplicantId(null); return; }
+        let cancelled = false;
+        import('../app/actions/applicationActions').then(async m => {
+            const r = await m.findApplicantIdByIdNumber(q);
+            if (!cancelled) setIdMatchApplicantId(r);
+        });
+        return () => { cancelled = true; };
+    }, [nameQuery]);
     const [dateFrom,       setDateFrom]       = useState<string>(saved?.dateFrom       ?? first);
     const [dateTo,         setDateTo]         = useState<string>(saved?.dateTo         ?? last);
     const [stageFilter,    setStageFilter]    = useState<WorkflowStage | ''>(saved?.stageFilter    ?? '');
     const [officerFilter,  setOfficerFilter]  = useState<string>(saved?.officerFilter  ?? '');
     const [assignFilter,   setAssignFilter]   = useState<'all' | 'unassigned' | 'assigned'>(saved?.assignFilter ?? 'all');
     const [pendingOnly,    setPendingOnly]    = useState<boolean>(false);
+    // 從外部（首頁 modal）打開時自動勾起未補件 filter
+    useEffect(() => {
+        if (pendingOnlyActive !== undefined) setPendingOnly(pendingOnlyActive);
+    }, [pendingOnlyActive]);
+    // 從外部（首頁 modal）打開時自動勾起未派案 filter（assignFilter='unassigned'）
+    useEffect(() => {
+        if (unassignedFilterActive === true) setAssignFilter('unassigned');
+        else if (unassignedFilterActive === false) setAssignFilter('all');
+    }, [unassignedFilterActive]);
     const [thresholdOnly,  setThresholdOnly]  = useState<boolean>(false);
     const [boardUnassignedOnly, setBoardUnassignedOnly] = useState<boolean>(false);
     const [batchAssignResult, setBatchAssignResult] = useState<string | null>(null);
@@ -173,7 +208,17 @@ export function CaseListPage({
 
     const filteredCases = useMemo(() => {
         return cases.filter((c) => {
-            if (nameQuery && !c.applicantName.includes(nameQuery)) return false;
+            if (nameQuery) {
+                const q = nameQuery.trim();
+                const looksLikeId = /^[A-Za-z]\d{9}$/.test(q);
+                if (looksLikeId) {
+                    if (!idMatchApplicantId || String(c.id) !== String(idMatchApplicantId)) return false;
+                } else {
+                    const inName = c.applicantName.includes(q);
+                    const inPhone = !!c.applicantPhone && c.applicantPhone.includes(q);
+                    if (!inName && !inPhone) return false;
+                }
+            }
             if (stageFilter && c.stage !== stageFilter) return false;
             if (effectiveOfficerFilter && c.officer !== effectiveOfficerFilter) return false;
             if (dateFrom && c.appliedAt < dateFrom) return false;
@@ -182,6 +227,7 @@ export function CaseListPage({
             if (effectiveAssignFilter === 'assigned'   && c.officerId === null) return false;
             if (pendingOnly && !pendingAlertIds.has(c.applicationId)) return false;
             if (thresholdOnly && !thresholdReminderCounts.has(c.applicationId)) return false;
+            if (myTurnFilterActive && !myTurnAppIds.has(c.applicationId)) return false;
             if (boardUnassignedOnly) {
                 if (c.stage !== 'board_review') return false;
                 if (c.assignedBoardGroupId) return false;
@@ -210,7 +256,7 @@ export function CaseListPage({
             }
             return 0;
         });
-    }, [cases, nameQuery, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, thresholdOnly, thresholdReminderCounts, boardUnassignedOnly, sortStack, subtypeMaxAmounts]);
+    }, [cases, nameQuery, idMatchApplicantId, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, thresholdOnly, thresholdReminderCounts, myTurnFilterActive, myTurnAppIds, boardUnassignedOnly, sortStack, subtypeMaxAmounts]);
 
     const allFilteredSelected = filteredCases.length > 0 &&
         filteredCases.every(c => selectedIds.has(c.applicationId));
@@ -282,14 +328,14 @@ export function CaseListPage({
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
                         {/* Name search */}
                         <div className="sm:col-span-1">
-                            <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">申請人姓名</label>
+                            <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">姓名 / 電話 / 身分證</label>
                             <div className="relative">
                                 <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-gray-400" />
                                 <input
                                     type="text"
                                     value={nameQuery}
                                     onChange={(e) => setNameQuery(e.target.value)}
-                                    placeholder="搜尋姓名..."
+                                    placeholder="姓名 / 電話 / 身分證..."
                                     className="w-full border border-gray-300 rounded-lg pl-9 pr-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
                                 />
                             </div>
@@ -361,7 +407,7 @@ export function CaseListPage({
                                     <input
                                         type="checkbox"
                                         checked={pendingOnly}
-                                        onChange={e => setPendingOnly(e.target.checked)}
+                                        onChange={e => { setPendingOnly(e.target.checked); onTogglePendingOnly?.(e.target.checked); }}
                                         className="w-4 h-4 accent-orange-500"
                                     />
                                     <span className="text-sm font-medium text-orange-700 flex items-center gap-1">
@@ -387,6 +433,26 @@ export function CaseListPage({
                                     />
                                     <span className="text-sm font-medium text-purple-700">
                                         僅顯示未派案的董事審核案件
+                                    </span>
+                                </label>
+                            </div>
+                        )}
+
+                        {/* 「輪到我處理」filter — user feedback #12 */}
+                        {myTurnAppIds.size > 0 && (
+                            <div className="sm:col-span-1 flex items-end">
+                                <label className="flex items-center gap-2 cursor-pointer select-none w-full border border-indigo-200 bg-indigo-50 rounded-lg px-3 py-2 hover:bg-indigo-100 transition">
+                                    <input
+                                        type="checkbox"
+                                        checked={myTurnFilterActive}
+                                        onChange={e => onToggleMyTurnFilter?.(e.target.checked)}
+                                        className="w-4 h-4 accent-indigo-500"
+                                    />
+                                    <span className="text-sm font-medium text-indigo-700 flex items-center gap-1">
+                                        僅顯示輪到我處理
+                                        <span className="ml-1 bg-indigo-600 text-white text-xs rounded-full px-1.5 py-0.5 leading-none">
+                                            {myTurnAppIds.size}
+                                        </span>
                                     </span>
                                 </label>
                             </div>

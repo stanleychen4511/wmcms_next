@@ -212,14 +212,14 @@ export function PaymentReceiptPdf({ data }: Props) {
                             <Text>電話</Text>
                         </View>
                         <View style={s.cellValue}>
-                            <Text> </Text>
+                            <Text>{data.applicantPhone ?? ' '}</Text>
                         </View>
                     </View>
 
-                    {/* 地址 */}
+                    {/* 戶籍地址（user feedback #12 — 改為戶籍地址而非現居） */}
                     <View style={s.row}>
-                        <View style={s.cellHeader}><Text>地址</Text></View>
-                        <View style={s.fullRowValue}><Text> </Text></View>
+                        <View style={s.cellHeader}><Text>戶籍地址</Text></View>
+                        <View style={s.fullRowValue}><Text>{data.applicantAddress ?? ' '}</Text></View>
                     </View>
 
                     {/* 補助類別 */}
@@ -319,25 +319,8 @@ export function PaymentReceiptPdf({ data }: Props) {
                     </View>
                 </View>
 
-                {/* 承辦人 / 主管 / 會計 / 執行長 */}
-                <View style={s.signatureGrid}>
-                    <View style={s.signatureCell}>
-                        <Text style={s.signatureLabel}>承辦人：</Text>
-                        <View style={s.signatureLine} />
-                    </View>
-                    <View style={s.signatureCell}>
-                        <Text style={s.signatureLabel}>主管：</Text>
-                        <View style={s.signatureLine} />
-                    </View>
-                    <View style={s.signatureCell}>
-                        <Text style={s.signatureLabel}>會計：</Text>
-                        <View style={s.signatureLine} />
-                    </View>
-                    <View style={s.signatureCell}>
-                        <Text style={s.signatureLabel}>執行長：</Text>
-                        <View style={s.signatureLine} />
-                    </View>
-                </View>
+                {/* user feedback #12：刪除下方承辦人/主管/會計/執行長簽名區
+                    （簽核歷程已可在系統內看到，不需在領款收據 PDF 上重複） */}
             </Page>
         </Document>
     );

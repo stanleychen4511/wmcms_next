@@ -9,12 +9,13 @@
  * 限制：純檢視 — 不可新增、不可編輯、不可刪除。
  */
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { Heart, X, Loader2, Phone, ClipboardList } from 'lucide-react';
 import {
     fetchContactRecords,
     type ContactRecord,
 } from '../app/actions/contactRecordActions';
+import { ImageLightbox, looksLikeImageUrl } from './ImageLightbox';
 import { useModalDismiss } from '../hooks/useModalDismiss';
 
 interface Props {
@@ -31,6 +32,18 @@ export function ApplicationCareRecordsModal({ applicationId, applicantUserId, ca
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string>('');
     const [expandedId, setExpandedId] = useState<string | null>(null);
+    // 媒體 lightbox — 一次只開一張紀錄的圖片清單
+    const [lightbox, setLightbox] = useState<{ images: string[]; index: number } | null>(null);
+
+    // 預先計算每筆紀錄的「可預覽圖片」清單，方便點縮圖時直接帶入
+    const imageMap = useMemo(() => {
+        const m = new Map<string, string[]>();
+        for (const r of records) {
+            const imgs = r.mediaUrls.map(u => u.trim()).filter(u => looksLikeImageUrl(u));
+            if (imgs.length > 0) m.set(r.id, imgs);
+        }
+        return m;
+    }, [records]);
 
     useModalDismiss(onClose);
 
@@ -169,6 +182,51 @@ export function ApplicationCareRecordsModal({ applicationId, applicantUserId, ca
                                                 {r.summary
                                                     ? <p className="whitespace-pre-wrap">{r.summary}</p>
                                                     : <p className="text-slate-400">（無摘要內容）</p>}
+                                                {r.mediaUrls.length > 0 && (() => {
+                                                    const imgs = imageMap.get(r.id) ?? [];
+                                                    const nonImgs = r.mediaUrls.map(u => u.trim()).filter(u => u && !looksLikeImageUrl(u));
+                                                    return (
+                                                        <div className="space-y-1.5 pt-1">
+                                                            {imgs.length > 0 && (
+                                                                <div className="flex flex-wrap gap-2">
+                                                                    {imgs.map((url, i) => (
+                                                                        <button
+                                                                            key={`${r.id}-img-${i}`}
+                                                                            type="button"
+                                                                            onClick={() => setLightbox({ images: imgs, index: i })}
+                                                                            className="block border border-slate-200 rounded-lg overflow-hidden cursor-zoom-in hover:border-indigo-400 transition bg-white"
+                                                                            title="點擊放大檢視"
+                                                                        >
+                                                                            {/* eslint-disable-next-line @next/next/no-img-element */}
+                                                                            <img
+                                                                                src={url}
+                                                                                alt={`媒體 ${i + 1}`}
+                                                                                className="h-24 max-w-[200px] object-cover"
+                                                                                onError={(e) => { (e.currentTarget.parentElement as HTMLElement).style.display = 'none'; }}
+                                                                            />
+                                                                        </button>
+                                                                    ))}
+                                                                </div>
+                                                            )}
+                                                            {nonImgs.length > 0 && (
+                                                                <ul className="text-[11px] space-y-0.5">
+                                                                    {nonImgs.map((url, i) => (
+                                                                        <li key={`${r.id}-link-${i}`}>
+                                                                            <a
+                                                                                href={url}
+                                                                                target="_blank"
+                                                                                rel="noopener noreferrer"
+                                                                                className="text-indigo-600 hover:text-indigo-800 underline break-all"
+                                                                            >
+                                                                                {url}
+                                                                            </a>
+                                                                        </li>
+                                                                    ))}
+                                                                </ul>
+                                                            )}
+                                                        </div>
+                                                    );
+                                                })()}
                                                 <p className="text-slate-400 text-[11px]">
                                                     建立 {r.createdAt?.slice(0, 16).replace('T', ' ')}
                                                     {r.createdAt !== r.updatedAt && (
@@ -194,6 +252,16 @@ export function ApplicationCareRecordsModal({ applicationId, applicantUserId, ca
                     </button>
                 </div>
             </div>
+
+            {/* 媒體圖片放大檢視 */}
+            {lightbox && (
+                <ImageLightbox
+                    images={lightbox.images}
+                    index={lightbox.index}
+                    onChange={(i) => setLightbox(prev => prev ? { ...prev, index: i } : null)}
+                    onClose={() => setLightbox(null)}
+                />
+            )}
         </div>
     );
 }

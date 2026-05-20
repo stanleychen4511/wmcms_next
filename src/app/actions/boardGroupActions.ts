@@ -77,7 +77,11 @@ async function loadGroupRows(client: any, activeOnly: boolean): Promise<BoardGro
              SELECT a.group_id, COUNT(*)::int AS cnt
              FROM board_review_assignments a
              JOIN applications ap ON ap.id = a.application_id
-             JOIN application_workflow w ON w.application_id = ap.id
+             JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = ap.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
              WHERE ap.status = '1' AND w.stage = 'board_review'
              GROUP BY a.group_id
          ) c ON c.group_id = g.id
@@ -377,7 +381,11 @@ export async function assignCaseToBoardGroup(
         const caseRes = await client.query(
             `SELECT a.status, w.stage
              FROM applications a
-             LEFT JOIN application_workflow w ON w.application_id = a.id
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
              WHERE a.id = $1::bigint LIMIT 1`,
             [applicationId]
         );
@@ -485,7 +493,11 @@ export async function autoAssignCaseToBoardGroup(
                  SELECT a.group_id, COUNT(*)::int AS n
                  FROM board_review_assignments a
                  JOIN applications ap ON ap.id = a.application_id
-                 JOIN application_workflow w ON w.application_id = ap.id
+                 JOIN LATERAL (
+                     SELECT stage FROM application_workflow
+                     WHERE application_id = ap.id
+                     ORDER BY id DESC LIMIT 1
+                 ) w ON TRUE
                  WHERE ap.status = '1' AND w.stage = 'board_review'
                  GROUP BY a.group_id
              ) c ON c.group_id = g.id
@@ -614,7 +626,11 @@ export async function saveBoardReviewDraft(
             `SELECT a.status, a.approved_amount,
                     w.stage, w.comments AS wf_comments, w.is_approved AS wf_is_approved
              FROM applications a
-             LEFT JOIN application_workflow w ON w.application_id = a.id
+             LEFT JOIN LATERAL (
+                 SELECT stage, comments, is_approved FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
              WHERE a.id = $1::bigint LIMIT 1`,
             [applicationId]
         );
@@ -712,12 +728,16 @@ export async function saveBoardReviewDraft(
             );
         }
 
-        // 6. UPDATE application_workflow (if comments or isApproved changed)
+        // 6. UPDATE application_workflow（草稿存檔不 INSERT 新列，只更新「最新一列」）
         if (changedFields.includes('comments') || changedFields.includes('isApproved')) {
             await client.query(
                 `UPDATE application_workflow
                  SET comments = $1, is_approved = $2, reviewed_at = NOW()
-                 WHERE application_id = $3::bigint`,
+                 WHERE id = (
+                     SELECT id FROM application_workflow
+                     WHERE application_id = $3::bigint
+                     ORDER BY id DESC LIMIT 1
+                 )`,
                 [nextComments, nextIsApproved, applicationId]
             );
         }

@@ -91,7 +91,8 @@ async function hasAnyRole(operatorUserId: string, codes: string[]): Promise<bool
     }
 }
 
-const ALLOWED_ROLES = ['supervisor', 'case_officer', 'volunteer', 'admin'];
+// executive 也納入（user feedback #22）— 執行長要看關懷紀錄協助決策
+const ALLOWED_ROLES = ['supervisor', 'case_officer', 'volunteer', 'admin', 'executive'];
 
 function normUrls(input: unknown): string[] {
     if (!Array.isArray(input)) return [];
@@ -467,6 +468,144 @@ export async function fetchPhoneHistory(
         return { success: true, data: res.rows.map(rowToContactRecord) };
     } catch (err: any) {
         console.error('fetchPhoneHistory error:', err);
+        return { success: false, error: err.message ?? '查詢失敗' };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── 身分證查詢（首頁聯絡紀錄查詢 / 新增案件頁面用） ─────────────────────
+//
+// 流程：用 id_number_bidx 找到 applicant_user_id → 拉申請摘要 + 聯絡紀錄。
+// 隱私：若 operator 不是該申請人「任一案件」的承辦，回傳精簡版（隱藏姓名／案號），
+//       只保留申請日期與次數，但聯絡紀錄全部可看。
+
+export interface IdNumberSearchApplication {
+    applicationId: string | null;   // 隱藏時為 null
+    caseNumber: string | null;      // 隱藏時為 null
+    applyAt: string;                // 一律顯示
+    status: string | null;          // 隱藏時為 null
+}
+
+export interface IdNumberSearchResult {
+    found: boolean;
+    applicantUserId: string | null;
+    /** operator 是否為該申請人任一案件的承辦人 */
+    isOperatorOfficer: boolean;
+    /** 申請人姓名 — 只有 isOperatorOfficer=true 時才回傳 */
+    applicantName: string | null;
+    /** 申請摘要 — 隱私模式時 applications 仍會帶日期，但 caseNumber/status 為 null */
+    applicationCount: number;
+    earliestApplyAt: string | null;
+    latestApplyAt: string | null;
+    applications: IdNumberSearchApplication[];
+    /** 聯絡紀錄 — 全部回傳；若隱私模式，applicantName 已被遮罩 */
+    contactRecords: ContactRecord[];
+}
+
+export async function searchContactsByIdNumber(
+    operatorUserId: string,
+    idNumber: string,
+): Promise<ActionResult<IdNumberSearchResult>> {
+    if (!(await hasAnyRole(operatorUserId, ALLOWED_ROLES))) {
+        return { success: false, error: '權限不足' };
+    }
+    const trimmed = (idNumber ?? '').trim().toUpperCase();
+    if (!trimmed) {
+        return { success: false, error: '請輸入身分證字號' };
+    }
+
+    // 1) 用 blind index 查 applicant_user_id
+    const { findApplicantIdByIdNumber } = await import('./applicationActions');
+    const applicantUserId = await findApplicantIdByIdNumber(trimmed);
+    if (!applicantUserId) {
+        return {
+            success: true,
+            data: {
+                found: false,
+                applicantUserId: null,
+                isOperatorOfficer: false,
+                applicantName: null,
+                applicationCount: 0,
+                earliestApplyAt: null,
+                latestApplyAt: null,
+                applications: [],
+                contactRecords: [],
+            },
+        };
+    }
+
+    const client = await pool.connect();
+    try {
+        // 2) 抓申請清單 + 判斷 operator 是否為任一案件的承辦
+        const appsRes = await client.query(
+            `SELECT a.id::text AS id, a.case_number, a.apply_at, a.status,
+                    a.officer_id::text AS officer_id
+             FROM applications a
+             WHERE a.applicant_id = $1::bigint
+             ORDER BY a.apply_at DESC NULLS LAST`,
+            [applicantUserId]
+        );
+        const allApps = appsRes.rows;
+        const isOperatorOfficer = allApps.some(r => String(r.officer_id) === String(operatorUserId));
+
+        // 3) 抓申請人姓名（僅 isOperatorOfficer 才暴露）
+        let applicantName: string | null = null;
+        if (isOperatorOfficer) {
+            const nameRes = await client.query(
+                `SELECT name_enc, name_iv FROM users WHERE id = $1::bigint`,
+                [applicantUserId]
+            );
+            if (nameRes.rows[0]) {
+                applicantName = decryptName(nameRes.rows[0].name_enc, nameRes.rows[0].name_iv, '未知');
+            }
+        }
+
+        // 4) 抓聯絡紀錄（包含來電 + 關懷，凡是 applicant_user_id 對到此人的）
+        const crRes = await client.query(
+            `SELECT ${SELECT_COLS}
+             ${FROM_JOIN}
+             WHERE cr.applicant_user_id = $1::bigint
+             ORDER BY cr.contact_date DESC, cr.created_at DESC
+             LIMIT 500`,
+            [applicantUserId]
+        );
+        let contactRecords = crRes.rows.map(rowToContactRecord);
+        // 隱私模式：聯絡紀錄中的 applicantName 也遮罩
+        if (!isOperatorOfficer) {
+            contactRecords = contactRecords.map(r => ({ ...r, applicantName: null }));
+        }
+
+        // 5) 統計
+        const applyDates = allApps
+            .map(r => r.apply_at ? formatLocalDate(r.apply_at) : '')
+            .filter(Boolean);
+        const earliestApplyAt = applyDates.length > 0 ? applyDates[applyDates.length - 1] : null;
+        const latestApplyAt   = applyDates.length > 0 ? applyDates[0] : null;
+
+        const applications: IdNumberSearchApplication[] = allApps.map(r => ({
+            applicationId: isOperatorOfficer ? r.id : null,
+            caseNumber:    isOperatorOfficer ? (r.case_number ?? null) : null,
+            applyAt:       r.apply_at ? formatLocalDate(r.apply_at) : '',
+            status:        isOperatorOfficer ? (r.status ?? null) : null,
+        }));
+
+        return {
+            success: true,
+            data: {
+                found: true,
+                applicantUserId,
+                isOperatorOfficer,
+                applicantName,
+                applicationCount: allApps.length,
+                earliestApplyAt,
+                latestApplyAt,
+                applications,
+                contactRecords,
+            },
+        };
+    } catch (err: any) {
+        console.error('searchContactsByIdNumber error:', err);
         return { success: false, error: err.message ?? '查詢失敗' };
     } finally {
         client.release();

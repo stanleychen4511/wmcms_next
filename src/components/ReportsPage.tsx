@@ -59,6 +59,15 @@ function toRoc(s: string | null | undefined): string {
     return `${Number(m[1]) - 1911}/${m[2]}/${m[3]}`;
 }
 
+/** 西元 YYYY-MM-DD HH:MM:SS → 民國 YYY/MM/DD HH:MM:SS（無時分秒則退回 toRoc） */
+function toRocDateTime(s: string | null | undefined): string {
+    if (!s) return '';
+    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(s);
+    if (!m) return toRoc(s);
+    const yr = Number(m[1]) - 1911;
+    return `${yr}/${m[2]}/${m[3]} ${m[4]}:${m[5]}${m[6] ? ':' + m[6] : ''}`;
+}
+
 function defaultDateRange(): { from: string; to: string } {
     const today = new Date();
     const p = (n: number) => String(n).padStart(2, '0');
@@ -316,6 +325,10 @@ function SelfPayTable({ rows }: { rows: SelfPayReportRow[] }) {
                     <th className="text-left px-2 py-2 font-semibold text-slate-600">階段</th>
                     <th className="text-left px-2 py-2 font-semibold text-slate-600">期數</th>
                     <th className="text-left px-2 py-2 font-semibold text-slate-600">行政審核</th>
+                    <th className="text-left px-2 py-2 font-semibold text-slate-600">行政通過時間</th>
+                    <th className="text-left px-2 py-2 font-semibold text-slate-600">家訪時間</th>
+                    <th className="text-left px-2 py-2 font-semibold text-slate-600">董事收到時間</th>
+                    <th className="text-left px-2 py-2 font-semibold text-slate-600">董事通過時間</th>
                     <th className="text-left px-2 py-2 font-semibold text-slate-600">董事審核</th>
                     <th className="text-left px-2 py-2 font-semibold text-slate-600">待收文件</th>
                     <th className="text-left px-2 py-2 font-semibold text-slate-600">狀態</th>
@@ -323,7 +336,7 @@ function SelfPayTable({ rows }: { rows: SelfPayReportRow[] }) {
             </thead>
             <tbody>
                 {rows.length === 0 ? (
-                    <tr><td colSpan={13} className="px-2 py-8 text-center text-slate-400">無資料</td></tr>
+                    <tr><td colSpan={17} className="px-2 py-8 text-center text-slate-400">無資料</td></tr>
                 ) : rows.map((r, i) => (
                     <tr key={i} className="border-b border-slate-100 hover:bg-slate-50/60">
                         <td className="px-2 py-1.5">{r.officerName}</td>
@@ -335,8 +348,12 @@ function SelfPayTable({ rows }: { rows: SelfPayReportRow[] }) {
                         <td className="px-2 py-1.5">{r.applicationForm ? APP_FORM_LABEL[r.applicationForm] : ''}</td>
                         <td className="px-2 py-1.5">{r.treatmentPhase ? PHASE_LABEL[r.treatmentPhase] : ''}</td>
                         <td className="px-2 py-1.5">{r.cancerStage ?? ''}</td>
-                        <td className="px-2 py-1.5 max-w-[200px] truncate" title={r.adminReviewText ?? ''}>{r.adminReviewText ?? ''}</td>
-                        <td className="px-2 py-1.5 max-w-[200px] truncate" title={r.boardReviewText ?? ''}>{r.boardReviewText ?? ''}</td>
+                        <td className="px-2 py-1.5" title={r.adminReviewText ?? ''}>{r.adminReviewText ?? ''}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRocDateTime(r.adminReviewAt)}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRocDateTime(r.homeVisitAt)}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRocDateTime(r.boardReceivedAt)}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRocDateTime(r.boardReviewedAt)}</td>
+                        <td className="px-2 py-1.5" title={r.boardReviewText ?? ''}>{r.boardReviewText ?? ''}</td>
                         <td className="px-2 py-1.5">{r.pendingDocuments.length > 0 ? r.pendingDocuments.join('、') : <span className="text-slate-400">已收齊</span>}</td>
                         <td className="px-2 py-1.5">{STATUS_LABEL[r.status] ?? r.status}</td>
                     </tr>
@@ -347,6 +364,8 @@ function SelfPayTable({ rows }: { rows: SelfPayReportRow[] }) {
 }
 
 function DisbursementTable({ rows }: { rows: DisbursementReportRow[] }) {
+    const totalAmount = rows.reduce((sum, r) => sum + (r.amount ?? 0), 0);
+    const totalApproved = rows.reduce((sum, r) => sum + (r.approvedAmount ?? 0), 0);
     return (
         <table className="w-full text-xs">
             <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
@@ -385,6 +404,15 @@ function DisbursementTable({ rows }: { rows: DisbursementReportRow[] }) {
                         <td className="px-2 py-1.5 max-w-[240px] truncate" title={r.notes ?? ''}>{r.notes ?? ''}</td>
                     </tr>
                 ))}
+                {rows.length > 0 && (
+                    <tr className="bg-slate-100 font-semibold border-t-2 border-slate-300">
+                        <td className="px-2 py-2" colSpan={4}>合計</td>
+                        <td className="px-2 py-2 text-left">{totalApproved.toLocaleString()}</td>
+                        <td className="px-2 py-2" colSpan={3}></td>
+                        <td className="px-2 py-2 text-left">NT${totalAmount.toLocaleString()}</td>
+                        <td className="px-2 py-2"></td>
+                    </tr>
+                )}
             </tbody>
         </table>
     );

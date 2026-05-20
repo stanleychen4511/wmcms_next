@@ -63,29 +63,39 @@ export async function queryApplicantEligibility(idNumber: string): Promise<Eligi
             };
         }
 
-        // Check cumulative approved amount
+        // 跨年度累計核准金額；依子類型分開
         const sumRes = await client.query(
-            `SELECT COALESCE(SUM(approved_amount), 0) AS total
-             FROM applications
-             WHERE applicant_id = $1 AND status = '4'`,
+            `SELECT
+                COALESCE(SUM(CASE WHEN subsidy_subtype = '1' THEN approved_amount END), 0) AS econ_total,
+                COALESCE(SUM(CASE WHEN subsidy_subtype = '2' THEN approved_amount END), 0) AS mid_total
+             FROM applications WHERE applicant_id = $1 AND status = '4'`,
             [matchedUserId]
         );
+        const econUsed = Number(sumRes.rows[0].econ_total || 0);
+        const midUsed  = Number(sumRes.rows[0].mid_total  || 0);
 
-        const total = parseFloat(sumRes.rows[0].total || '0');
-        // 改：依 subsidy_amount_limits 取兩子類型最大值（資格查詢階段尚未選定子類型）
         const { fetchSubsidyAmountLimitsMap } = await import('./eligibilityRulesActions');
         const limits = await fetchSubsidyAmountLimitsMap();
-        const maxAmount = Math.max(limits['1'] ?? 0, limits['2'] ?? 0);
-        const remaining = maxAmount - total;
+        const econMax = limits['1'] ?? 0;
+        const midMax  = limits['2'] ?? 0;
+        const econRemaining = Math.max(0, econMax - econUsed);
+        const midRemaining  = Math.max(0, midMax  - midUsed);
 
-        if (remaining <= 0) {
+        // 只要兩種額度任一還有餘額 → 可繼續資格判定（實際選定子類型後守門依該子類型額度）
+        if (econRemaining <= 0 && midRemaining <= 0) {
             return {
                 eligible: false,
-                reason: `您的歷史累計獲補助金額已達上限（${total.toLocaleString()} 元），不符合申請資格。`,
+                reason: `您的歷史累計獲補助金額已達上限（經濟弱勢 ${econUsed.toLocaleString()} 元、小康家庭 ${midUsed.toLocaleString()} 元），不符合申請資格。`,
             };
         }
 
-        return { eligible: true, remaining, cumulativeApproved: total, maxAmount };
+        // 向後相容：保留 cumulativeApproved/maxAmount/remaining 三個舊欄位（取較大者）
+        return {
+            eligible: true,
+            remaining: Math.max(econRemaining, midRemaining),
+            cumulativeApproved: econUsed + midUsed,
+            maxAmount: Math.max(econMax, midMax),
+        };
     } catch (err: any) {
         console.error('queryApplicantEligibility error:', err);
         return { eligible: false, error: '系統異常，請稍後再試' };
@@ -124,6 +134,12 @@ export async function submitExternalApplication(
         treatmentPhaseRaw === 'B' || treatmentPhaseRaw === 'A' || treatmentPhaseRaw === 'X' ? treatmentPhaseRaw : null;
     // 申請形式：外部收件後端強制 'E'，不從 formData 讀（避免被竄改）
     const applicationForm: 'E' = 'E';
+    // 申請方式 + 轉介窗口（user feedback #1 #6）
+    const wayRaw = ((formData.get('application_way') as string | null) ?? '').trim();
+    const referralUnitNameIn      = ((formData.get('referral_unit_name')     as string | null) ?? '').trim();
+    const referralContactNameIn   = ((formData.get('referral_contact_name')  as string | null) ?? '').trim();
+    const referralContactTitleIn  = ((formData.get('referral_contact_title') as string | null) ?? '').trim();
+    const referralContactPhoneIn  = ((formData.get('referral_contact_phone') as string | null) ?? '').trim();
     // 補助子類型（115 年辦法）
     const subsidySubtypeRaw = (formData.get('subsidy_subtype') as string | null) ?? null;
     const subsidySubtype: '1' | '2' | null =
@@ -154,6 +170,17 @@ export async function submitExternalApplication(
     if (!cancerStageIn) return { success: false, error: '請填寫癌症期數' };
     if (!treatmentPhase) return { success: false, error: '請選擇治療階段（治療前／治療後／治療前後）' };
 
+    // 申請方式：經濟弱勢強制 way='2'；小康看送來的；其他預設 '1'
+    const subsidySubtypeForWay = ((formData.get('subsidy_subtype') as string | null) ?? '').trim();
+    const applicationWay: '1' | '2' = subsidySubtypeForWay === '1'
+        ? '2'
+        : (wayRaw === '2' ? '2' : '1');
+    if (applicationWay === '2') {
+        if (!referralUnitNameIn || !referralContactNameIn || !referralContactTitleIn || !referralContactPhoneIn) {
+            return { success: false, error: '轉介申請須填寫轉介單位 / 轉介人姓名 / 職稱 / 聯絡電話' };
+        }
+    }
+
     // 子類型 + 申請金額上限驗證（依 115 辦法子類型不同上限）
     if (!subsidySubtype) {
         return { success: false, error: '請選擇補助子類型（經濟弱勢／小康家庭）' };
@@ -171,6 +198,17 @@ export async function submitExternalApplication(
             success: false,
             error: `申請金額不可超過 ${subsidySubtype === '1' ? '經濟弱勢' : '小康家庭'} 累積補助上限 ${subtypeMax.toLocaleString()} 元`,
         };
+    }
+    // 進一步：依「該子類型」已用額度檢查剩餘餘額（兩子類型獨立計算）
+    if (subtypeMax > 0) {
+        const quota = await fetchApplicantQuota(idNumber);
+        const remainingForSubtype = subsidySubtype === '1' ? quota.econRemaining : quota.midRemaining;
+        if (applyAmount > remainingForSubtype) {
+            return {
+                success: false,
+                error: `${subsidySubtype === '1' ? '經濟弱勢' : '小康家庭'}剩餘額度為 ${remainingForSubtype.toLocaleString()} 元，本次申請 ${applyAmount.toLocaleString()} 元超過剩餘額度`,
+            };
+        }
     }
 
     const client = await pool.connect();
@@ -216,9 +254,11 @@ export async function submitExternalApplication(
         }
 
         if (!applicantId) {
+            // salt 一律存 32-byte Buffer（與 seed_admin / CLAUDE.md 規定一致）
             const searchSalt = generateSalt();
+            const saltBuffer = Buffer.from(searchSalt, 'hex');
             const tempPass = generateTempPassword();
-            const passHash = hashPassword(tempPass, searchSalt);
+            const passHash = hashPassword(tempPass, saltBuffer);
 
             const { enc: nameEnc, iv: nameIv } = encryptAES(name);
             const nameBidx = generateBlindIndex(name, searchSalt);
@@ -234,7 +274,7 @@ export async function submitExternalApplication(
                       email, is_active)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
                  RETURNING id`,
-                [account, passHash, searchSalt, nameEnc, nameIv, nameBidx, idEnc, idIv, idBidx, email]
+                [account, passHash, saltBuffer, nameEnc, nameIv, nameBidx, idEnc, idIv, idBidx, email]
             );
             applicantId = newU.rows[0].id;
 
@@ -268,8 +308,10 @@ export async function submitExternalApplication(
                 subsidy_subtype, econ_deposit, econ_monthly_income,
                 applicant_phone,
                 applicant_dob, cancer_type, cancer_stage,
-                application_form, treatment_phase
-             ) VALUES ($1, $2, NULL, '1', NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::date, $18, $19, $20, $21)
+                application_form, treatment_phase,
+                application_way, referral_unit_name,
+                referral_contact_name, referral_contact_title, referral_contact_phone
+             ) VALUES ($1, $2, NULL, '1', NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::date, $18, $19, $20, $21, $22, $23, $24, $25, $26)
              RETURNING id`,
             [caseNumber, applicantId,
              applicationType,
@@ -279,7 +321,11 @@ export async function submitExternalApplication(
              subsidySubtype, econDeposit, econMonthlyIncome,
              applicantPhone,
              applicantDob, cancerTypeIn, cancerStageIn,
-             applicationForm, treatmentPhase]
+             applicationForm, treatmentPhase,
+             applicationWay, applicationWay === '2' ? (referralUnitNameIn || null) : null,
+             applicationWay === '2' ? (referralContactNameIn || null) : null,
+             applicationWay === '2' ? (referralContactTitleIn || null) : null,
+             applicationWay === '2' ? (referralContactPhoneIn || null) : null]
         );
         applicationId = appRes.rows[0].id;
 
@@ -326,9 +372,9 @@ export async function submitExternalApplication(
         console.error('parse documents JSON error:', err);
     }
 
-    // 安全：只接受我們發出的 URL：production = Blob、本地 dev = /uploads/ 相對路徑
+    // 安全：只接受我們發出的 URL：production = Blob、本地 dev = /uploads/ 或 /intake/ 相對路徑
     const isValidUrl = (u: string): boolean => {
-        if (u.startsWith('/uploads/')) return true;  // 本地 dev fallback
+        if (u.startsWith('/uploads/') || u.startsWith('/intake/')) return true;  // 本地 dev fallback
         try {
             const url = new URL(u);
             return url.protocol === 'https:'
@@ -369,21 +415,47 @@ export async function submitExternalApplication(
     return { success: true, caseNumber: caseNumber! };
 }
 
+/**
+ * 每個申請人「一生額度」分子類型獨立計算：
+ *   - 經濟弱勢（subtype='1'）：例 NT$ 30,000
+ *   - 小康家庭（subtype='2'）：例 NT$ 350,000
+ *
+ * 兩種額度不互通：申請人 A 用完小康 35 萬後若改為經濟弱勢身分，
+ * 仍可再申請經濟弱勢的 3 萬。跨年度也累計（不歸零）。
+ */
 export interface ApplicantQuota {
+    /** 經濟弱勢累計核准金額 */
+    econUsed: number;
+    /** 經濟弱勢一生額度上限 */
+    econMax: number;
+    /** 經濟弱勢剩餘可申請額度 */
+    econRemaining: number;
+    /** 小康家庭累計核准金額 */
+    midUsed: number;
+    /** 小康家庭一生額度上限 */
+    midMax: number;
+    /** 小康家庭剩餘可申請額度 */
+    midRemaining: number;
+    /** 向後相容（舊欄位；= 兩種較大者的剩餘額度，用於未選定 subtype 之 UI 顯示） */
     cumulativeApproved: number;
     maxAmount: number;
     remaining: number;
 }
 
 export async function fetchApplicantQuota(idNumber: string): Promise<ApplicantQuota> {
-    // 子類型未選前，採兩者較大值作為「上限」顯示（實際 enforcement 在 submit 時依子類型）
     const { fetchSubsidyAmountLimitsMap } = await import('./eligibilityRulesActions');
     const limits = await fetchSubsidyAmountLimitsMap();
-    const maxAmount = Math.max(limits['1'] ?? 0, limits['2'] ?? 0);
+    const econMax = limits['1'] ?? 0;
+    const midMax  = limits['2'] ?? 0;
+    const maxAmount = Math.max(econMax, midMax);
 
-    if (!idNumber || idNumber.trim() === '') {
-        return { cumulativeApproved: 0, maxAmount, remaining: maxAmount };
-    }
+    const blank: ApplicantQuota = {
+        econUsed: 0, econMax, econRemaining: econMax,
+        midUsed:  0, midMax,  midRemaining:  midMax,
+        cumulativeApproved: 0, maxAmount, remaining: maxAmount,
+    };
+
+    if (!idNumber || idNumber.trim() === '') return blank;
 
     const client = await pool.connect();
     try {
@@ -406,18 +478,33 @@ export async function fetchApplicantQuota(idNumber: string): Promise<ApplicantQu
                 break;
             }
         }
-        if (!matchedUserId) {
-            return { cumulativeApproved: 0, maxAmount, remaining: maxAmount };
-        }
+        if (!matchedUserId) return blank;
+
+        // 跨年度合計：依 subsidy_subtype 分開 SUM
         const sumRes = await client.query(
-            `SELECT COALESCE(SUM(approved_amount), 0) AS total
+            `SELECT
+                COALESCE(SUM(CASE WHEN subsidy_subtype = '1' THEN approved_amount END), 0) AS econ_total,
+                COALESCE(SUM(CASE WHEN subsidy_subtype = '2' THEN approved_amount END), 0) AS mid_total,
+                COALESCE(SUM(approved_amount), 0) AS overall_total
              FROM applications WHERE applicant_id = $1 AND status = '4'`,
             [matchedUserId]
         );
-        const total = parseFloat(sumRes.rows[0].total || '0');
-        return { cumulativeApproved: total, maxAmount, remaining: Math.max(0, maxAmount - total) };
+        const econUsed = Number(sumRes.rows[0].econ_total || 0);
+        const midUsed  = Number(sumRes.rows[0].mid_total  || 0);
+        const overall  = Number(sumRes.rows[0].overall_total || 0);
+        return {
+            econUsed,
+            econMax,
+            econRemaining: Math.max(0, econMax - econUsed),
+            midUsed,
+            midMax,
+            midRemaining: Math.max(0, midMax - midUsed),
+            cumulativeApproved: overall,
+            maxAmount,
+            remaining: Math.max(0, maxAmount - overall),  // 兩者大值的舊邏輯（未選 subtype 時 fallback）
+        };
     } catch {
-        return { cumulativeApproved: 0, maxAmount, remaining: maxAmount };
+        return blank;
     } finally {
         client.release();
     }

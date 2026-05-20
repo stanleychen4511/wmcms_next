@@ -1,5 +1,5 @@
 "use client";
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import {
     ClipboardList,
     UserCheck,
@@ -12,6 +12,7 @@ import {
     Save,
     Send,
     Heart,
+    Clock,
 } from 'lucide-react';
 import { AppHeader } from './components/AppHeader';
 import { CaseStatisticsPage } from './components/CaseStatisticsPage';
@@ -21,12 +22,14 @@ import { DisbursementPanel } from './components/DisbursementPanel';
 import { LoginPage } from './components/LoginPage';
 import { HomePage } from './components/HomePage';
 import { fetchPendingDocAlerts, fetchPendingDocThresholdAlerts, fetchPendingDocReminderStatus, PendingDocAlert, PendingDocThresholdAlert } from './app/actions/pendingDocAlertActions';
+import { fetchMyTurnCases, type MyTurnItem } from './app/actions/myTurnActions';
 import { CaseListPage } from './components/CaseListPage';
 import { ApplicantHistoryPage } from './components/ApplicantHistoryPage';
 import { ApplicationCareRecordsModal } from './components/ApplicationCareRecordsModal';
 import { ModalEscapeListener } from './hooks/useModalDismiss';
 import { CloseCaseModal } from './components/CloseCaseModal';
 import type { CloseReasonCode } from './lib/closeReasonConstants';
+import { SupervisorReviewPanel } from './components/SupervisorReviewPanel';
 import { NewApplicationPage } from './components/NewApplicationPage';
 import { ReviewList } from './components/ReviewList';
 import { HomeVisitForm } from './components/HomeVisitForm';
@@ -59,6 +62,9 @@ import {
     saveBoardReviewData,
     closeCaseRejected,
     closeCase,
+    reopenRejectedCase,
+    requestSupervisorReviewForBoard,
+    supervisorReviewForBoard,
     ApplicationDetail,
 } from './app/actions/workflowActions';
 
@@ -69,6 +75,8 @@ import {
     fetchApplicantHistory,
     assignOfficerBatch,
     fetchUnassignedCount,
+    fetchUnassignedCases,
+    fetchDisbursableCases,
 } from './app/actions/applicationActions';
 
 import { fetchCaseOfficers, fetchCaseOfficersWithId } from './app/actions/userActions';
@@ -112,6 +120,8 @@ function App() {
     const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager' | 'announcements' | 'user_settings' | 'stats' | 'reports'>('home');
     const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
     const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
+    // Mirror selectedAppId into a ref for use inside stable callbacks (e.g. handleSignatureStatusChange)
+    // Avoids stale closure problem without re-creating the callback on every state change.
 
     // Restore login + navigation state from sessionStorage (runs once on mount)
     useEffect(() => {
@@ -152,6 +162,10 @@ function App() {
     // Tracks the latest values from the ApplicationForm for use in eligibility check
     const [liveApplicantValues, setLiveApplicantValues] = useState<any>(null);
     const [isSavingQualification, setIsSavingQualification] = useState(false);
+    // 主管雙閘門 — flow controls 區的「通過送董事 / 退件」狀態（inline，不用 SupervisorReviewPanel）
+    const [supBusy, setSupBusy] = useState(false);
+    const [showSupRejectForm, setShowSupRejectForm] = useState(false);
+    const [supRejectNote, setSupRejectNote] = useState('');
     const [applyAmount, setApplyAmount] = useState<number>(0);
     /** 各子類型補助上限（依 subsidy_amount_limits 表）；'1'=經濟弱勢、'2'=小康家庭。 */
     const [subtypeMaxAmounts, setSubtypeMaxAmounts] = useState<Record<'1' | '2', number>>({ '1': 0, '2': 0 });
@@ -192,6 +206,41 @@ function App() {
         return Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2']);
     })();
 
+    /** 行政初審階段可申請金額上限 = 子類型上限 - 該子類型已累積核准金額
+     *  （扣除其他已核銷案件的金額，本案還未結案不影響）。
+     *
+     *  子類型來源優先順序：
+     *    1. liveApplicantValues.subsidyType — 表單即時值（使用者剛切換但還沒儲存）
+     *    2. appDetail.subsidySubtype — DB 已存值
+     *  → 切換 radio 後上限即時更新，不用等儲存 / 重整。
+     */
+    const adminReviewApplyCap = (() => {
+        const liveSt = liveApplicantValues?.subsidyType;
+        const st: '1' | '2' | null =
+            (liveSt === '1' || liveSt === '2') ? liveSt :
+            (appDetail?.subsidySubtype === '1' || appDetail?.subsidySubtype === '2') ? appDetail.subsidySubtype :
+            null;
+        if (!st) return maxApplyAmount;
+        const cum = st === '1'
+            ? (appDetail?.totalApprovedSubtype1 ?? 0)
+            : (appDetail?.totalApprovedSubtype2 ?? 0);
+        return Math.max(0, subtypeMaxAmounts[st] - cum);
+    })();
+
+    /** 切換子類型後若上限變低（例如 小康→經濟弱勢），把申請金額也跟著 clamp 下來，
+     *  並顯示「上限為 NT$XXX 元」黃色提示。 */
+    useEffect(() => {
+        if (adminReviewApplyCap <= 0) return;
+        if (applyAmount > adminReviewApplyCap) {
+            setApplyAmount(adminReviewApplyCap);
+            setApplyAmountError(`上限為 NT$${adminReviewApplyCap.toLocaleString()} 元`);
+        } else if (applyAmountError.startsWith('上限為') && applyAmount < adminReviewApplyCap) {
+            // 切到上限較高的子類型後，原本的提示就不適用了 → 清掉
+            setApplyAmountError('');
+        }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [adminReviewApplyCap]);
+
     const loadAppDetail = useCallback(async (id: string, silent = false) => {
         if (!silent) setDetailLoading(true);
         const scrollY = silent ? window.scrollY : 0;
@@ -203,24 +252,27 @@ function App() {
             setAppDetail(detail);
             setDbDocs(docs);
             if (detail) {
+                // 同步 selectedPersonId — 從首頁未補件 / 輪到我處理 / 未派案 modal 進入流程頁時
+                // 只設定了 selectedAppId，這裡補上 applicantId，避免「返回歷史紀錄」變空白。
+                if (detail.applicantId) setSelectedPersonId(detail.applicantId);
                 setViewedStage(detail.stage as WorkflowStage);
                 if (detail.applyAmount != null) setApplyAmount(detail.applyAmount);
-                // Restore board review state from DB so closed cases still display correctly
-                if (detail.wfIsApproved !== null && detail.wfIsApproved !== undefined) {
-                    setBoardApproved(detail.wfIsApproved);
+                // 結案案件（status='2'/'4'）→ 從 workflow 彙整值顯示供查閱
+                // 進行中案件（status='1'）→ 完全交給後續 useEffect 處理：
+                //   - 派組成員 / chairman → myMemberRow useEffect 從 board_review_signatures.member_* 載入個人意見
+                //   - 非成員（supervisor/admin）→ aggregate useEffect 從簽章彙整
+                //   loadAppDetail 不可在此覆寫 boardApproved/Amount/Opinion，否則會蓋掉剛存的個人意見。
+                const isClosed = detail.status === '2' || detail.status === '4';
+                if (isClosed) {
+                    setBoardApproved(detail.wfIsApproved ?? null);
+                    setBoardApprovedAmount(detail.approvedAmount ?? 0);
+                    setBoardOpinion(detail.wfComments ?? '');
+                    setInitialBoardValues({
+                        approved: detail.wfIsApproved ?? null,
+                        amount: detail.approvedAmount ?? 0,
+                        opinion: detail.wfComments ?? '',
+                    });
                 }
-                if (detail.approvedAmount != null) {
-                    setBoardApprovedAmount(detail.approvedAmount);
-                }
-                if (detail.wfComments) {
-                    setBoardOpinion(detail.wfComments);
-                }
-                // Snapshot of initial board-review values for dirty detection
-                setInitialBoardValues({
-                    approved: detail.wfIsApproved ?? null,
-                    amount: detail.approvedAmount ?? 0,
-                    opinion: detail.wfComments ?? '',
-                });
             }
         } finally {
             if (!silent) {
@@ -260,6 +312,21 @@ function App() {
 
     // Signature completeness (from BoardSignaturePanel callback) — feeds advance-button gating
     const [signatureStatus, setSignatureStatus] = useState<BoardReviewSignatureStatus | null>(null);
+    /** 簽章/草稿存檔可能會更新 applications.approved_amount（chairman 第三審或全員一致時）。
+     *  refresh appDetail 讓 Dashboard 即時顯示新通過金額，不需 F5。
+     *  注意：用 useCallback 維持 reference stability，否則 BoardSignaturePanel 的 useEffect dep 會反覆觸發 → 死循環。
+     *  loadAppDetail 用 queueMicrotask 延後到 render 結束才呼叫，避免「render 中更新其他 component」警告。 */
+    const selectedAppIdRef = useRef<string | null>(null);
+    useEffect(() => { selectedAppIdRef.current = selectedAppId; }, [selectedAppId]);
+    const handleSignatureStatusChange = useCallback((status: BoardReviewSignatureStatus) => {
+        setSignatureStatus(status);
+        const id = selectedAppIdRef.current;
+        if (id) {
+            queueMicrotask(() => { void loadAppDetail(id, true); });
+        }
+    // loadAppDetail 在這個檔案是 useCallback 且 deps=[]，identity 穩定
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
     // 核銷階段：撥款是否已全部回收（DisbursementPanel callback 設定），決定能否結案
     const [canCloseCase, setCanCloseCase] = useState(false);
     // Bump this after reassign / save / anything that invalidates board card caches
@@ -289,16 +356,63 @@ function App() {
             opinion: myMemberRow.memberComments ?? '',
         });
     }, [myMemberRow?.memberApproved, myMemberRow?.memberAmount, myMemberRow?.memberComments, appDetail?.stage, appDetail?.status]);
+
+    // 非派組成員（supervisor / admin / chairman 但非組員）：從已簽署成員的決定彙整出
+    // 「整體通過/不通過 + 通過金額」，用來決定推進按鈕標籤 & 帶入 applications.approved_amount。
+    //
+    // 規則：
+    //   1) 若 chairman 已以「第三審」身分簽章（兩位董事意見/金額不一致才會出現）
+    //      → 完全採用 chairman 的決定與金額（chairman 為裁決者）
+    //   2) 否則 → 純董事多數決，金額取已同意者的最高
+    //   3) 無人簽署 → null（按鈕仍顯示「進入下一階段」，由簽章閘門阻擋）
+    useEffect(() => {
+        if (appDetail?.stage !== 'board_review' || appDetail?.status !== '1') return;
+        if (myMemberRow) return; // 組員自己的決定優先
+        const signed = signatureStatus?.members?.filter(
+            m => m.status === 'signed' && m.memberApproved !== null
+        ) ?? [];
+        if (signed.length === 0) {
+            setBoardApproved(null);
+            setBoardApprovedAmount(0);
+            setInitialBoardValues({ approved: null, amount: 0, opinion: '' });
+            return;
+        }
+        // 找出 chairman 第三審那筆（fetchBoardReviewSignatures 帶 "（董事長・第三審）" 後綴）
+        const chairmanRow = signed.find(m => m.name.includes('（董事長・第三審）'));
+        let aggregatedApproved: boolean;
+        let aggregatedAmount: number;
+        if (chairmanRow) {
+            // chairman 第三審 = 裁決者
+            aggregatedApproved = chairmanRow.memberApproved === true;
+            aggregatedAmount = aggregatedApproved ? (chairmanRow.memberAmount ?? 0) : 0;
+        } else {
+            const yes = signed.filter(m => m.memberApproved === true).length;
+            aggregatedApproved = yes > signed.length / 2; // 嚴格多數（同票時不通過）
+            aggregatedAmount = aggregatedApproved
+                ? Math.max(...signed.filter(m => m.memberApproved === true).map(m => m.memberAmount ?? 0))
+                : 0;
+        }
+        setBoardApproved(aggregatedApproved);
+        setBoardApprovedAmount(aggregatedAmount);
+        // 同步更新 initialBoardValues — 避免 dirty detection 把這個自動彙整當成「未儲存的編輯」
+        setInitialBoardValues({
+            approved: aggregatedApproved,
+            amount: aggregatedAmount,
+            opinion: '',
+        });
+    }, [signatureStatus, myMemberRow, appDetail?.stage, appDetail?.status]);
     const signaturesMissing = signatureStatus
         ? Math.max(0, signatureStatus.memberCount - signatureStatus.signedCount)
         : 0;
 
     // 董事審核 tab：可見成員清單 + 預設選自己（若有），否則第一位
-    //   - 自己是組員 → 只看自己
-    //   - supervisor / admin → 看全部
+    //   - 自己是組員 → 只看自己 + 其他組員（chairman 第三審時要能看到其他董事的決定當參考）
+    //   - supervisor / admin / chairman → 看全部
     //   - 其他角色 → 空清單（顯示「您不在派組成員中」）
     const userRolesListForTabs = (loggedInUser?.roles ?? []) as Role[];
-    const canViewAllMemberTabs = userRolesListForTabs.includes('supervisor') || userRolesListForTabs.includes('admin');
+    const canViewAllMemberTabs = userRolesListForTabs.includes('supervisor')
+        || userRolesListForTabs.includes('admin')
+        || userRolesListForTabs.includes('chairman' as Role);
     const visibleBoardMembers = (() => {
         const all = signatureStatus?.members ?? [];
         if (canViewAllMemberTabs) return all;
@@ -323,9 +437,10 @@ function App() {
     const isAdminOrChairman = userRolesList.includes('admin') || userRolesList.includes('chairman' as Role);
     const canEditBoardReview = isAssignedGroupMember || isAdminOrChairman;
     // Permission: can press the advance-to-reimbursement button after all signatures done?
-    // 由「主管」推動行政流程；admin 為系統管理保留入口
+    // 僅開放：主管 / admin（董事長僅作第三審簽章；董事僅負責簽章；承辦人不負責推進核銷）
     const canAdvanceFromBoardReview =
-        userRolesList.includes('supervisor') || userRolesList.includes('admin');
+        userRolesList.includes('supervisor') ||
+        userRolesList.includes('admin');
 
     // Dirty state: current values differ from the loaded snapshot
     const boardDirty = !!initialBoardValues && (
@@ -408,21 +523,51 @@ function App() {
     // Unassigned case count for assign-capable roles
     const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
     const [unassignedCount, setUnassignedCount] = useState<number>(0);
+    const [unassignedCases, setUnassignedCases] = useState<Array<{ applicationId: string; caseNumber: string; applicantName: string; appliedAt: string | null }>>([]);
 
     const loadUnassignedCount = useCallback(async () => {
-        const count = await fetchUnassignedCount();
+        const [count, list] = await Promise.all([
+            fetchUnassignedCount(),
+            fetchUnassignedCases(),
+        ]);
         setUnassignedCount(count);
+        setUnassignedCases(list);
+    }, []);
+
+    // 「可撥款」清單 — case_officer 的 status='3' 且尚無 payment_disbursements 的案件
+    const [disbursableCases, setDisbursableCases] = useState<Array<{
+        applicationId: string; caseNumber: string; applicantName: string; approvedAmount: number | null;
+    }>>([]);
+    const loadDisbursableCases = useCallback(async (userId: string) => {
+        const list = await fetchDisbursableCases(userId);
+        setDisbursableCases(list);
+    }, []);
+
+    // 「輪到我處理」清單（user feedback #12）
+    const [myTurnItems, setMyTurnItems] = useState<MyTurnItem[]>([]);
+    const [myTurnAppIds, setMyTurnAppIds] = useState<Set<string>>(new Set());
+    const [myTurnFilterActive, setMyTurnFilterActive] = useState(false);
+    const [pendingDocFilterActive, setPendingDocFilterActive] = useState(false);
+    const [unassignedFilterActive, setUnassignedFilterActive] = useState(false);
+    const loadMyTurn = useCallback(async (userId: string) => {
+        const r = await fetchMyTurnCases(userId);
+        setMyTurnItems(r.items);
+        setMyTurnAppIds(new Set(r.applicationIds));
     }, []);
 
     // Recalculate both alerts every time user returns to home or list view
     useEffect(() => {
         if ((view === 'home' || view === 'list') && loggedInUser) {
             const roles = loggedInUser.roles as Role[];
-            if (roles.includes('case_officer')) loadPendingAlerts(loggedInUser.id);
+            if (roles.includes('case_officer')) {
+                loadPendingAlerts(loggedInUser.id);
+                loadDisbursableCases(loggedInUser.id);
+            }
             if (roles.some(r => ASSIGN_ROLES.includes(r))) loadUnassignedCount();
+            loadMyTurn(loggedInUser.id);
         }
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [view, loggedInUser, loadPendingAlerts, loadUnassignedCount]);
+    }, [view, loggedInUser, loadPendingAlerts, loadUnassignedCount, loadDisbursableCases]);
 
     // DB state for inquiry pages
     const [dbCases, setDbCases] = useState<CaseSummary[]>([]);
@@ -518,6 +663,12 @@ function App() {
                 pendingAlerts={pendingAlerts}
                 thresholdAlerts={thresholdAlerts}
                 unassignedCount={unassignedCount}
+                unassignedCases={unassignedCases}
+                disbursableCases={disbursableCases}
+                onUnassignedGoToList={() => { setUnassignedFilterActive(true); setView('list'); }}
+                onPendingDocGoToList={() => { setPendingDocFilterActive(true); setView('list'); }}
+                myTurnItems={myTurnItems}
+                onMyTurnGoToList={() => { setMyTurnFilterActive(true); setView('list'); }}
                 onSelectCase={(appId) => { setSelectedAppId(appId); setView('detail'); }}
                 banners={banners}
                 announcements={announcements}
@@ -542,6 +693,7 @@ function App() {
             <NewApplicationPage
                 username={loggedInUser.username}
                 userAccount={loggedInUser.account}
+                userId={loggedInUser.id}
                 onBack={() => setView('home')}
                 onGoHome={() => setView('home')}
                 onLogout={handleLogout}
@@ -646,6 +798,13 @@ function App() {
                 isLoading={listLoading}
                 pendingAlertIds={new Set(pendingAlerts.map(a => a.applicationId))}
                 thresholdReminderCounts={new Map(thresholdAlerts.map(a => [a.applicationId, a.reminderCount]))}
+                myTurnAppIds={myTurnAppIds}
+                myTurnFilterActive={myTurnFilterActive}
+                onToggleMyTurnFilter={(v: boolean) => setMyTurnFilterActive(v)}
+                pendingOnlyActive={pendingDocFilterActive}
+                onTogglePendingOnly={(v: boolean) => setPendingDocFilterActive(v)}
+                unassignedFilterActive={unassignedFilterActive}
+                onToggleUnassignedFilter={(v: boolean) => setUnassignedFilterActive(v)}
                 subtypeMaxAmounts={subtypeMaxAmounts}
                 onMount={refreshCaseSummaries}
                 onAssign={async (applicationIds, officerUserId) => {
@@ -793,8 +952,9 @@ function App() {
 
     const handleSaveQualification = async () => {
         if (!selectedAppId) return;
-        if (applyAmount > maxApplyAmount) {
-            pushToast({ type: 'error', msg: `申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元` });
+        // 雙保險：input 已即時 clamp 到 adminReviewApplyCap；這裡再擋一次以免被繞過
+        if (adminReviewApplyCap > 0 && applyAmount > adminReviewApplyCap) {
+            pushToast({ type: 'error', msg: `申請金額不可超過 NT$${adminReviewApplyCap.toLocaleString()} 元` });
             return;
         }
         setIsSavingQualification(true);
@@ -839,8 +999,10 @@ function App() {
         if (!selectedAppId) return;
 
         // ── 核銷結案 ──────────────────────────────────────────────────
+        // approved_amount 由 server 端維護（chairman 第三審 / 派組多數決），
+        // 不在 client 端傳值，避免操作者的個人金額（如 admin_01 自己董事意見）覆寫正確值。
         if (stage === 'reimbursement') {
-            await closeCase(selectedAppId, loggedInUser?.id ?? null, boardApprovedAmount > 0 ? boardApprovedAmount : null);
+            await closeCase(selectedAppId, loggedInUser?.id ?? null, null);
             await loadAppDetail(selectedAppId, false);
             return;
         }
@@ -869,15 +1031,27 @@ function App() {
                 });
             }
 
-            // 董事審核：不通過 → 結案 (status='2')；通過 → 前進核銷 (status='3')
+            // 董事審核：通過 → 前進核銷 (status='3')；明確不通過 → 結案 (status='2')；null → 阻擋
+            //
+            // 注意：此處不再呼叫 saveBoardReviewData 覆寫 applications.approved_amount。
+            //   原因：當操作者是派組成員/admin（如 admin_01）時，前端的 boardApprovedAmount 是
+            //         他「個人」的金額（350000），不是經 chairman 第三審裁決的金額（30006）。
+            //         若用個人金額覆寫，會把 server 端 recomputeApplicationApprovedAmount 算好的
+            //         正確值（30006）洗掉。
+            //   現在的權威來源：board_review_signatures.member_amount 觸發 server 端
+            //         recomputeApplicationApprovedAmount → applications.approved_amount。
             if (stage === 'board_review') {
-                if (!boardApproved) {
+                if (boardApproved === null) {
+                    pushToast({ type: 'error', msg: '尚未取得董事決議，請等待簽章彙整完成或重新整理頁面' });
+                    return;
+                }
+                if (boardApproved === false) {
                     await closeCaseRejected(selectedAppId, boardOpinion, loggedInUser?.id ?? null);
                     await loadAppDetail(selectedAppId, false);
                     setViewedStage('board_review');
                     return;
                 }
-                await saveBoardReviewData(selectedAppId, boardApprovedAmount, boardOpinion);
+                // boardApproved === true：直接推進；approved_amount 已由 server 端維護
             }
 
             const advanceRes = await advanceWorkflowStage(
@@ -901,31 +1075,59 @@ function App() {
      * Retreat the TRUE workflow stage by one step (with confirmation) with DB write.
      */
     const handleRetreatStage = async () => {
-        if (currentStageIndex > 0) {
-            const prev = STAGES[currentStageIndex - 1];
-            const confirmed = window.confirm(
-                `確定要將流程退回至「${STAGE_LABEL_MAP[prev]}」嗎？\n此操作將使目前進度倒退，請謹慎操作。`
-            );
-            if (!confirmed) return;
-            if (selectedAppId) {
-                await retreatWorkflowStage(
-                    selectedAppId,
-                    prev,
-                    loggedInUser?.id ?? null,
-                );
-                await loadAppDetail(selectedAppId, true);
-            }
-            setViewedStage(prev);
+        if (currentStageIndex === 0) return;
+        const prev = STAGES[currentStageIndex - 1];
+        // 退回時統一帶「退回原因」（取代原本獨立的「退件」按鈕）；至少 3 字
+        const reason = window.prompt(
+            `確定要將流程退回至「${STAGE_LABEL_MAP[prev]}」嗎？\n\n` +
+            `請填寫退回原因（給承辦人參考，至少 3 字）：`,
+            ''
+        );
+        if (reason === null) return; // 使用者按取消
+        const trimmed = reason.trim();
+        if (trimmed.length < 3) {
+            pushToast({ type: 'error', msg: '退回原因至少 3 字' });
+            return;
         }
+        if (!selectedAppId) return;
+        const res = await retreatWorkflowStage(
+            selectedAppId,
+            prev,
+            loggedInUser?.id ?? null,
+            trimmed,
+        );
+        if (!res.success) {
+            pushToast({ type: 'error', msg: res.error ?? '退回失敗' });
+            return;
+        }
+        pushToast({ type: 'success', msg: `已退回至「${STAGE_LABEL_MAP[prev]}」` });
+        await loadAppDetail(selectedAppId, true);
+        setViewedStage(prev);
     };
 
     // Read-only when browsing a past step OR when case is closed
     const isCaseClosed = appDetail?.status === '2' || appDetail?.status === '4';
     const contentReadOnly = isViewingPastStep || !!isCaseClosed;
 
+    // 志工視野：當前操作角色為 volunteer 時，僅顯示頂部基本資料 + 家訪紀錄；
+    // 隱藏個管師案件說明、董事審核、核銷審核、聯絡紀錄
+    const isVolunteerView = role === 'volunteer';
+    // 社工視野：social_worker 不能切換到行政初審（會看到資格預審/財務資料等）
+    const isSocialWorkerView = role === 'social_worker';
+    // 受限視野統一旗標 — 不可點 admin_review 步驟
+    const restrictAdminReviewStep = isVolunteerView || isSocialWorkerView;
+
     const renderStageContent = () => {
         switch (displayedStage) {
             case 'admin_review':
+                // 受限角色（volunteer / social_worker）不可檢視行政初審內容
+                if (restrictAdminReviewStep) {
+                    return (
+                        <div className="bg-slate-50 border border-slate-200 rounded-lg p-6 text-sm text-slate-500 text-center">
+                            行政初審資料僅限相關角色檢視。
+                        </div>
+                    );
+                }
                 return (
                     <div className="space-y-6 relative">
                         {/* ── 上半部：資格預審 ── */}
@@ -934,7 +1136,7 @@ function App() {
                                 <ClipboardList className="w-5 h-5 text-blue-600" />
                                 資格預審
                             </h3>
-                            {/* 申請金額欄位 */}
+                            {/* 申請金額欄位 — 行政初審可由 officer 修改；超過子類型可申請上限會即時 clamp */}
                             <div className="mb-4">
                                 <label className="block text-sm font-medium text-gray-700 mb-1">申請金額</label>
                                 <div className="relative max-w-xs">
@@ -942,18 +1144,26 @@ function App() {
                                         type="text"
                                         inputMode="numeric"
                                         pattern="[0-9]*"
-                                        maxLength={String(maxApplyAmount).length}
                                         value={applyAmount || ''}
                                         onChange={e => {
                                             const raw = e.target.value.replace(/\D/g, '');
-                                            const v = Number(raw);
+                                            let v = raw === '' ? 0 : Number(raw);
+                                            // 即時 clamp：超過子類型可申請上限直接修正
+                                            if (adminReviewApplyCap > 0 && v > adminReviewApplyCap) {
+                                                v = adminReviewApplyCap;
+                                            }
                                             setApplyAmount(v);
-                                            setApplyAmountError(v > maxApplyAmount ? `申請金額不可超過 ${maxApplyAmount.toLocaleString()} 元` : '');
+                                            if (adminReviewApplyCap > 0 && v >= adminReviewApplyCap && raw !== '') {
+                                                setApplyAmountError(`上限為 NT$${adminReviewApplyCap.toLocaleString()} 元`);
+                                            } else {
+                                                setApplyAmountError('');
+                                            }
                                         }}
                                         disabled={contentReadOnly || appDetail?.status === '2' || appDetail?.status === '4'}
                                         className={clsx(
                                             'block w-full rounded-md shadow-sm p-2 border pr-12',
-                                            applyAmountError
+                                            // 「上限為...」屬資訊提示，欄位不變紅
+                                            applyAmountError && !applyAmountError.startsWith('上限為')
                                                 ? 'border-red-400 focus:ring-red-300'
                                                 : (contentReadOnly || appDetail?.status === '2' || appDetail?.status === '4')
                                                     ? 'bg-gray-50 text-gray-500 border-gray-200 cursor-not-allowed'
@@ -962,7 +1172,16 @@ function App() {
                                     />
                                     <span className="absolute right-3 top-2 text-gray-400 text-sm">元</span>
                                 </div>
-                                {applyAmountError && <p className="text-xs text-red-500 mt-1">{applyAmountError}</p>}
+                                {applyAmountError && (
+                                    applyAmountError.startsWith('上限為') ? (
+                                        <p className="text-xs text-amber-700 mt-1 flex items-center gap-1">
+                                            <AlertTriangle className="w-3 h-3 text-amber-500" />
+                                            {applyAmountError}
+                                        </p>
+                                    ) : (
+                                        <p className="text-xs text-red-500 mt-1">{applyAmountError}</p>
+                                    )
+                                )}
                             </div>
 
                             <ApplicationForm
@@ -1060,40 +1279,53 @@ function App() {
                 );
 
             case 'visit': {
-                const missingAssignee = !appDetail?.homeVisitAssigneeId;
-                const missingForm     = !appDetail?.homeVisitSaved;
+                const skipped = !!appDetail?.homeVisitSkipped;
+                const missingAssignee = !skipped && !appDetail?.homeVisitAssigneeId;
+                const missingForm     = !appDetail?.homeVisitSaved; // homeVisitSaved 已涵蓋 visit_skipped 情況
                 const missingSummary  = !(appDetail?.officerCaseSummary && appDetail.officerCaseSummary.trim());
+                // 文件齊備檢查（與送主管閘門一致）：只擋 allow_supplement=false 的必備文件
+                // 可延後補件（allow_supplement=true）的文件不在家訪階段擋，留到送董事前才一併檢查
+                const visitMissingDocLabels = dbDocs
+                    .filter(d => d.isRequired && !d.allowSupplement && d.phase === 'apply' && d.status !== '1')
+                    .map(d => d.label);
                 const visitChecklist: string[] = [];
                 if (missingAssignee) visitChecklist.push('指派家訪人員');
-                if (missingForm)     visitChecklist.push('完成家訪關懷紀錄表（所有欄位必填）');
+                if (missingForm)     visitChecklist.push(skipped ? '勾選「免家訪」並填寫原因' : '完成家訪關懷紀錄表（所有欄位必填）');
                 if (missingSummary)  visitChecklist.push('填寫個管師案件說明');
+                if (visitMissingDocLabels.length > 0) {
+                    visitChecklist.push(`完成必備文件審核：${visitMissingDocLabels.join('、')}`);
+                }
                 // 家訪指派只在「案件目前實際處於 visit 階段」且未結案時開放；
                 // 一旦案件推進到 board_review 或之後，指派功能鎖死（純檢視）
                 const visitStageActive = stage === 'visit' && !isCaseClosed;
-                return (
-                    <div className="space-y-6 relative">
-                        {/* 家訪指派區塊 — case_officer / supervisor / admin 可指派；
-                            只在 visit 階段為當前階段時可改，離開階段後變唯讀 */}
-                        {selectedAppId && visitStageActive && (hasPermission('case_officer') || hasPermission('supervisor') || hasPermission('admin')) && (
-                            <HomeVisitAssigneePanel
-                                applicationId={selectedAppId}
-                                operatorUserId={loggedInUser?.id ?? ''}
-                                currentAssigneeId={appDetail?.homeVisitAssigneeId ?? null}
-                                currentAssigneeName={appDetail?.homeVisitAssigneeName ?? null}
-                                onChanged={() => loadAppDetail(selectedAppId, true)}
-                            />
-                        )}
-                        {/* 已離開家訪階段（或非可指派角色）時，只顯示指派結果 */}
-                        {selectedAppId && (!visitStageActive || (!hasPermission('case_officer') && !hasPermission('supervisor') && !hasPermission('admin'))) && appDetail?.homeVisitAssigneeName && (
+                // 家訪指派 panel — 移到 HomeVisitForm 內、"本案不進行家訪" 勾選下方；
+                // 勾選不家訪時由 HomeVisitForm 內部自動隱藏（不需 caller 判斷）
+                const canAssignVisit = visitStageActive && (hasPermission('case_officer') || hasPermission('supervisor') || hasPermission('admin'));
+                const assigneeNode = selectedAppId && canAssignVisit
+                    ? (
+                        <HomeVisitAssigneePanel
+                            applicationId={selectedAppId}
+                            operatorUserId={loggedInUser?.id ?? ''}
+                            currentAssigneeId={appDetail?.homeVisitAssigneeId ?? null}
+                            currentAssigneeName={appDetail?.homeVisitAssigneeName ?? null}
+                            onChanged={() => loadAppDetail(selectedAppId, true)}
+                        />
+                    )
+                    : (selectedAppId && appDetail?.homeVisitAssigneeName
+                        ? (
                             <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm text-blue-800">
                                 <span className="font-semibold">家訪指派人員：</span>{appDetail.homeVisitAssigneeName}
                                 {!visitStageActive && (
                                     <span className="text-xs text-blue-500 ml-2">（已離開家訪階段，無法重新指派）</span>
                                 )}
                             </div>
-                        )}
+                        )
+                        : null);
+
+                return (
+                    <div className="space-y-6 relative">
                         {/* 聯絡紀錄速查（讓家訪人員可看到該申請人歷次來電/關懷） */}
-                        {appDetail?.applicantId && loggedInUser && (
+                        {!isVolunteerView && appDetail?.applicantId && loggedInUser && (
                             <ContactRecordsQuickView
                                 applicantUserId={appDetail.applicantId}
                                 applicantName={appDetail.applicantName ?? ''}
@@ -1105,9 +1337,10 @@ function App() {
                             applicationId={selectedAppId!}
                             visitorUserId={loggedInUser?.id}
                             readOnly={contentReadOnly || (!hasPermission('volunteer') && !hasPermission('case_officer') && !hasPermission('admin'))}
+                            assigneeSlot={assigneeNode}
                         />
-                        {/* #17 個管師案件說明：家訪階段可由 case_officer/supervisor/admin 編輯 */}
-                        {selectedAppId && loggedInUser && (
+                        {/* #17 個管師案件說明：家訪階段可由 case_officer/supervisor/admin 編輯 — 志工視野隱藏 */}
+                        {!isVolunteerView && selectedAppId && loggedInUser && (
                             <OfficerCaseSummaryPanel
                                 applicationId={selectedAppId}
                                 operatorUserId={loggedInUser.id}
@@ -1116,7 +1349,17 @@ function App() {
                                 onSaved={() => loadAppDetail(selectedAppId, true)}
                             />
                         )}
-                        {/* 家庭訪視階段必填提醒 — 移到案件說明下方 */}
+                        {/* 主管審核狀態提示 — 已送主管、等待主管處理中（反灰提醒） */}
+                        {!isCaseClosed && appDetail?.supervisorReviewPending && (
+                            <div className="bg-slate-100 border border-slate-300 rounded-lg p-3 text-sm text-slate-600 flex items-center gap-2">
+                                <Clock className="w-4 h-4 text-slate-500" />
+                                <div>
+                                    <p className="font-semibold">案件已送主管審核，等待主管處理中…</p>
+                                    <p className="text-xs text-slate-500 mt-0.5">主管通過後案件會自動推進到董事審核；如主管退件會通知個管修正。</p>
+                                </div>
+                            </div>
+                        )}
+                        {/* 家庭訪視階段必填提醒 — 移到案件說明下方；已送主管時不顯示綠色「可送主管」提示 */}
                         {!isCaseClosed && visitChecklist.length > 0 && (
                             <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-800">
                                 <p className="font-semibold mb-1">本階段尚需完成以下項目才能進入下一階段：</p>
@@ -1125,7 +1368,7 @@ function App() {
                                 </ul>
                             </div>
                         )}
-                        {!isCaseClosed && visitChecklist.length === 0 && (
+                        {!isCaseClosed && visitChecklist.length === 0 && !appDetail?.supervisorReviewPending && (
                             <div className="bg-emerald-50 border border-emerald-200 rounded-lg p-3 text-sm text-emerald-700">
                                 <p className="font-semibold">本階段所有必填項目已完成，可進入下一階段。</p>
                             </div>
@@ -1135,6 +1378,14 @@ function App() {
             }
 
             case 'board_review': {
+                // 志工視野：完全隱藏董事審核內容
+                if (isVolunteerView) {
+                    return (
+                        <div className="bg-slate-50 border border-slate-200 rounded-lg p-6 text-sm text-slate-500 text-center">
+                            董事審核資料僅限相關角色檢視。
+                        </div>
+                    );
+                }
                 // 共筆模式權限：僅派組成員 OR chairman OR admin 可編輯（取代原本僅看角色的判斷）
                 const boardReadOnly = contentReadOnly || !canEditBoardReview;
                 const dbApplyAmount = appDetail?.applyAmount ?? null;
@@ -1253,9 +1504,9 @@ function App() {
                                 <input
                                     type="text"
                                     inputMode="numeric"
-                                    pattern="[0-9]*"
-                                    maxLength={String(maxApplyAmount).length}
-                                    value={displayApproved ? (displayAmount || '') : ''}
+                                    pattern="[0-9,]*"
+                                    maxLength={String(maxApplyAmount).length + Math.floor(String(maxApplyAmount).length / 3)}
+                                    value={displayApproved && displayAmount > 0 ? displayAmount.toLocaleString() : ''}
                                     onChange={(e) => {
                                         const raw = e.target.value.replace(/\D/g, '');
                                         const v = Number(raw);
@@ -1383,6 +1634,14 @@ function App() {
             }
 
             case 'reimbursement':
+                // 志工視野：完全隱藏核銷審核內容
+                if (isVolunteerView) {
+                    return (
+                        <div className="bg-slate-50 border border-slate-200 rounded-lg p-6 text-sm text-slate-500 text-center">
+                            核銷審核資料僅限相關角色檢視。
+                        </div>
+                    );
+                }
                 return (
                     <div className="space-y-6">
                         {/* 多層審核撥款 — admin / case_officer / supervisor / accountant / executive / chairman 皆可見
@@ -1396,6 +1655,9 @@ function App() {
                                 applicantId={appDetail?.applicantId ?? undefined}
                                 operatorUserId={loggedInUser.id}
                                 operatorRoles={loggedInUser.roles as Role[]}
+                                applicantPhone={appDetail?.applicantPhone ?? null}
+                                applicantAddress={appDetail?.applicantAddress ?? null}
+                                onCaseDataChanged={() => { if (selectedAppId) loadAppDetail(selectedAppId, true); }}
                                 onCanCloseChange={setCanCloseCase}
                             />
                         )}
@@ -1476,17 +1738,22 @@ function App() {
                                 const isViewing = s === displayedStage;
                                 const isCompleted = idx < currentStageIndex;
                                 const isFuture = idx > currentStageIndex;
+                                // 受限角色（volunteer / social_worker）不可進入 admin_review / board_review / reimbursement
+                                const restrictedForRole =
+                                    (restrictAdminReviewStep && s === 'admin_review') ||
+                                    (isVolunteerView && (s === 'board_review' || s === 'reimbursement'));
+                                const disabled = isFuture || restrictedForRole;
                                 return (
                                     <StepItem
                                         key={s}
                                         isCurrentTrue={isCurrentTrue}
                                         isViewing={isViewing}
                                         completed={isCompleted}
-                                        isFuture={isFuture}
+                                        isFuture={disabled}
                                         caseClosed={!!isCaseClosed}
                                         label={STAGE_LABEL_MAP[s]}
                                         icon={STAGE_ICON_MAP[s]}
-                                        onClick={() => { if (!isFuture) setViewedStage(s); }}
+                                        onClick={() => { if (!disabled) setViewedStage(s); }}
                                     />
                                 );
                             })}
@@ -1535,6 +1802,10 @@ function App() {
                             );
                         })()}
                     </div>
+
+                    {/* 主管雙閘門面板已整併到下方「Flow Controls」中（user feedback）：
+                        - officer 在 visit 階段直接按【送主管審核】（取代原本 disabled 的「進入下一階段」）
+                        - supervisor 在 visit 階段直接按【通過送董事】或【退件】 */}
 
                     {/* Notification block */}
                     <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-4 space-y-3">
@@ -1595,6 +1866,9 @@ function App() {
                         approvedAmount={appDetail?.approvedAmount ?? null}
                         applicationType={appDetail?.applicationType}
                         totalApprovedAmount={appDetail?.totalApprovedAmount}
+                        totalApprovedSubtype1={appDetail?.totalApprovedSubtype1}
+                        totalApprovedSubtype2={appDetail?.totalApprovedSubtype2}
+                        subtypeMaxAmounts={subtypeMaxAmounts}
                     />
 
                     {/* 案件來源與轉介單位 */}
@@ -1703,6 +1977,30 @@ function App() {
                         <div className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium border bg-red-50 border-red-200 text-red-700">
                             <span className="text-base">🔴</span>
                             <span>此案件已結案（審核未通過），不可再繼續流程。</span>
+                            {/* 復原結案按鈕 — 僅 admin/supervisor/chairman 可見 */}
+                            {loggedInUser && selectedAppId && (
+                                userRolesList.includes('admin') ||
+                                userRolesList.includes('supervisor') ||
+                                userRolesList.includes('chairman' as Role)
+                            ) && (
+                                <button
+                                    type="button"
+                                    onClick={async () => {
+                                        if (!confirm('確定要復原此案件嗎？\n\n復原後案件會回到「審核中」狀態（status=1），停留在目前的階段（通常是董事審核），結案原因紀錄會被清除，可重新處理。')) return;
+                                        const res = await reopenRejectedCase(selectedAppId, loggedInUser.id);
+                                        if (res.success) {
+                                            pushToast({ type: 'success', msg: '已復原結案，案件回到審核中' });
+                                            await loadAppDetail(selectedAppId, true);
+                                        } else {
+                                            pushToast({ type: 'error', msg: res.error ?? '復原失敗' });
+                                        }
+                                    }}
+                                    className="ml-auto inline-flex items-center gap-1 px-3 py-1 bg-white hover:bg-red-100 border border-red-300 text-red-700 text-xs font-medium rounded transition"
+                                    title="復原結案 → 案件回到「審核中」，可重新處理"
+                                >
+                                    復原結案
+                                </button>
+                            )}
                         </div>
                     )}
 
@@ -1759,14 +2057,16 @@ function App() {
 
                     {/* 董事審核階段：派組資訊卡片（純顯示） + 重新指派（chairman/admin）。
                         簽章面板移到審核意見表（StageContainer）下方，避免使用者填意見時被簽章區干擾。 */}
-                    {appDetail && appDetail.stage === 'board_review' && appDetail.status === '1' && loggedInUser && selectedAppId && (
+                    {!isVolunteerView && appDetail && appDetail.stage === 'board_review' && appDetail.status === '1' && loggedInUser && selectedAppId && (
                         <>
-                            {/* #17 案件說明（董事審核階段：所有人皆唯讀，編輯改在家訪階段） */}
+                            {/* #17 案件說明（董事審核階段：所有人皆唯讀，編輯改在家訪階段）
+                                user feedback #17：在董事審核頁要視覺強調，董事一進來就看到要參考 */}
                             <OfficerCaseSummaryPanel
                                 applicationId={selectedAppId}
                                 operatorUserId={loggedInUser.id}
                                 initialValue={appDetail.officerCaseSummary ?? null}
                                 editable={false}
+                                emphasize={true}
                                 onSaved={() => loadAppDetail(selectedAppId, true)}
                             />
                             <BoardVoteCard applicationId={selectedAppId} refreshKey={boardRefreshKey} />
@@ -1829,13 +2129,13 @@ function App() {
                         {renderStageContent()}
                     </StageContainer>
 
-                    {/* 董事簽章面板：移到審核意見表下方，讓使用者先填完意見/金額再簽章 */}
-                    {appDetail && appDetail.stage === 'board_review' && appDetail.status === '1' && loggedInUser && selectedAppId && (
+                    {/* 董事簽章面板：移到審核意見表下方，讓使用者先填完意見/金額再簽章；志工視野隱藏 */}
+                    {!isVolunteerView && appDetail && appDetail.stage === 'board_review' && appDetail.status === '1' && loggedInUser && selectedAppId && (
                         <BoardSignaturePanel
                             applicationId={selectedAppId}
                             currentUserId={loggedInUser.id}
                             refreshKey={boardRefreshKey}
-                            onChange={setSignatureStatus}
+                            onChange={handleSignatureStatusChange}
                         />
                     )}
 
@@ -1878,7 +2178,8 @@ function App() {
                                         boardApproved === null
                                         || (boardOpinionMinChars > 0 && boardOpinion.length < boardOpinionMinChars)
                                     );
-                                    // 派組權限門檻（board_review 階段）：派組成員 / chairman / admin / 承辦人 / 主管 都可推進
+                                    // 派組權限門檻（board_review 階段）：僅 supervisor / admin 可推進到核銷
+                                    //   董事 / 董事長僅負責簽章意見，不可推進到核銷階段
                                     const boardPermBlocked = isBoardReview && !canAdvanceFromBoardReview;
                                     // Dirty-state guard: 未儲存的編輯阻擋推進
                                     const boardDirtyBlocked = isBoardReview && boardDirty;
@@ -1886,12 +2187,17 @@ function App() {
                                     const boardSignatureBlocked = isBoardReview && !signaturesComplete;
                                     // 核銷階段：必須累積撥款都已回收（canCloseCase）才能按結案
                                     const reimbursementBlocked = isReimbursement && !canCloseCase;
-                                    // 家庭訪視階段三項守門：指派人 + 家訪表 + 個管師案件說明
-                                    const visitMissingAssignee = isVisit && !appDetail?.homeVisitAssigneeId;
-                                    const visitMissingForm     = isVisit && !appDetail?.homeVisitSaved;
+                                    // 家庭訪視階段守門：勾選「免家訪」時免指派、免家訪表；個管師案件說明仍必填
+                                    const visitSkipped = !!appDetail?.homeVisitSkipped;
+                                    const visitMissingAssignee = isVisit && !visitSkipped && !appDetail?.homeVisitAssigneeId;
+                                    const visitMissingForm     = isVisit && !appDetail?.homeVisitSaved; // homeVisitSaved 已涵蓋 visit_skipped 情況
                                     const visitMissingSummary  = isVisit && !(appDetail?.officerCaseSummary && appDetail.officerCaseSummary.trim());
                                     const visitBlocked         = visitMissingAssignee || visitMissingForm || visitMissingSummary;
-                                    const advanceDisabled = isCaseClosed || isViewingPastStep || boardIncomplete || boardPermBlocked || boardDirtyBlocked || boardSignatureBlocked || reimbursementBlocked || visitBlocked;
+                                    // 主管審核閘門：只在「下一階段是 board_review」時觸發
+                                    // = 當前位於 home_visit/visit 階段；admin_review → home_visit 不卡控
+                                    const isAdminReview = stage === 'admin_review';
+                                    const needsSupervisorForBoard = isVisit && appDetail?.supervisorApprovedForBoard !== true;
+                                    const advanceDisabled = isCaseClosed || isViewingPastStep || boardIncomplete || boardPermBlocked || boardDirtyBlocked || boardSignatureBlocked || reimbursementBlocked || visitBlocked || needsSupervisorForBoard;
 
                                     // 按鈕文字
                                     const btnLabel =
@@ -1909,11 +2215,30 @@ function App() {
                                         visitMissingForm     && '家訪關懷紀錄表尚未儲存或欄位不完整',
                                         visitMissingSummary  && '個管師案件說明尚未填寫',
                                     ].filter(Boolean) as string[];
+                                    // 送主管審核閘門（與 server requestSupervisorReviewForBoard 一致）：
+                                    //   1) apply phase is_required 文件 status='1'，但只擋 allow_supplement=false
+                                    //      可延後補件的文件 (allow_supplement=true) 留到送董事前的 advance 閘門才擋
+                                    //   2) 家訪階段：家訪表存 + 個管案件說明
+                                    const missingRequiredDocLabels = dbDocs
+                                        .filter(d => d.isRequired && !d.allowSupplement && d.phase === 'apply' && d.status !== '1')
+                                        .map(d => d.label);
+                                    const sendToSupBlockedItems = [
+                                        ...(missingRequiredDocLabels.length > 0
+                                            ? [`必備文件未上傳或未核過：${missingRequiredDocLabels.join('、')}`]
+                                            : []),
+                                        ...(isVisit ? visitMissingItems : []),
+                                    ];
+                                    const sendToSupBlocked = sendToSupBlockedItems.length > 0;
                                     const advanceTitle =
                                         isViewingPastStep ? '請先返回目前步驟再操作流程' :
                                         isCaseClosed ? '此案件已結案' :
                                         visitBlocked ? `家庭訪視階段尚未完成：${visitMissingItems.join('、')}` :
-                                        boardPermBlocked ? '僅本案派組成員、董事長、承辦人員、主管或系統管理員可推進' :
+                                        needsSupervisorForBoard ? (
+                                            appDetail?.supervisorApprovedForBoard === false
+                                                ? `主管已退件：${appDetail.supervisorReviewNote ?? ''}`
+                                                : '請先按【送主管審核】等主管通過後才能推進到董事審核'
+                                        ) :
+                                        boardPermBlocked ? '僅主管或系統管理員可推進到核銷階段' :
                                         boardDirtyBlocked ? '有未儲存的編輯，請先按「儲存」' :
                                         boardSignatureBlocked ? `尚有 ${signaturesMissing} 位組員未簽章（或簽章已因內容變動失效）` :
                                         boardIncomplete ? (boardOpinionMinChars > 0
@@ -1924,6 +2249,104 @@ function App() {
                                         isBoardReview && boardApproved === false ? '確認董事審核未通過並結案' :
                                         `前進至「${advanceLabel}」`;
 
+                                    // 主管雙閘門：取代「進入下一階段」按鈕，officer 直接按【送主管審核】、supervisor 按【通過/退件】
+                                    // 樣式與「進入下一階段」按鈕一致（同高度、同寬度感、深色按鈕）
+                                    if (needsSupervisorForBoard && !isVolunteerView && !isCaseClosed && !isViewingPastStep && selectedAppId && appDetail && loggedInUser) {
+                                        const supState = appDetail.supervisorApprovedForBoard;
+                                        const isOfficerHere = String(loggedInUser.id) === String(appDetail.officerId ?? '');
+                                        const userRolesArr = loggedInUser.roles as string[];
+                                        const isSupOrAdmin = userRolesArr.includes('admin') || userRolesArr.includes('supervisor');
+                                        const sharedBtnClass = 'flex flex-col items-center bg-slate-900 text-white px-4 py-2 rounded-md hover:bg-slate-800 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition shadow-sm';
+                                        const rejectBtnClass = 'flex flex-col items-center bg-red-700 text-white px-4 py-2 rounded-md hover:bg-red-800 disabled:opacity-40 disabled:cursor-not-allowed text-sm font-medium transition shadow-sm';
+
+                                        const sendToSupervisor = async () => {
+                                            setSupBusy(true);
+                                            const res = await requestSupervisorReviewForBoard(selectedAppId, loggedInUser.id);
+                                            setSupBusy(false);
+                                            if (res.success) {
+                                                pushToast({ type: 'success', msg: '已送主管審核' });
+                                                await loadAppDetail(selectedAppId, true);
+                                            } else pushToast({ type: 'error', msg: res.error ?? '送主管失敗' });
+                                        };
+                                        const supApprove = async () => {
+                                            setSupBusy(true);
+                                            const res = await supervisorReviewForBoard(selectedAppId, true, '', loggedInUser.id);
+                                            setSupBusy(false);
+                                            if (res.success) {
+                                                pushToast({ type: 'success', msg: '主管已通過，案件已推進至董事審核' });
+                                                await loadAppDetail(selectedAppId, true);
+                                            } else pushToast({ type: 'error', msg: res.error ?? '通過失敗' });
+                                        };
+                                        const supReject = async () => {
+                                            if (supRejectNote.trim().length < 3) {
+                                                pushToast({ type: 'error', msg: '退件原因至少 3 字' });
+                                                return;
+                                            }
+                                            setSupBusy(true);
+                                            const res = await supervisorReviewForBoard(selectedAppId, false, supRejectNote, loggedInUser.id);
+                                            setSupBusy(false);
+                                            if (res.success) {
+                                                pushToast({ type: 'success', msg: '已退件給個管' });
+                                                setShowSupRejectForm(false);
+                                                setSupRejectNote('');
+                                                await loadAppDetail(selectedAppId, true);
+                                            } else pushToast({ type: 'error', msg: res.error ?? '退件失敗' });
+                                        };
+
+                                        // (a) 已退件 + officer → 修正後重送
+                                        if (supState === false && isOfficerHere) {
+                                            const resendTitle = sendToSupBlocked
+                                                ? `尚未滿足送件條件：${sendToSupBlockedItems.join('；')}`
+                                                : `主管已退件：${appDetail.supervisorReviewNote ?? ''}`;
+                                            return (
+                                                <button onClick={sendToSupervisor} disabled={supBusy || sendToSupBlocked} className={sharedBtnClass}
+                                                    title={resendTitle}>
+                                                    <span>修正後重送主管</span>
+                                                    <span className="text-xs font-normal text-slate-400">→ 送主管審核</span>
+                                                </button>
+                                            );
+                                        }
+                                        // (b) 待審 + officer → 送主管（或已送主管等待中 → 反灰提示）
+                                        if (supState !== true && isOfficerHere) {
+                                            // 已送主管 → disabled 反灰按鈕，提示等待主管回覆
+                                            if (appDetail.supervisorReviewPending) {
+                                                return (
+                                                    <button
+                                                        disabled
+                                                        className="flex flex-col items-center bg-slate-200 text-slate-500 px-4 py-2 rounded-md text-sm font-medium cursor-not-allowed"
+                                                        title="案件已送主管審核，等待主管處理中"
+                                                    >
+                                                        <span>已送主管審核</span>
+                                                        <span className="text-xs font-normal text-slate-400">→ 等待主管回覆</span>
+                                                    </button>
+                                                );
+                                            }
+                                            const sendTitle = sendToSupBlocked
+                                                ? `尚未滿足送件條件：${sendToSupBlockedItems.join('；')}`
+                                                : '送主管審核後等主管通過才能推進到董事審核';
+                                            return (
+                                                <button onClick={sendToSupervisor} disabled={supBusy || sendToSupBlocked} className={sharedBtnClass}
+                                                    title={sendTitle}>
+                                                    <span>送主管審核</span>
+                                                    <span className="text-xs font-normal text-slate-400">
+                                                        {sendToSupBlocked ? '→ 條件未滿足' : '→ 待主管通過'}
+                                                    </span>
+                                                </button>
+                                            );
+                                        }
+                                        // (c) 待審 + supervisor/admin → 只剩「通過送董事」按鈕
+                                        // 退件功能已合併到左邊的「退回上一階段」按鈕（會 prompt 退回原因）
+                                        if (supState !== true && isSupOrAdmin) {
+                                            return (
+                                                <button onClick={supApprove} disabled={supBusy} className={sharedBtnClass}
+                                                    title="主管確認可送董事審核；若要退回個管請按左方【退回上一階段】並填寫原因">
+                                                    <span>通過送董事</span>
+                                                    <span className="text-xs font-normal text-slate-400">→ 董事審核</span>
+                                                </button>
+                                            );
+                                        }
+                                        // 其他角色看不到任何主管按鈕，但 needsSupervisorForBoard=true 會讓「進入下一階段」disabled
+                                    }
                                     return (
                                         <button
                                             onClick={handleAdvanceStage}
@@ -1988,6 +2411,7 @@ function App() {
                     initial={{
                         applicantName: appDetail.applicantName ?? '',
                         applicantPhone: appDetail.applicantPhone ?? '',
+                        applicantAddress: appDetail.applicantAddress ?? '',
                         applicantDob: appDetail.applicantDob ?? '',
                         cancerType: appDetail.cancerType ?? '',
                         cancerStage: appDetail.cancerStage ?? '',

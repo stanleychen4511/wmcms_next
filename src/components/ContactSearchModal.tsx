@@ -13,11 +13,13 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Search, X, Loader2, Phone, Heart, Plus, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Search, X, Loader2, Phone, Heart, Plus, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
 import {
     fetchContactRecords,
+    searchContactsByIdNumber,
     type ContactRecord,
     type ApplicantSearchResult,
+    type IdNumberSearchResult,
 } from '../app/actions/contactRecordActions';
 import { ContactRecordModal } from './ContactRecordModal';
 import { ApplicantPickerModal } from './ApplicantPickerModal';
@@ -45,6 +47,7 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
     // 暫存中的篩選（使用者編輯中、未送出）
     const [nameQuery, setNameQuery]   = useState('');
     const [phoneQuery, setPhoneQuery] = useState('');
+    const [idNumberQuery, setIdNumberQuery] = useState('');
     const [dateFrom, setDateFrom]     = useState(initialRange.from);
     const [dateTo, setDateTo]         = useState(initialRange.to);
     // 自動觸發的篩選（typeFilter 改了立刻送）
@@ -53,6 +56,7 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
     const [appliedFilters, setAppliedFilters] = useState({
         name:  '',
         phone: '',
+        idNumber: '',
         from:  initialRange.from,
         to:    initialRange.to,
     });
@@ -60,6 +64,8 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
     const [loading, setLoading] = useState(false);
     const [records, setRecords] = useState<ContactRecord[]>([]);
     const [truncated, setTruncated] = useState(false);
+    /** 身分證查詢的申請摘要（appliedFilters.idNumber 非空時才有）*/
+    const [idLookup, setIdLookup] = useState<IdNumberSearchResult | null>(null);
     const [editing, setEditing] = useState<ContactRecord | null>(null);
     // 新增 flow 狀態
     const [phoneCreateOpen, setPhoneCreateOpen] = useState(false);
@@ -80,6 +86,30 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
         (async () => {
             setLoading(true);
             try {
+                // 身分證搜尋走專用 path（會回傳申請摘要 + 聯絡紀錄；隱私模式遮罩）
+                if (appliedFilters.idNumber) {
+                    const r = await searchContactsByIdNumber(operatorUserId, appliedFilters.idNumber);
+                    if (cancelled) return;
+                    if (!r.success) {
+                        setIdLookup(null);
+                        setRecords([]);
+                        setTruncated(false);
+                        return;
+                    }
+                    setIdLookup(r.data);
+                    // 套用本地 type / date 過濾在身分證查到的紀錄上
+                    let recs = r.data.contactRecords;
+                    if (typeFilter) recs = recs.filter(x => x.recordType === typeFilter);
+                    if (appliedFilters.from) recs = recs.filter(x => (x.contactDate || '') >= appliedFilters.from);
+                    if (appliedFilters.to)   recs = recs.filter(x => (x.contactDate || '') <= appliedFilters.to);
+                    recs.sort((a, b) => (b.contactDate || '').localeCompare(a.contactDate || ''));
+                    setRecords(recs);
+                    setTruncated(false);
+                    return;
+                }
+
+                // 一般搜尋（姓名／電話／日期／類型）
+                setIdLookup(null);
                 const HARD_LIMIT = 500;
                 // 後端 SQL 已套姓名以外的條件（電話、日期、類型）；
                 // 姓名因為加密欄位無法 SQL 直接 LIKE，仍保留 client-side filter。
@@ -114,9 +144,13 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
 
     /** 套用目前編輯中的條件 → 觸發實際查詢 */
     const runSearch = () => {
+        // 身分證查詢必須是完整 10 碼（DB 用 HMAC blind index，無法部分比對）
+        const rawId = idNumberQuery.trim().toUpperCase();
+        const idNumber = /^[A-Z][0-9]{9}$/.test(rawId) ? rawId : '';
         setAppliedFilters({
             name:  nameQuery.trim(),
             phone: phoneQuery.replace(/[^0-9]/g, ''),
+            idNumber,
             from:  dateFrom,
             to:    dateTo,
         });
@@ -127,10 +161,11 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
         const r = defaultDateRange();
         setNameQuery('');
         setPhoneQuery('');
+        setIdNumberQuery('');
         setDateFrom(r.from);
         setDateTo(r.to);
         setTypeFilter('');
-        setAppliedFilters({ name: '', phone: '', from: r.from, to: r.to });
+        setAppliedFilters({ name: '', phone: '', idNumber: '', from: r.from, to: r.to });
     };
 
     const handleEnterSearch = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -210,6 +245,30 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                         />
                     </div>
                     <div>
+                        <label className="text-xs font-medium text-slate-600">
+                            身分證字號
+                            <span className="text-slate-400 font-normal ml-1">（須完整 10 碼）</span>
+                        </label>
+                        <input
+                            type="text"
+                            value={idNumberQuery}
+                            onChange={e => setIdNumberQuery(e.target.value.toUpperCase())}
+                            onKeyDown={handleEnterSearch}
+                            maxLength={10}
+                            placeholder="A123456789（Enter 搜尋）"
+                            className={`mt-1 w-full border rounded-lg px-3 py-2 text-sm font-mono ${
+                                idNumberQuery && !/^[A-Z][0-9]{9}$/.test(idNumberQuery)
+                                    ? 'border-amber-400 bg-amber-50'
+                                    : 'border-slate-300'
+                            }`}
+                        />
+                        {idNumberQuery && !/^[A-Z][0-9]{9}$/.test(idNumberQuery) && (
+                            <p className="text-[11px] text-amber-700 mt-0.5">
+                                ⚠ 身分證資料庫加密儲存，無法部分比對；請輸入完整 10 碼（1 字母 + 9 數字）。
+                            </p>
+                        )}
+                    </div>
+                    <div>
                         <label className="text-xs font-medium text-slate-600">類型</label>
                         <select
                             value={typeFilter}
@@ -260,6 +319,60 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                         </button>
                     </div>
                 </div>
+
+                {/* 身分證查詢 — 申請摘要 */}
+                {idLookup && (
+                    <div className="px-5 py-3 border-b border-slate-100 bg-slate-50">
+                        {!idLookup.found ? (
+                            <p className="text-sm text-slate-500">⚠ 此身分證字號查無申請紀錄</p>
+                        ) : (
+                            <div className="space-y-2">
+                                <div className="flex items-center gap-2 text-sm">
+                                    <FileText className="w-4 h-4 text-blue-600" />
+                                    <span className="font-semibold text-slate-700">申請紀錄摘要</span>
+                                    <span className="ml-1 inline-flex items-center px-2 py-0.5 rounded-full bg-blue-100 text-blue-700 text-xs font-bold">
+                                        共 {idLookup.applicationCount} 件
+                                    </span>
+                                    {idLookup.applicantName && (
+                                        <span className="text-xs text-slate-600">申請人：{idLookup.applicantName}</span>
+                                    )}
+                                </div>
+                                {idLookup.applicationCount > 0 && (
+                                    <div className="text-xs text-slate-600 flex items-center gap-3 flex-wrap">
+                                        <span>
+                                            最早：<span className="font-mono">{idLookup.earliestApplyAt ?? '—'}</span>
+                                        </span>
+                                        <span>
+                                            最近：<span className="font-mono">{idLookup.latestApplyAt ?? '—'}</span>
+                                        </span>
+                                    </div>
+                                )}
+                                {idLookup.applications.length > 0 && (
+                                    <ul className="text-xs text-slate-700 space-y-0.5">
+                                        {idLookup.applications.map((a, i) => (
+                                            <li key={a.applicationId ?? `app-${i}`} className="flex items-center gap-2">
+                                                <span className="font-mono text-slate-500">{a.applyAt || '—'}</span>
+                                                {a.caseNumber && (
+                                                    <span className="font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">
+                                                        {a.caseNumber}
+                                                    </span>
+                                                )}
+                                                {a.status && (
+                                                    <span className="text-slate-500">
+                                                        {a.status === '1' ? '審核中' :
+                                                         a.status === '2' ? '審核未通過' :
+                                                         a.status === '3' ? '待核銷' :
+                                                         a.status === '4' ? '核銷完成' : a.status}
+                                                    </span>
+                                                )}
+                                            </li>
+                                        ))}
+                                    </ul>
+                                )}
+                            </div>
+                        )}
+                    </div>
+                )}
 
                 {/* 結果上限警示 */}
                 {truncated && (
