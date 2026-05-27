@@ -25,9 +25,10 @@ const SUBSIDY_SUBTYPE_LABEL: Record<'1' | '2', string> = {
 };
 
 const PAPER_REQUIREMENT_LABEL: Record<DocumentPaperRequirement, string> = {
-    original: '需正本',
-    copy_allowed: '可影本',
-    none: '不需紙本',
+    original: '正本',
+    copy: '影本',
+    original_or_copy: '正本或影本',
+    none: '不須紙本',
 };
 
 type DraftByPhase = Record<DocumentPhase, {
@@ -330,9 +331,10 @@ export function DocumentTypeManager() {
                                                 }))}
                                                 className="border border-slate-300 rounded px-2 py-1 text-sm bg-white"
                                             >
-                                                <option value="original">需正本</option>
-                                                <option value="copy_allowed">可影本</option>
-                                                <option value="none">不需紙本</option>
+                                                <option value="original">正本</option>
+                                                <option value="copy">影本</option>
+                                                <option value="original_or_copy">正本或影本</option>
+                                                <option value="none">不須紙本</option>
                                             </select>
                                         </td>
                                         <td className="px-4 py-3">
@@ -525,18 +527,21 @@ export function DocumentTypeManager() {
                                                             }))}
                                                             className="border border-slate-300 rounded px-2 py-1 text-sm"
                                                         >
-                                                            <option value="original">需正本</option>
-                                                            <option value="copy_allowed">可影本</option>
-                                                            <option value="none">不需紙本</option>
+                                                            <option value="original">正本</option>
+                                                            <option value="copy">影本</option>
+                                                            <option value="original_or_copy">正本或影本</option>
+                                                            <option value="none">不須紙本</option>
                                                         </select>
                                                     ) : (
                                                         <span className={clsx(
                                                             'text-xs font-semibold px-2 py-0.5 rounded-full',
-                                                            cfg.paper_requirement === 'copy_allowed'
+                                                            cfg.paper_requirement === 'copy'
                                                                 ? 'bg-emerald-100 text-emerald-700'
-                                                                : cfg.paper_requirement === 'none'
-                                                                    ? 'bg-slate-100 text-slate-500'
-                                                                    : 'bg-indigo-100 text-indigo-700'
+                                                                : cfg.paper_requirement === 'original_or_copy'
+                                                                    ? 'bg-amber-100 text-amber-700'
+                                                                    : cfg.paper_requirement === 'none'
+                                                                        ? 'bg-slate-100 text-slate-500'
+                                                                        : 'bg-indigo-100 text-indigo-700'
                                                         )}>
                                                             {PAPER_REQUIREMENT_LABEL[cfg.paper_requirement]}
                                                         </span>

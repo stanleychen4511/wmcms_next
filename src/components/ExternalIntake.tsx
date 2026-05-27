@@ -37,9 +37,10 @@ interface DocFile {
 }
 
 const PAPER_REQUIREMENT_LABEL: Record<NonNullable<DocumentTypeConfig['paper_requirement']>, string> = {
-    original: '需正本',
-    copy_allowed: '可接受影本',
-    none: '不需紙本',
+    original: '正本',
+    copy: '影本',
+    original_or_copy: '正本或影本',
+    none: '不須紙本',
 };
 
 function formatDocumentConfigLabel(doc: DocumentTypeConfig) {

@@ -71,7 +71,7 @@ export interface DocumentTypeConfig {
 
 export type DocumentPhase = 'apply' | 'reimbursement';
 export type DocumentSubsidySubtype = '1' | '2' | null;
-export type DocumentPaperRequirement = 'original' | 'copy_allowed' | 'none';
+export type DocumentPaperRequirement = 'original' | 'copy' | 'original_or_copy' | 'none';
 
 export async function fetchDocumentTypeConfigs(): Promise<DocumentTypeConfig[]> {
     const client = await pool.connect();
@@ -120,8 +120,10 @@ export async function createDocumentTypeConfig(
         data.subsidy_subtype === '1' || data.subsidy_subtype === '2'
             ? data.subsidy_subtype
             : null;
-    const paperRequirement =
-        data.paper_requirement === 'copy_allowed' || data.paper_requirement === 'none'
+    const paperRequirement: DocumentPaperRequirement =
+        data.paper_requirement === 'copy'
+        || data.paper_requirement === 'original_or_copy'
+        || data.paper_requirement === 'none'
             ? data.paper_requirement
             : 'original';
     const client = await pool.connect();

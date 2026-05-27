@@ -70,7 +70,7 @@ CREATE TABLE IF NOT EXISTS document_type_config (
     CONSTRAINT document_type_config_subsidy_subtype_chk
         CHECK (subsidy_subtype IS NULL OR subsidy_subtype IN ('1', '2')),
     CONSTRAINT document_type_config_paper_requirement_chk
-        CHECK (paper_requirement IN ('original', 'copy_allowed', 'none'))
+        CHECK (paper_requirement IN ('original', 'copy', 'original_or_copy', 'none'))
 );
 -- 補欄位（舊表可能缺少 allow_supplement）
 ALTER TABLE document_type_config
@@ -115,7 +115,7 @@ BEGIN
        ) THEN
         ALTER TABLE document_type_config
             ADD CONSTRAINT document_type_config_paper_requirement_chk
-            CHECK (paper_requirement IN ('original', 'copy_allowed', 'none'));
+            CHECK (paper_requirement IN ('original', 'copy', 'original_or_copy', 'none'));
     END IF;
 END $$;
 
@@ -1153,7 +1153,7 @@ COMMENT ON COLUMN document_type_config.storage_location_id IS '預設實體儲�
 COMMENT ON COLUMN document_type_config.sort_order          IS '顯示排序';
 COMMENT ON COLUMN document_type_config.is_active           IS '是否啟用：FALSE 時此文件類型不會出現在新案件中';
 COMMENT ON COLUMN document_type_config.subsidy_subtype     IS '適用補助子類型：NULL=共用、1=經濟弱勢、2=小康家庭';
-COMMENT ON COLUMN document_type_config.paper_requirement   IS '紙本要求：original=需正本、copy_allowed=可接受影本、none=不需紙本';
+COMMENT ON COLUMN document_type_config.paper_requirement   IS '紙本要求：original=正本、copy=影本、original_or_copy=正本或影本、none=不須紙本';
 
 -- applications
 COMMENT ON COLUMN applications.id                      IS '主鍵，自動遞增（BIGINT）';

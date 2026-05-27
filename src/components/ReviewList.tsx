@@ -220,9 +220,10 @@ function StatusIcon({ status }: { status: DocumentEntry['status'] }) {
 }
 
 const PAPER_REQUIREMENT_BADGE: Record<NonNullable<DocumentEntry['paperRequirement']>, { label: string; className: string }> = {
-    original: { label: '需正本', className: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
-    copy_allowed: { label: '可接受影本', className: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
-    none: { label: '不需紙本', className: 'bg-slate-50 text-slate-500 border-slate-100' },
+    original: { label: '正本', className: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
+    copy: { label: '影本', className: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
+    original_or_copy: { label: '正本或影本', className: 'bg-amber-50 text-amber-700 border-amber-100' },
+    none: { label: '不須紙本', className: 'bg-slate-50 text-slate-500 border-slate-100' },
 };
 
 
