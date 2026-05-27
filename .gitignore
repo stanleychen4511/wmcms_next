@@ -65,6 +65,7 @@ yarn-error.log*
 # ─── Spectra（SDD 工具暫存資料） ───────────────────────────
 .spectra/
 openspec/.vector-search.db*
+.agents/skills/spectra-*/
 
 # ─── Claude Code（個人化工具設定，可選擇分享） ─────────────
 # 取消下面註解 = 不分享個人化 Claude 設定
