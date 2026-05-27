@@ -1,5 +1,5 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
 import { Check, FileText, GripVertical, Pencil, Plus, X } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
@@ -69,6 +69,8 @@ export function DocumentTypeManager() {
     const [creatingPhase, setCreatingPhase] = useState<DocumentPhase | null>(null);
     const [draggingId, setDraggingId] = useState<number | null>(null);
     const [saving, setSaving] = useState(false);
+    const pendingDragOrderRef = useRef<Partial<Record<DocumentPhase, number[]>>>({});
+    const dropHandledRef = useRef(false);
 
     const load = useCallback(async () => {
         const [cfgs, locsRes] = await Promise.all([
@@ -144,8 +146,8 @@ export function DocumentTypeManager() {
         await load();
     }
 
-    async function persistOrder(phase: DocumentPhase, orderedItems: DocumentTypeConfig[]) {
-        const res = await reorderDocumentTypeConfigs(phase, orderedItems.map(item => item.id));
+    async function persistOrder(phase: DocumentPhase, orderedIds: number[]) {
+        const res = await reorderDocumentTypeConfigs(phase, orderedIds);
         if (!res.success) {
             pushToast({ type: 'error', msg: res.error ?? '排序儲存失敗' });
             await load();
@@ -164,10 +166,12 @@ export function DocumentTypeManager() {
         const reordered = [...phaseItems];
         const [moved] = reordered.splice(fromIndex, 1);
         reordered.splice(toIndex, 0, moved);
+        const orderedIds = reordered.map(item => item.id);
+        pendingDragOrderRef.current[phase] = orderedIds;
         setConfigs(prev => {
             const byId = new Map(reordered.map((item, index) => [
                 item.id,
-                { ...item, sort_order: (index + 1) * 10 },
+                { ...item, sort_order: index + 1 },
             ]));
             return prev
                 .map(item => byId.get(item.id) ?? item)
@@ -178,6 +182,24 @@ export function DocumentTypeManager() {
                 ));
         });
         return reordered;
+    }
+
+    async function handleDrop(phase: DocumentPhase, targetId: number) {
+        dropHandledRef.current = true;
+        const reordered = moveDraggedItem(phase, targetId);
+        const orderedIds = reordered?.map(item => item.id) ?? pendingDragOrderRef.current[phase];
+        setDraggingId(null);
+        delete pendingDragOrderRef.current[phase];
+        if (orderedIds?.length) await persistOrder(phase, orderedIds);
+    }
+
+    function handleDragEnd(phase: DocumentPhase) {
+        setDraggingId(null);
+        if (!dropHandledRef.current && pendingDragOrderRef.current[phase]) {
+            delete pendingDragOrderRef.current[phase];
+            void load();
+        }
+        dropHandledRef.current = false;
     }
 
     // Group by phase
@@ -396,18 +418,20 @@ export function DocumentTypeManager() {
                                             <tr
                                                 key={cfg.id}
                                                 draggable={!isEditing}
-                                                onDragStart={() => setDraggingId(cfg.id)}
+                                                onDragStart={() => {
+                                                    dropHandledRef.current = false;
+                                                    delete pendingDragOrderRef.current[phase];
+                                                    setDraggingId(cfg.id);
+                                                }}
                                                 onDragOver={e => {
                                                     e.preventDefault();
                                                     moveDraggedItem(phase, cfg.id);
                                                 }}
                                                 onDrop={async e => {
                                                     e.preventDefault();
-                                                    const reordered = moveDraggedItem(phase, cfg.id);
-                                                    setDraggingId(null);
-                                                    if (reordered) await persistOrder(phase, reordered);
+                                                    await handleDrop(phase, cfg.id);
                                                 }}
-                                                onDragEnd={() => setDraggingId(null)}
+                                                onDragEnd={() => handleDragEnd(phase)}
                                                 className={clsx(
                                                     'transition-colors',
                                                     draggingId === cfg.id && 'opacity-50',

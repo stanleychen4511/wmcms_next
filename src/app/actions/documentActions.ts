@@ -130,7 +130,7 @@ export async function createDocumentTypeConfig(
     try {
         const res = await client.query<{ id: number }>(
             `WITH next_sort AS (
-                 SELECT COALESCE(MAX(sort_order), 0) + 10 AS sort_order
+                 SELECT COALESCE(MAX(sort_order), 0) + 1 AS sort_order
                  FROM document_type_config
                  WHERE phase = $2
              )
@@ -184,7 +184,7 @@ export async function reorderDocumentTypeConfigs(
                 `UPDATE document_type_config
                  SET sort_order = $1
                  WHERE id = $2 AND phase = $3`,
-                [(index + 1) * 10, id, phase]
+                [index + 1, id, phase]
             );
         }
         await client.query('COMMIT');
