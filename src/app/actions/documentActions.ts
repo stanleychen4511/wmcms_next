@@ -51,6 +51,7 @@ export interface DocumentEntry {
     phase?: string; // 'apply' | 'reimbursement'
     subsidySubtype?: '1' | '2' | null;
     storageLocationPath?: string | null;
+    paperRequirement?: DocumentPaperRequirement;
 }
 
 export interface DocumentTypeConfig {
@@ -65,10 +66,12 @@ export interface DocumentTypeConfig {
     is_active: boolean;
     scope: 'C' | 'D';
     subsidy_subtype: '1' | '2' | null;
+    paper_requirement: DocumentPaperRequirement;
 }
 
 export type DocumentPhase = 'apply' | 'reimbursement';
 export type DocumentSubsidySubtype = '1' | '2' | null;
+export type DocumentPaperRequirement = 'original' | 'copy_allowed' | 'none';
 
 export async function fetchDocumentTypeConfigs(): Promise<DocumentTypeConfig[]> {
     const client = await pool.connect();
@@ -85,7 +88,7 @@ export async function fetchDocumentTypeConfigs(): Promise<DocumentTypeConfig[]> 
             )
             SELECT d.id, d.label, d.phase, d.is_required, d.allow_supplement,
                    d.storage_location_id, d.sort_order, d.is_active, d.scope,
-                   d.subsidy_subtype,
+                   d.subsidy_subtype, COALESCE(d.paper_requirement, 'original') AS paper_requirement,
                    lp.full_path AS storage_location_path
             FROM document_type_config d
             LEFT JOIN loc_path lp ON lp.id = d.storage_location_id
@@ -105,6 +108,7 @@ export async function createDocumentTypeConfig(
         allow_supplement: boolean;
         storage_location_id?: number | null;
         subsidy_subtype?: DocumentSubsidySubtype;
+        paper_requirement?: DocumentPaperRequirement;
     }
 ): Promise<{ success: boolean; id?: number; error?: string }> {
     const label = data.label.trim();
@@ -116,6 +120,10 @@ export async function createDocumentTypeConfig(
         data.subsidy_subtype === '1' || data.subsidy_subtype === '2'
             ? data.subsidy_subtype
             : null;
+    const paperRequirement =
+        data.paper_requirement === 'copy_allowed' || data.paper_requirement === 'none'
+            ? data.paper_requirement
+            : 'original';
     const client = await pool.connect();
     try {
         const res = await client.query<{ id: number }>(
@@ -126,8 +134,8 @@ export async function createDocumentTypeConfig(
              )
              INSERT INTO document_type_config
                  (label, phase, is_required, allow_supplement, storage_location_id,
-                  sort_order, is_active, scope, subsidy_subtype)
-             SELECT $1, $2, $3, $4, $5, next_sort.sort_order, true, 'C', $6
+                  sort_order, is_active, scope, subsidy_subtype, paper_requirement)
+             SELECT $1, $2, $3, $4, $5, next_sort.sort_order, true, 'C', $6, $7
              FROM next_sort
              RETURNING id`,
             [
@@ -137,6 +145,7 @@ export async function createDocumentTypeConfig(
                 data.allow_supplement && data.is_required,
                 data.storage_location_id ?? null,
                 subsidySubtype,
+                paperRequirement,
             ]
         );
         return { success: true, id: res.rows[0]?.id };
@@ -197,6 +206,7 @@ export async function updateDocumentTypeConfig(
         sort_order?: number;
         is_active?: boolean;
         subsidy_subtype?: '1' | '2' | null;
+        paper_requirement?: DocumentPaperRequirement;
     }
 ): Promise<{ success: boolean; error?: string }> {
     const fields: string[] = [];
@@ -210,6 +220,7 @@ export async function updateDocumentTypeConfig(
     if (data.sort_order !== undefined)          { fields.push(`sort_order = $${i++}`);          values.push(data.sort_order); }
     if (data.is_active !== undefined)           { fields.push(`is_active = $${i++}`);           values.push(data.is_active); }
     if (data.subsidy_subtype !== undefined)     { fields.push(`subsidy_subtype = $${i++}`);     values.push(data.subsidy_subtype); }
+    if (data.paper_requirement !== undefined)   { fields.push(`paper_requirement = $${i++}`);   values.push(data.paper_requirement); }
     if (fields.length === 0) return { success: true };
     values.push(id);
     const client = await pool.connect();
@@ -604,7 +615,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                 FROM file_storage_location l JOIN loc_path lp ON l.parent_id = lp.id
             )
             SELECT d.id::text, d.label, d.phase, d.is_required, d.allow_supplement, d.sort_order,
-                   d.subsidy_subtype,
+                   d.subsidy_subtype, COALESCE(d.paper_requirement, 'original') AS paper_requirement,
                    lp.full_path AS storage_location_path
             FROM document_type_config d
             LEFT JOIN loc_path lp ON lp.id = d.storage_location_id
@@ -624,6 +635,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
             id: string; label: string; phase: string;
             is_required: boolean; allow_supplement: boolean;
             subsidy_subtype: '1' | '2' | null;
+            paper_requirement: DocumentPaperRequirement;
             storage_location_path: string | null;
         }[];
 
@@ -653,6 +665,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                     phase: doc.phase,
                     subsidySubtype: doc.subsidy_subtype,
                     storageLocationPath: doc.storage_location_path,
+                    paperRequirement: doc.paper_requirement,
                 };
             }
             return {
@@ -664,6 +677,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                 phase: doc.phase,
                 subsidySubtype: doc.subsidy_subtype,
                 storageLocationPath: doc.storage_location_path,
+                paperRequirement: doc.paper_requirement,
             };
         });
 

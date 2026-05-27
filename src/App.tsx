@@ -201,6 +201,7 @@ function App() {
     const [appDetail, setAppDetail] = useState<ApplicationDetail | null>(null);
     const [detailLoading, setDetailLoading] = useState(false);
     const [dbDocs, setDbDocs] = useState<DocumentEntry[]>([]);
+    const [documentReloadKey, setDocumentReloadKey] = useState(0);
 
     /** 當前案件適用的上限：依 appDetail.subsidySubtype 對應；未指定子類型時取兩者較大值。 */
     const maxApplyAmount = (() => {
@@ -987,6 +988,7 @@ function App() {
             if (result.success) {
                 pushToast({ type: 'success', msg: '資格預審資料已儲存' });
                 await loadAppDetail(selectedAppId, true);
+                setDocumentReloadKey(key => key + 1);
             } else {
                 pushToast({ type: 'error', msg: result.error ?? '儲存失敗，請稍後再試' });
             }
@@ -1293,6 +1295,7 @@ function App() {
                             applyAt={appDetail?.applyAt}
                             pendingThresholdDays={pendingThresholdDays}
                             userId={loggedInUser?.id}
+                            reloadKey={documentReloadKey}
                             caseClosed={!!isCaseClosed}
                             canReview={!isCaseClosed && (hasPermission('case_officer') || hasPermission('admin') || hasPermission('supervisor'))}
                             readOnly={contentReadOnly || (!hasPermission('case_officer') && !hasPermission('admin') && !hasPermission('supervisor'))}
@@ -1711,6 +1714,7 @@ function App() {
                             applyAt={appDetail?.applyAt}
                             pendingThresholdDays={pendingThresholdDays}
                             userId={loggedInUser?.id}
+                            reloadKey={documentReloadKey}
                             caseClosed={!!isCaseClosed}
                             canReview={!isCaseClosed && (hasPermission('accountant') || hasPermission('case_officer') || hasPermission('admin') || hasPermission('supervisor'))}
                             readOnly={contentReadOnly || (!hasPermission('accountant') && !hasPermission('case_officer') && !hasPermission('admin') && !hasPermission('supervisor'))}

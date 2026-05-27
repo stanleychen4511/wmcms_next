@@ -194,6 +194,7 @@ interface ReviewListProps {
     phase?: string;
     /** Current logged-in user ID for audit logging */
     userId?: string | null;
+    reloadKey?: number | string;
     /** 申請日期（ISO string），用於判斷是否逾期需補件 */
     applyAt?: string;
     /** 未補件提示門檻天數（來自 system_settings） */
@@ -218,12 +219,18 @@ function StatusIcon({ status }: { status: DocumentEntry['status'] }) {
     }
 }
 
+const PAPER_REQUIREMENT_BADGE: Record<NonNullable<DocumentEntry['paperRequirement']>, { label: string; className: string }> = {
+    original: { label: '需正本', className: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
+    copy_allowed: { label: '可接受影本', className: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
+    none: { label: '不需紙本', className: 'bg-slate-50 text-slate-500 border-slate-100' },
+};
+
 
 function isImageFile(url: string) {
     return /\.(jpe?g|png|gif|webp)$/i.test(url);
 }
 
-export function ReviewList({ applicationId, caseNumber, readOnly = false, caseClosed = false, canReview = false, onRefresh, phase, userId, applyAt, pendingThresholdDays = 7 }: ReviewListProps) {
+export function ReviewList({ applicationId, caseNumber, readOnly = false, caseClosed = false, canReview = false, onRefresh, phase, userId, reloadKey, applyAt, pendingThresholdDays = 7 }: ReviewListProps) {
     // 判斷申請日是否已過門檻天數（逾期補件判斷基準）
     const isOverduePastThreshold = (() => {
         if (!applyAt) return false;
@@ -266,7 +273,7 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
         }
     }, [applicationId]);
 
-    useEffect(() => { loadDocs(false); }, [loadDocs]);
+    useEffect(() => { loadDocs(false); }, [loadDocs, reloadKey]);
 
     const handleUploadClick = (docId: string) => {
         setActiveUploadId(docId);
@@ -375,6 +382,7 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                         const isUploading = uploading[doc.id];
                         const isUpdating = updating[doc.id];
                         const busy = isUploading || isUpdating;
+                        const paperRequirement = PAPER_REQUIREMENT_BADGE[doc.paperRequirement ?? 'original'];
                         return (
                             <li key={doc.id} className="px-6 py-4 flex items-center gap-4 hover:bg-slate-50 transition-colors">
                                 <StatusIcon status={doc.status} />
@@ -416,6 +424,9 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                                         {doc.rejectReason && (
                                             <span className="text-xs text-red-500 italic">退件原因：{doc.rejectReason}</span>
                                         )}
+                                        <span className={`text-[10px] font-semibold border px-1.5 py-0.5 rounded-full ${paperRequirement.className}`}>
+                                            {paperRequirement.label}
+                                        </span>
                                     </div>
                                 </div>
 

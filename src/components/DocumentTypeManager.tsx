@@ -4,6 +4,7 @@ import { Check, FileText, GripVertical, Pencil, Plus, X } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
     createDocumentTypeConfig,
+    DocumentPaperRequirement,
     DocumentPhase,
     DocumentTypeConfig,
     fetchDocumentTypeConfigs,
@@ -23,11 +24,18 @@ const SUBSIDY_SUBTYPE_LABEL: Record<'1' | '2', string> = {
     '2': '小康家庭',
 };
 
+const PAPER_REQUIREMENT_LABEL: Record<DocumentPaperRequirement, string> = {
+    original: '需正本',
+    copy_allowed: '可影本',
+    none: '不需紙本',
+};
+
 type DraftByPhase = Record<DocumentPhase, {
     label: string;
     subsidy_subtype: '' | '1' | '2';
     is_required: boolean;
     allow_supplement: boolean;
+    paper_requirement: DocumentPaperRequirement;
     storage_location_id: number | null;
 }>;
 
@@ -37,6 +45,7 @@ const EMPTY_DRAFT: DraftByPhase = {
         subsidy_subtype: '',
         is_required: true,
         allow_supplement: false,
+        paper_requirement: 'original',
         storage_location_id: null,
     },
     reimbursement: {
@@ -44,6 +53,7 @@ const EMPTY_DRAFT: DraftByPhase = {
         subsidy_subtype: '',
         is_required: true,
         allow_supplement: false,
+        paper_requirement: 'original',
         storage_location_id: null,
     },
 };
@@ -81,6 +91,7 @@ export function DocumentTypeManager() {
             sort_order: cfg.sort_order,
             is_active: cfg.is_active,
             subsidy_subtype: cfg.subsidy_subtype,
+            paper_requirement: cfg.paper_requirement,
         });
     }
 
@@ -117,6 +128,7 @@ export function DocumentTypeManager() {
             allow_supplement: draft.allow_supplement,
             storage_location_id: draft.storage_location_id,
             subsidy_subtype: draft.subsidy_subtype || null,
+            paper_requirement: draft.paper_requirement,
         });
         setSaving(false);
         if (!res.success) {
@@ -230,6 +242,7 @@ export function DocumentTypeManager() {
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-32">適用類別</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-28">必填</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-28">可補件</th>
+                                        <th className="px-4 py-3 text-left font-semibold text-slate-600 w-28">紙本要求</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600">實體存放位置</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-20">狀態</th>
                                         <th className="px-4 py-3 w-24"></th>
@@ -303,6 +316,23 @@ export function DocumentTypeManager() {
                                             >
                                                 <option value="0">須隨附</option>
                                                 <option value="1">可補件</option>
+                                            </select>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <select
+                                                value={draft.paper_requirement}
+                                                onChange={e => setDrafts(prev => ({
+                                                    ...prev,
+                                                    [phase]: {
+                                                        ...prev[phase],
+                                                        paper_requirement: e.target.value as DocumentPaperRequirement,
+                                                    },
+                                                }))}
+                                                className="border border-slate-300 rounded px-2 py-1 text-sm bg-white"
+                                            >
+                                                <option value="original">需正本</option>
+                                                <option value="copy_allowed">可影本</option>
+                                                <option value="none">不需紙本</option>
                                             </select>
                                         </td>
                                         <td className="px-4 py-3">
@@ -482,6 +512,34 @@ export function DocumentTypeManager() {
                                                         ) : (
                                                             <span className="text-xs text-slate-300">—</span>
                                                         )
+                                                    )}
+                                                </td>
+                                                {/* Paper requirement */}
+                                                <td className="px-4 py-3">
+                                                    {isEditing ? (
+                                                        <select
+                                                            value={editData.paper_requirement ?? cfg.paper_requirement}
+                                                            onChange={e => setEditData(p => ({
+                                                                ...p,
+                                                                paper_requirement: e.target.value as DocumentPaperRequirement,
+                                                            }))}
+                                                            className="border border-slate-300 rounded px-2 py-1 text-sm"
+                                                        >
+                                                            <option value="original">需正本</option>
+                                                            <option value="copy_allowed">可影本</option>
+                                                            <option value="none">不需紙本</option>
+                                                        </select>
+                                                    ) : (
+                                                        <span className={clsx(
+                                                            'text-xs font-semibold px-2 py-0.5 rounded-full',
+                                                            cfg.paper_requirement === 'copy_allowed'
+                                                                ? 'bg-emerald-100 text-emerald-700'
+                                                                : cfg.paper_requirement === 'none'
+                                                                    ? 'bg-slate-100 text-slate-500'
+                                                                    : 'bg-indigo-100 text-indigo-700'
+                                                        )}>
+                                                            {PAPER_REQUIREMENT_LABEL[cfg.paper_requirement]}
+                                                        </span>
                                                     )}
                                                 </td>
                                                 {/* Storage location */}

@@ -66,8 +66,11 @@ CREATE TABLE IF NOT EXISTS document_type_config (
     sort_order          INT      NOT NULL DEFAULT 0,
     is_active           BOOLEAN  NOT NULL DEFAULT TRUE,
     subsidy_subtype     CHAR(1),
+    paper_requirement   VARCHAR(20) NOT NULL DEFAULT 'original',
     CONSTRAINT document_type_config_subsidy_subtype_chk
-        CHECK (subsidy_subtype IS NULL OR subsidy_subtype IN ('1', '2'))
+        CHECK (subsidy_subtype IS NULL OR subsidy_subtype IN ('1', '2')),
+    CONSTRAINT document_type_config_paper_requirement_chk
+        CHECK (paper_requirement IN ('original', 'copy_allowed', 'none'))
 );
 -- 補欄位（舊表可能缺少 allow_supplement）
 ALTER TABLE document_type_config
@@ -83,6 +86,9 @@ ALTER TABLE document_type_config
 ALTER TABLE document_type_config
     ADD COLUMN IF NOT EXISTS subsidy_subtype CHAR(1);
 
+ALTER TABLE document_type_config
+    ADD COLUMN IF NOT EXISTS paper_requirement VARCHAR(20) NOT NULL DEFAULT 'original';
+
 DO $$
 BEGIN
     IF to_regclass('public.document_type_config') IS NOT NULL
@@ -95,6 +101,21 @@ BEGIN
         ALTER TABLE document_type_config
             ADD CONSTRAINT document_type_config_subsidy_subtype_chk
             CHECK (subsidy_subtype IS NULL OR subsidy_subtype IN ('1', '2'));
+    END IF;
+END $$;
+
+DO $$
+BEGIN
+    IF to_regclass('public.document_type_config') IS NOT NULL
+       AND NOT EXISTS (
+           SELECT 1
+           FROM pg_constraint
+           WHERE conname = 'document_type_config_paper_requirement_chk'
+             AND conrelid = 'public.document_type_config'::regclass
+       ) THEN
+        ALTER TABLE document_type_config
+            ADD CONSTRAINT document_type_config_paper_requirement_chk
+            CHECK (paper_requirement IN ('original', 'copy_allowed', 'none'));
     END IF;
 END $$;
 
@@ -1000,27 +1021,27 @@ SELECT setval('file_storage_location_id_seq', (SELECT MAX(id) FROM file_storage_
 -- ── 文件類型設定 ──────────────────────────────────────────────
 -- 申請階段
 INSERT INTO document_type_config
-    (id, label, phase, is_required, storage_location_id, sort_order, is_active, allow_supplement, scope, subsidy_subtype)
+    (id, label, phase, is_required, storage_location_id, sort_order, is_active, allow_supplement, scope, subsidy_subtype, paper_requirement)
 VALUES
-    ( 1, '自費醫療補助申請表',             'apply', TRUE,  8,    1,  TRUE, FALSE, 'C', NULL),
-    ( 2, '重大傷病證明',                   'apply', TRUE,  NULL, 6,  TRUE, TRUE,  'C', NULL),
-    ( 3, '身分證正反面影本',               'apply', TRUE,  7,    2,  TRUE, FALSE, 'C', NULL),
-    ( 4, '個資同意書',                     'apply', TRUE,  9,    3,  TRUE, FALSE, 'C', NULL),
-    ( 5, '現職醫事人員在職證明',           'apply', FALSE, NULL, 11, TRUE, FALSE, 'C', '2'),
-    ( 6, '綜所稅清單(配偶亦繳)',           'apply', TRUE,  NULL, 4,  TRUE, TRUE,  'C', NULL),
-    ( 8, '全戶戶籍謄本',                   'apply', TRUE,  NULL, 5,  TRUE, TRUE,  'C', NULL),
-    ( 9, '投資人有價證券餘額表',           'apply', FALSE, NULL, 9,  TRUE, FALSE, 'C', '2'),  -- 2026-05 改名（原集保結算所資料）
-    (10, '購屋貸款利息單據',               'apply', FALSE, NULL, 10, TRUE, FALSE, 'C', '2'),
-    (11, '診斷證明',                       'apply', TRUE,  NULL, 7,  TRUE, TRUE,  'C', NULL),
-    (13, '醫療單據正本',                   'apply', FALSE, NULL, 8,  TRUE, TRUE,  'C', NULL),  -- 2026-05 改名 + 非必填（治療前可預先申請）
-    (14, '全國財產稅總歸戶財產查詢清單',   'apply', TRUE,  NULL, 12, TRUE, TRUE,  'C', NULL),  -- 2026-05 新增
+    ( 1, '自費醫療補助申請表',             'apply', TRUE,  8,    1,  TRUE, FALSE, 'C', NULL, 'original'),
+    ( 2, '重大傷病證明',                   'apply', TRUE,  NULL, 6,  TRUE, TRUE,  'C', NULL, 'original'),
+    ( 3, '身分證正反面影本',               'apply', TRUE,  7,    2,  TRUE, FALSE, 'C', NULL, 'original'),
+    ( 4, '個資同意書',                     'apply', TRUE,  9,    3,  TRUE, FALSE, 'C', NULL, 'original'),
+    ( 5, '現職醫事人員在職證明',           'apply', FALSE, NULL, 11, TRUE, FALSE, 'C', '2', 'original'),
+    ( 6, '綜所稅清單(配偶亦繳)',           'apply', TRUE,  NULL, 4,  TRUE, TRUE,  'C', NULL, 'original'),
+    ( 8, '全戶戶籍謄本',                   'apply', TRUE,  NULL, 5,  TRUE, TRUE,  'C', NULL, 'original'),
+    ( 9, '投資人有價證券餘額表',           'apply', FALSE, NULL, 9,  TRUE, FALSE, 'C', '2', 'original'),  -- 2026-05 改名（原集保結算所資料）
+    (10, '購屋貸款利息單據',               'apply', FALSE, NULL, 10, TRUE, FALSE, 'C', '2', 'original'),
+    (11, '診斷證明',                       'apply', TRUE,  NULL, 7,  TRUE, TRUE,  'C', NULL, 'original'),
+    (13, '醫療單據正本',                   'apply', FALSE, NULL, 8,  TRUE, TRUE,  'C', NULL, 'original'),  -- 2026-05 改名 + 非必填（治療前可預先申請）
+    (14, '全國財產稅總歸戶財產查詢清單',   'apply', TRUE,  NULL, 12, TRUE, TRUE,  'C', NULL, 'original'),  -- 2026-05 新增
 -- 核銷階段
-    (17, '醫療收據',             'reimbursement', TRUE,  NULL, 1, TRUE, FALSE, 'D', NULL),  -- 每筆撥款一份
-    (18, '領款收據',             'reimbursement', TRUE,  NULL, 2, TRUE, FALSE, 'D', NULL),  -- 每筆撥款一份
-    (19, '保險給付通知單',       'reimbursement', FALSE, NULL, 3, TRUE, FALSE, 'C', NULL),
-    (20, '生命故事同意刊登截圖證明', 'reimbursement', FALSE, NULL, 4, TRUE, FALSE, 'C', NULL),
-    (21, '存摺封面影本',         'reimbursement', TRUE,  NULL, 5, TRUE, TRUE,  'D', NULL),  -- 2026-05 改為每次撥款必備
-    (22, '捐贈/受補助者聲明書（不同意公開姓名時必附）', 'reimbursement', FALSE, NULL, 6, TRUE, FALSE, 'D', NULL)  -- 2026-05 新增；UI conditionally required
+    (17, '醫療收據',             'reimbursement', TRUE,  NULL, 1, TRUE, FALSE, 'D', NULL, 'original'),  -- 每筆撥款一份
+    (18, '領款收據',             'reimbursement', TRUE,  NULL, 2, TRUE, FALSE, 'D', NULL, 'original'),  -- 每筆撥款一份
+    (19, '保險給付通知單',       'reimbursement', FALSE, NULL, 3, TRUE, FALSE, 'C', NULL, 'original'),
+    (20, '生命故事同意刊登截圖證明', 'reimbursement', FALSE, NULL, 4, TRUE, FALSE, 'C', NULL, 'original'),
+    (21, '存摺封面影本',         'reimbursement', TRUE,  NULL, 5, TRUE, TRUE,  'D', NULL, 'original'),  -- 2026-05 改為每次撥款必備
+    (22, '捐贈/受補助者聲明書（不同意公開姓名時必附）', 'reimbursement', FALSE, NULL, 6, TRUE, FALSE, 'D', NULL, 'original')  -- 2026-05 新增；UI conditionally required
 ON CONFLICT (id) DO UPDATE SET
     label               = EXCLUDED.label,
     phase               = EXCLUDED.phase,
@@ -1030,7 +1051,8 @@ ON CONFLICT (id) DO UPDATE SET
     is_active           = EXCLUDED.is_active,
     allow_supplement    = EXCLUDED.allow_supplement,
     scope               = EXCLUDED.scope,
-    subsidy_subtype     = EXCLUDED.subsidy_subtype;
+    subsidy_subtype     = EXCLUDED.subsidy_subtype,
+    paper_requirement   = EXCLUDED.paper_requirement;
 
 -- 重設 sequence 以免之後新增文件類型時 id 衝突
 SELECT setval(
@@ -1058,7 +1080,7 @@ COMMENT ON TABLE user_roles               IS '使用者與角色多對多關聯�
 COMMENT ON TABLE applications             IS '補助申請案件主檔。status：1=審核中 / 2=審核未通過結案 / 3=待核銷 / 4=核銷完成結案。case_number 為唯一案號';
 COMMENT ON TABLE application_workflow     IS '案件各階段審核紀錄：stage（admin_review/home_visit/board_review/reimbursement）、reviewer、審核結果、審核意見';
 COMMENT ON TABLE application_documents    IS '案件文件與審核狀態（複合主鍵 application_id + id）。status：0=待上傳/未符合, 1=符合, 2=逾期。懶建立：首次上傳才會建列';
-COMMENT ON TABLE document_type_config     IS '文件類型設定：phase（apply/board/reimbursement）、subsidy_subtype（NULL=共用、1=經濟弱勢、2=小康家庭）、is_required（必備）、allow_supplement（可延後補件）';
+COMMENT ON TABLE document_type_config     IS '文件類型設定：phase（apply/board/reimbursement）、subsidy_subtype（NULL=共用、1=經濟弱勢、2=小康家庭）、is_required（必備）、allow_supplement（可延後補件）、paper_requirement（紙本要求）';
 COMMENT ON TABLE file_storage_location    IS '檔案實體儲存位置樹狀結構（parent_id 自參考），用於記錄紙本或影印本的實體櫃位';
 COMMENT ON TABLE home_visit               IS '家訪紀錄：每個案件最多一筆，記錄家庭狀況、訪視心得、訪視人員';
 COMMENT ON TABLE contact_records   IS '【#14】來電與關懷紀錄合併表（record_type=1 來電 / 2 關懷）';
@@ -1131,6 +1153,7 @@ COMMENT ON COLUMN document_type_config.storage_location_id IS '預設實體儲�
 COMMENT ON COLUMN document_type_config.sort_order          IS '顯示排序';
 COMMENT ON COLUMN document_type_config.is_active           IS '是否啟用：FALSE 時此文件類型不會出現在新案件中';
 COMMENT ON COLUMN document_type_config.subsidy_subtype     IS '適用補助子類型：NULL=共用、1=經濟弱勢、2=小康家庭';
+COMMENT ON COLUMN document_type_config.paper_requirement   IS '紙本要求：original=需正本、copy_allowed=可接受影本、none=不需紙本';
 
 -- applications
 COMMENT ON COLUMN applications.id                      IS '主鍵，自動遞增（BIGINT）';

@@ -36,6 +36,17 @@ interface DocFile {
     errorMsg?: string;
 }
 
+const PAPER_REQUIREMENT_LABEL: Record<NonNullable<DocumentTypeConfig['paper_requirement']>, string> = {
+    original: '需正本',
+    copy_allowed: '可接受影本',
+    none: '不需紙本',
+};
+
+function formatDocumentConfigLabel(doc: DocumentTypeConfig) {
+    const label = PAPER_REQUIREMENT_LABEL[doc.paper_requirement ?? 'original'];
+    return label ? `${doc.label}（${label}）` : doc.label;
+}
+
 const DEFAULT_QUALIFICATION: ApplicantFormValues = {
     subsidyType: undefined,
     type: '3',  // 預設單身（115 編碼）
@@ -239,7 +250,7 @@ export function ExternalIntake() {
             .map(c => ({
                 docId: String(c.id),
                 field: `doc_${c.id}`,
-                label: c.label,
+                label: formatDocumentConfigLabel(c),
                 required: c.is_required,
                 allowSupplement: c.allow_supplement,
                 file: null,
@@ -377,7 +388,7 @@ export function ExternalIntake() {
                     && (!doc.subsidy_subtype || doc.subsidy_subtype === subtype)
                     && predicate(doc)
                 ))
-                .map(doc => doc.label);
+                .map(formatDocumentConfigLabel);
             return labels.length > 0 ? labels.join(' / ') : '無';
         };
         const startApplication = (subtype: '1' | '2') => {
