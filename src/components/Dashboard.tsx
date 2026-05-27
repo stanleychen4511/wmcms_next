@@ -1,7 +1,6 @@
 import {
     FileText,
     DollarSign,
-    User,
     Tag,
     TrendingUp,
     MinusCircle,
@@ -16,6 +15,8 @@ const APPLICATION_TYPE_MAP: Record<string, { label: string; color: string }> = {
 
 interface DashboardProps {
     applicantName: string;
+    /** 申請人身分證字號 */
+    applicantIdNumber?: string | null;
     /** DB-driven: annual income from applications table */
     dbAnnualIncome?: number | null;
     /** 申請金額 */
@@ -24,6 +25,8 @@ interface DashboardProps {
     approvedAmount?: number | null;
     /** 申請類別代碼 A/B/C/D */
     applicationType?: string | null;
+    /** 補助子類型：'1'=經濟弱勢, '2'=小康家庭 */
+    subsidySubtype?: '1' | '2' | null;
     /** 累積核准補助金額（所有已結案案件加總；不分子類型） */
     totalApprovedAmount?: number;
     /** 累積核准補助金額 — 經濟弱勢（subtype='1'）案件 */
@@ -35,12 +38,15 @@ interface DashboardProps {
 }
 
 export function Dashboard({
-    applicantName, dbAnnualIncome, applyAmount, approvedAmount, applicationType,
+    applicantName, applicantIdNumber, applyAmount, approvedAmount, applicationType, subsidySubtype,
     totalApprovedAmount,
     totalApprovedSubtype1, totalApprovedSubtype2,
     subtypeMaxAmounts,
 }: DashboardProps) {
     const typeInfo = applicationType ? APPLICATION_TYPE_MAP[applicationType.toUpperCase()] : null;
+    const subtypeLabel = subsidySubtype === '1' ? '經濟弱勢'
+        : subsidySubtype === '2' ? '小康家庭'
+        : null;
     const cumulativeTotal = totalApprovedAmount ?? 0;
 
     // 每個子類型的累積金額（從 DB 查得），若沒給就退回 0
@@ -54,11 +60,13 @@ export function Dashboard({
     const remainB = Math.max(0, maxB - cumB);
     const cumulativeAtLimit = (remainA <= 0) && (remainB <= 0);
 
-    const fmt = (n: number) => `NT$ ${n.toLocaleString()}`;
+    const fmt = (n: number) => `NT$\u00a0${n.toLocaleString()}`;
+    const amountClass = 'inline-block whitespace-nowrap tabular-nums';
 
     interface CardDef {
         label: string;
-        icon: React.ReactNode;
+        hideLabel?: boolean;
+        icon?: React.ReactNode;
         iconBg: string;
         value: React.ReactNode;
         /** flex 權重；不填預設 1。需要顯示更多內容（如多列、長文字）的卡用 2 */
@@ -72,33 +80,60 @@ export function Dashboard({
     const cards: CardDef[] = [
         {
             label: '申請人',
-            icon: <User className="w-4 h-4" />,
-            iconBg: 'bg-slate-100 text-slate-600',
-            value: <span className="truncate">{applicantName}</span>,
+            hideLabel: true,
+            iconBg: '',
+            value: (
+                <span className="block leading-tight space-y-0.5">
+                    <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
+                        <span className="text-xs font-semibold text-slate-400">申請人</span>
+                        <span className="text-base font-bold text-slate-900 break-words">{applicantName || '—'}</span>
+                    </span>
+                    <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0 text-slate-700">
+                        <span className="text-xs font-semibold text-slate-400">身分證</span>
+                        <span className="text-sm font-bold whitespace-nowrap tabular-nums">
+                            {applicantIdNumber || '—'}
+                        </span>
+                    </span>
+                </span>
+            ),
+            noTruncate: true,
+            minWidth: 'min-w-[160px]',
         },
         {
             label: '申請類別',
             icon: <Tag className="w-4 h-4" />,
             iconBg: typeInfo?.color ?? 'bg-slate-100 text-slate-600',
-            value: <span className="leading-tight">{typeInfo ? typeInfo.label : '—'}</span>,
+            value: (
+                <span className="block leading-tight space-y-0.5">
+                    <span className="block whitespace-normal">{typeInfo ? typeInfo.label : '—'}</span>
+                    <span className="block text-sm font-bold text-slate-700">
+                        {subtypeLabel ?? '補助子類型未指定'}
+                    </span>
+                </span>
+            ),
             flex: 2,
             minWidth: 'min-w-[160px]',
+            noTruncate: true,
         },
         {
             label: '累積申請金額',
             icon: <TrendingUp className="w-4 h-4" />,
             iconBg: 'bg-amber-50 text-amber-600',
             value: (
-                <span className={cumulativeAtLimit ? 'text-red-600' : ''}>
+                <span className={`${amountClass} ${cumulativeAtLimit ? 'text-red-600' : ''}`}>
                     {cumulativeTotal > 0 ? fmt(cumulativeTotal) : '—'}
                 </span>
             ),
+            noTruncate: true,
+            minWidth: 'min-w-[160px]',
         },
         {
             label: '申請金額',
             icon: <DollarSign className="w-4 h-4" />,
             iconBg: 'bg-green-50 text-green-600',
-            value: <span>{applyAmount != null ? fmt(applyAmount) : '—'}</span>,
+            value: <span className={amountClass}>{applyAmount != null ? fmt(applyAmount) : '—'}</span>,
+            noTruncate: true,
+            minWidth: 'min-w-[160px]',
         },
         {
             // 「可申請餘額」拆成兩列：經濟弱勢 vs 小康家庭，上限由後台 subsidy_amount_limits 動態決定
@@ -107,16 +142,16 @@ export function Dashboard({
             icon: <MinusCircle className="w-4 h-4" />,
             iconBg: cumulativeAtLimit ? 'bg-red-50 text-red-500' : 'bg-sky-50 text-sky-600',
             value: (
-                <span className="leading-tight block">
-                    <span className="flex items-baseline gap-1.5 whitespace-nowrap">
+                <span className="leading-tight block space-y-0.5">
+                    <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
                         <span className="text-[10px] text-slate-400 shrink-0">經濟弱勢</span>
-                        <span className={remainA <= 0 ? 'text-red-600' : ''}>
+                        <span className={`${amountClass} ${remainA <= 0 ? 'text-red-600' : ''}`}>
                             {remainA <= 0 ? '已達上限' : fmt(remainA)}
                         </span>
                     </span>
-                    <span className="flex items-baseline gap-1.5 whitespace-nowrap">
+                    <span className="flex flex-wrap items-baseline gap-x-1.5 gap-y-0">
                         <span className="text-[10px] text-slate-400 shrink-0">小康家庭</span>
-                        <span className={remainB <= 0 ? 'text-red-600' : ''}>
+                        <span className={`${amountClass} ${remainB <= 0 ? 'text-red-600' : ''}`}>
                             {remainB <= 0 ? '已達上限' : fmt(remainB)}
                         </span>
                     </span>
@@ -130,30 +165,34 @@ export function Dashboard({
             label: '通過金額',
             icon: <FileText className="w-4 h-4" />,
             iconBg: 'bg-purple-50 text-purple-600',
-            value: <span>{approvedAmount != null && approvedAmount > 0 ? fmt(approvedAmount) : '—'}</span>,
+            value: <span className={amountClass}>{approvedAmount != null && approvedAmount > 0 ? fmt(approvedAmount) : '—'}</span>,
+            noTruncate: true,
+            minWidth: 'min-w-[160px]',
         },
     ];
 
     return (
-        <div className="flex flex-wrap lg:flex-nowrap gap-2 mb-4">
+        <div className="flex flex-wrap gap-2 mb-4">
             {cards.map(card => {
-                const flexClass = card.flex === 2 ? 'flex-[2]' : 'flex-1';
+                const flexClass = card.flex === 2 ? 'flex-[2_0_220px]' : 'flex-[1_0_160px]';
                 const minWidthClass = card.minWidth ?? 'min-w-[110px]';
                 return (
                     <div
                         key={card.label}
                         className={[
-                            'bg-white px-3 py-2.5 rounded-lg shadow-sm border border-gray-200 flex items-center gap-2 min-w-0',
+                            'bg-white px-3 py-2.5 rounded-lg shadow-sm border border-gray-200 flex items-start gap-2 min-w-0',
                             flexClass,
                             minWidthClass,
                         ].join(' ')}
                     >
-                        <div className={`p-1.5 rounded-full shrink-0 ${card.iconBg}`}>
-                            {card.icon}
-                        </div>
+                        {card.icon && (
+                            <div className={`p-1.5 rounded-full shrink-0 ${card.iconBg}`}>
+                                {card.icon}
+                            </div>
+                        )}
                         <div className="min-w-0 flex-1">
-                            <p className="text-xs text-gray-400 whitespace-nowrap">{card.label}</p>
-                            <p className={`text-sm font-bold text-gray-900 ${card.noTruncate ? '' : 'truncate'}`}>
+                            {!card.hideLabel && <p className="text-xs text-gray-400 whitespace-nowrap">{card.label}</p>}
+                            <p className={`text-sm font-bold text-gray-900 ${card.noTruncate ? 'whitespace-normal' : 'truncate'}`}>
                                 {card.value}
                             </p>
                         </div>

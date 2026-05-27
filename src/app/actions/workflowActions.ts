@@ -18,6 +18,8 @@ export interface ApplicationDetail {
     statusLabel: string;
     stage: string;
     applicantName: string;
+    /** 申請人身分證字號（server 端解密後供案件頁顯示） */
+    applicantIdNumber?: string | null;
     /** 申請人聯絡電話（內外部收件皆必填） */
     applicantPhone?: string | null;
     /** 申請人出生年月日（西元 YYYY-MM-DD） */
@@ -268,6 +270,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 w.is_approved as wf_is_approved,
                 w.comments as wf_comments,
                 u_app.name_enc as app_name_enc, u_app.name_iv  as app_name_iv,
+                u_app.id_number_enc as app_id_number_enc, u_app.id_number_iv as app_id_number_iv,
                 u_off.name_enc as off_name_enc, u_off.name_iv  as off_name_iv
             FROM applications a
             LEFT JOIN LATERAL (
@@ -291,6 +294,9 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
         const applicantName = row.app_name_enc && row.app_name_iv
             ? decryptAES(row.app_name_enc, row.app_name_iv) || '未知'
             : '未知';
+        const applicantIdNumber = row.app_id_number_enc && row.app_id_number_iv
+            ? decryptAES(row.app_id_number_enc, row.app_id_number_iv) || null
+            : null;
         const officerName = row.off_name_enc && row.off_name_iv
             ? decryptAES(row.off_name_enc, row.off_name_iv) || undefined
             : undefined;
@@ -310,6 +316,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             statusLabel,
             stage,
             applicantName,
+            applicantIdNumber,
             applicantPhone: row.applicant_phone ?? null,
             // pg DATE → local Date midnight；用 local components 避免 toISOString 跨時區掉一天
             applicantDob: row.applicant_dob
@@ -431,6 +438,14 @@ export async function advanceWorkflowStage(
                    AND dtc.is_required = true
                    AND dtc.allow_supplement = false
                    AND COALESCE(dtc.is_active, true) = true
+                   AND (
+                       dtc.subsidy_subtype IS NULL
+                       OR dtc.subsidy_subtype = (
+                           SELECT a.subsidy_subtype
+                           FROM applications a
+                           WHERE a.id = $1::bigint
+                       )
+                   )
                    AND NOT EXISTS (
                        SELECT 1 FROM application_documents ad
                        WHERE ad.application_id = $1::bigint
@@ -454,10 +469,15 @@ export async function advanceWorkflowStage(
         // 0c. 推進到 board_review 必須先經過主管審核（user feedback #7 主管雙閘門）
         if (toStage === 'board_review') {
             const supRes = await client.query(
-                `SELECT supervisor_approved_for_board, supervisor_review_note
+                `SELECT supervisor_approved_for_board, supervisor_review_note, officer_case_summary
                  FROM applications WHERE id = $1::bigint`,
                 [applicationId]
             );
+            const officerCaseSummary = supRes.rows[0]?.officer_case_summary;
+            if (!officerCaseSummary || !String(officerCaseSummary).trim()) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '送董事審核前須先填寫個管師案件說明' };
+            }
             const supApproved = supRes.rows[0]?.supervisor_approved_for_board;
             if (supApproved !== true) {
                 await client.query('ROLLBACK');
@@ -700,6 +720,27 @@ export async function retreatWorkflowStage(
     try {
         await client.query('BEGIN');
 
+        const curStageRes = await client.query<{ stage: string | null }>(
+            `SELECT stage FROM application_workflow
+             WHERE application_id = $1::bigint
+             ORDER BY id DESC LIMIT 1`,
+            [applicationId]
+        );
+        const currentDbStage = curStageRes.rows[0]?.stage ?? null;
+        if (currentDbStage === 'board_review' && dbStage === 'home_visit') {
+            const roleRes = await client.query<{ code: string }>(
+                `SELECT r.code FROM user_roles ur
+                 JOIN roles r ON r.id = ur.role_id
+                 WHERE ur.user_id = $1::bigint`,
+                [reviewerUserId]
+            );
+            const allowedRoles = new Set(['board_member', 'executive', 'supervisor', 'chairman']);
+            if (!roleRes.rows.some(r => allowedRoles.has(r.code))) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '僅董事、執行長、主管或董事長可將董事審核退回家庭訪視' };
+            }
+        }
+
         await client.query(
             `UPDATE applications SET status = $1, updated_at = NOW() WHERE id = $2`,
             [toStatus, applicationId]
@@ -818,6 +859,14 @@ export async function requestSupervisorReviewForBoard(
                AND dtc.is_required = true
                AND dtc.allow_supplement = false
                AND COALESCE(dtc.is_active, true) = true
+               AND (
+                   dtc.subsidy_subtype IS NULL
+                   OR dtc.subsidy_subtype = (
+                       SELECT a.subsidy_subtype
+                       FROM applications a
+                       WHERE a.id = $1::bigint
+                   )
+               )
                AND NOT EXISTS (
                    SELECT 1 FROM application_documents ad
                    WHERE ad.application_id = $1::bigint
@@ -876,7 +925,7 @@ export async function supervisorReviewForBoard(
     if (!isValidDbId(applicationId)) return { success: false, error: '無效的案件 ID' };
     const trimmedNote = (note ?? '').trim();
     if (!approved && trimmedNote.length < 3) {
-        return { success: false, error: '退件須填寫原因（至少 3 字）' };
+        return { success: false, error: '不通過原因至少 3 字' };
     }
 
     // 角色守門：admin / supervisor
@@ -1438,8 +1487,7 @@ export async function fetchWorkflowRecord(applicationId: string) {
 
 /**
  * 儲存個管師案件說明（#17）。
- * 由 case_officer / supervisor / admin 在家訪或行政初審階段填寫；董事審核時唯讀顯示。
- * 不限階段（推進到董事審核後仍可由主管／admin 補充）；只擋結案案件。
+ * 僅案件承辦個管師可填寫；其他角色只能閱讀。只擋結案案件。
  */
 export async function saveOfficerCaseSummary(
     applicationId: string,
@@ -1451,7 +1499,7 @@ export async function saveOfficerCaseSummary(
     }
     const client = await pool.connect();
     try {
-        // 角色驗證
+        // 角色驗證：必須具 case_officer，且必須是本案 officer。
         const roleRes = await client.query<{ code: string }>(
             `SELECT r.code FROM user_roles ur
              JOIN roles r ON r.id = ur.role_id
@@ -1459,16 +1507,18 @@ export async function saveOfficerCaseSummary(
             [operatorUserId]
         );
         const roles = roleRes.rows.map(r => r.code);
-        const allowed = ['case_officer', 'supervisor', 'admin'];
-        if (!roles.some(r => allowed.includes(r))) {
-            return { success: false, error: '僅個管師、主管、admin 可填寫案件說明' };
+        if (!roles.includes('case_officer')) {
+            return { success: false, error: '僅個管師可填寫案件說明' };
         }
         // 結案不可改
-        const statRes = await client.query<{ status: string }>(
-            `SELECT status FROM applications WHERE id = $1::bigint`,
+        const statRes = await client.query<{ status: string; officer_id: string | null }>(
+            `SELECT status, officer_id::text FROM applications WHERE id = $1::bigint`,
             [applicationId]
         );
         if (statRes.rowCount === 0) return { success: false, error: '案件不存在' };
+        if (String(statRes.rows[0].officer_id ?? '') !== String(operatorUserId)) {
+            return { success: false, error: '僅本案承辦個管師可填寫案件說明' };
+        }
         if (statRes.rows[0].status === '2' || statRes.rows[0].status === '4') {
             return { success: false, error: '案件已結案，不可修改案件說明' };
         }

@@ -166,6 +166,9 @@ function App() {
     const [supBusy, setSupBusy] = useState(false);
     const [showSupRejectForm, setShowSupRejectForm] = useState(false);
     const [supRejectNote, setSupRejectNote] = useState('');
+    const [retreatModal, setRetreatModal] = useState<null | { toStage: WorkflowStage; label: string }>(null);
+    const [retreatReason, setRetreatReason] = useState('');
+    const [retreatBusy, setRetreatBusy] = useState(false);
     const [applyAmount, setApplyAmount] = useState<number>(0);
     /** 各子類型補助上限（依 subsidy_amount_limits 表）；'1'=經濟弱勢、'2'=小康家庭。 */
     const [subtypeMaxAmounts, setSubtypeMaxAmounts] = useState<Record<'1' | '2', number>>({ '1': 0, '2': 0 });
@@ -904,6 +907,8 @@ function App() {
     // Viewed stage (for read-only browsing) — defaults to true stage
     const displayedStage: WorkflowStage = viewedStage ?? stage;
     const isViewingPastStep = displayedStage !== stage;
+    const isAssignedOfficer = !!loggedInUser && !!appDetail?.officerId
+        && String(loggedInUser.id) === String(appDetail.officerId);
 
 
     // Use DB applicant name if available
@@ -1077,32 +1082,54 @@ function App() {
     const handleRetreatStage = async () => {
         if (currentStageIndex === 0) return;
         const prev = STAGES[currentStageIndex - 1];
-        // 退回時統一帶「退回原因」（取代原本獨立的「退件」按鈕）；至少 3 字
-        const reason = window.prompt(
-            `確定要將流程退回至「${STAGE_LABEL_MAP[prev]}」嗎？\n\n` +
-            `請填寫退回原因（給承辦人參考，至少 3 字）：`,
-            ''
-        );
-        if (reason === null) return; // 使用者按取消
-        const trimmed = reason.trim();
+        setRetreatReason('');
+        setRetreatModal({ toStage: prev, label: STAGE_LABEL_MAP[prev] });
+    };
+
+    const confirmRetreatStage = async () => {
+        if (!retreatModal || !selectedAppId) return;
+        const trimmed = retreatReason.trim();
         if (trimmed.length < 3) {
             pushToast({ type: 'error', msg: '退回原因至少 3 字' });
             return;
         }
-        if (!selectedAppId) return;
+        setRetreatBusy(true);
         const res = await retreatWorkflowStage(
             selectedAppId,
-            prev,
+            retreatModal.toStage,
             loggedInUser?.id ?? null,
             trimmed,
         );
+        setRetreatBusy(false);
         if (!res.success) {
             pushToast({ type: 'error', msg: res.error ?? '退回失敗' });
             return;
         }
-        pushToast({ type: 'success', msg: `已退回至「${STAGE_LABEL_MAP[prev]}」` });
+        pushToast({ type: 'success', msg: `已退回至「${retreatModal.label}」` });
+        const nextViewedStage = retreatModal.toStage;
+        setRetreatModal(null);
+        setRetreatReason('');
         await loadAppDetail(selectedAppId, true);
-        setViewedStage(prev);
+        setViewedStage(nextViewedStage);
+    };
+
+    const handleSupervisorRejectForBoard = async () => {
+        if (!selectedAppId || !loggedInUser) return;
+        if (supRejectNote.trim().length < 3) {
+            pushToast({ type: 'error', msg: '不通過原因至少 3 字' });
+            return;
+        }
+        setSupBusy(true);
+        const res = await supervisorReviewForBoard(selectedAppId, false, supRejectNote, loggedInUser.id);
+        setSupBusy(false);
+        if (res.success) {
+            pushToast({ type: 'success', msg: '已退件給個管' });
+            setShowSupRejectForm(false);
+            setSupRejectNote('');
+            await loadAppDetail(selectedAppId, true);
+        } else {
+            pushToast({ type: 'error', msg: res.error ?? '退件失敗' });
+        }
     };
 
     // Read-only when browsing a past step OR when case is closed
@@ -1283,6 +1310,9 @@ function App() {
                 const missingAssignee = !skipped && !appDetail?.homeVisitAssigneeId;
                 const missingForm     = !appDetail?.homeVisitSaved; // homeVisitSaved 已涵蓋 visit_skipped 情況
                 const missingSummary  = !(appDetail?.officerCaseSummary && appDetail.officerCaseSummary.trim());
+                const boardRollbackReason = appDetail?.wfIsApproved === false && appDetail?.wfComments
+                    ? appDetail.wfComments.trim()
+                    : '';
                 // 文件齊備檢查（與送主管閘門一致）：只擋 allow_supplement=false 的必備文件
                 // 可延後補件（allow_supplement=true）的文件不在家訪階段擋，留到送董事前才一併檢查
                 const visitMissingDocLabels = dbDocs
@@ -1324,6 +1354,18 @@ function App() {
 
                 return (
                     <div className="space-y-6 relative">
+                        {boardRollbackReason && (
+                            <div className="bg-orange-50 border border-orange-200 rounded-lg p-3 text-sm text-orange-800 flex items-start gap-2">
+                                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                                <div className="space-y-1">
+                                    <p className="font-semibold">董事審核退回家庭訪視，請依退回原因修正。</p>
+                                    <p>
+                                        <span className="font-semibold">退回原因：</span>
+                                        {boardRollbackReason}
+                                    </p>
+                                </div>
+                            </div>
+                        )}
                         {/* 聯絡紀錄速查（讓家訪人員可看到該申請人歷次來電/關懷） */}
                         {!isVolunteerView && appDetail?.applicantId && loggedInUser && (
                             <ContactRecordsQuickView
@@ -1345,7 +1387,7 @@ function App() {
                                 applicationId={selectedAppId}
                                 operatorUserId={loggedInUser.id}
                                 initialValue={appDetail?.officerCaseSummary ?? null}
-                                editable={!contentReadOnly && (hasPermission('case_officer') || hasPermission('supervisor') || hasPermission('admin'))}
+                                editable={!contentReadOnly && isAssignedOfficer && hasPermission('case_officer')}
                                 onSaved={() => loadAppDetail(selectedAppId, true)}
                             />
                         )}
@@ -1861,10 +1903,12 @@ function App() {
                 <div className="flex-1 space-y-6 overflow-hidden">
                     <Dashboard
                         applicantName={personName}
+                        applicantIdNumber={appDetail?.applicantIdNumber ?? null}
                         dbAnnualIncome={appDetail?.annualIncome}
                         applyAmount={appDetail?.applyAmount ?? null}
                         approvedAmount={appDetail?.approvedAmount ?? null}
                         applicationType={appDetail?.applicationType}
+                        subsidySubtype={appDetail?.subsidySubtype ?? null}
                         totalApprovedAmount={appDetail?.totalApprovedAmount}
                         totalApprovedSubtype1={appDetail?.totalApprovedSubtype1}
                         totalApprovedSubtype2={appDetail?.totalApprovedSubtype2}
@@ -1881,9 +1925,6 @@ function App() {
                                 String(loggedInUser.id) === String(appDetail.officerId ?? '')
                                 || (loggedInUser.roles as Role[]).includes('admin')
                             );
-                        const subtypeLabel = appDetail.subsidySubtype === '1' ? '經濟弱勢'
-                                           : appDetail.subsidySubtype === '2' ? '小康家庭'
-                                           : null;
                         return (
                             <div className="bg-white rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-700 space-y-2">
                                 <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
@@ -1917,12 +1958,6 @@ function App() {
                                             : appDetail.treatmentPhase === 'A' ? <span className="text-slate-800">治療後</span>
                                             : appDetail.treatmentPhase === 'X' ? <span className="text-slate-800">治療前後</span>
                                             : <span className="text-slate-400 italic">（未填）</span>}
-                                    </span>
-                                    <span>
-                                        <span className="font-semibold text-slate-600">補助子類型：</span>
-                                        {subtypeLabel
-                                            ? <span className="text-slate-800">{subtypeLabel}</span>
-                                            : <span className="text-slate-400 italic">（未指定）</span>}
                                     </span>
                                     <span>
                                         <span className="font-semibold text-slate-600">案件來源：</span>
@@ -1971,6 +2006,21 @@ function App() {
                             </div>
                         );
                     })()}
+
+                    {appDetail?.stage === 'visit' && appDetail.supervisorApprovedForBoard === false && (
+                        <div className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-800">
+                            <div className="flex items-start gap-2">
+                                <AlertTriangle className="w-4 h-4 mt-0.5 shrink-0" />
+                                <div className="space-y-1">
+                                    <p className="font-semibold">主管審閱未通過，請修正後重送主管。</p>
+                                    <p>
+                                        <span className="font-semibold">不通過原因：</span>
+                                        {appDetail.supervisorReviewNote || '（未填寫）'}
+                                    </p>
+                                </div>
+                            </div>
+                        </div>
+                    )}
 
                     {/* 結案 banner — 只在「審核未通過結案」時提示；核銷完成屬正常結束，不再贅述 */}
                     {appDetail?.status === '2' && (
@@ -2147,9 +2197,16 @@ function App() {
                             )}
                             <div className="flex gap-2 items-center">
                                 {(() => {
-                                    const retreatDisabled = currentStageIndex === 0 || isViewingPastStep || !!isCaseClosed;
+                                    const canRetreatBoardToVisit =
+                                        stage !== 'board_review'
+                                        || hasPermission('board_member')
+                                        || hasPermission('executive')
+                                        || hasPermission('supervisor')
+                                        || hasPermission('chairman');
+                                    const retreatDisabled = currentStageIndex === 0 || isViewingPastStep || !!isCaseClosed || !canRetreatBoardToVisit;
                                     const retreatTitle = isCaseClosed ? '此案件已結案，不可退回'
                                         : isViewingPastStep ? '請先返回目前步驟再操作流程'
+                                        : !canRetreatBoardToVisit ? '僅董事、執行長、主管或董事長可將董事審核退回家庭訪視'
                                         : currentStageIndex === 0 ? '已是第一個步驟'
                                         : `確認後退回至「${retreatLabel}」`;
                                     return (
@@ -2277,22 +2334,6 @@ function App() {
                                                 await loadAppDetail(selectedAppId, true);
                                             } else pushToast({ type: 'error', msg: res.error ?? '通過失敗' });
                                         };
-                                        const supReject = async () => {
-                                            if (supRejectNote.trim().length < 3) {
-                                                pushToast({ type: 'error', msg: '退件原因至少 3 字' });
-                                                return;
-                                            }
-                                            setSupBusy(true);
-                                            const res = await supervisorReviewForBoard(selectedAppId, false, supRejectNote, loggedInUser.id);
-                                            setSupBusy(false);
-                                            if (res.success) {
-                                                pushToast({ type: 'success', msg: '已退件給個管' });
-                                                setShowSupRejectForm(false);
-                                                setSupRejectNote('');
-                                                await loadAppDetail(selectedAppId, true);
-                                            } else pushToast({ type: 'error', msg: res.error ?? '退件失敗' });
-                                        };
-
                                         // (a) 已退件 + officer → 修正後重送
                                         if (supState === false && isOfficerHere) {
                                             const resendTitle = sendToSupBlocked
@@ -2334,15 +2375,32 @@ function App() {
                                                 </button>
                                             );
                                         }
-                                        // (c) 待審 + supervisor/admin → 只剩「通過送董事」按鈕
-                                        // 退件功能已合併到左邊的「退回上一階段」按鈕（會 prompt 退回原因）
+                                        // (c) 待審 + supervisor/admin → 在家庭訪視階段內審閱：
+                                        //     通過才推進到董事審核；退件則留在家庭訪視，讓 officer 修正後重送。
                                         if (supState !== true && isSupOrAdmin) {
                                             return (
-                                                <button onClick={supApprove} disabled={supBusy} className={sharedBtnClass}
-                                                    title="主管確認可送董事審核；若要退回個管請按左方【退回上一階段】並填寫原因">
-                                                    <span>通過送董事</span>
-                                                    <span className="text-xs font-normal text-slate-400">→ 董事審核</span>
-                                                </button>
+                                                <div className="flex gap-2">
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => setShowSupRejectForm(true)}
+                                                        disabled={supBusy}
+                                                        className={rejectBtnClass}
+                                                        title="填寫不通過原因後退件給個管；案件仍停留在家庭訪視階段"
+                                                    >
+                                                        <span>退件</span>
+                                                        <span className="text-xs font-normal text-rose-100">→ 家庭訪視修正</span>
+                                                    </button>
+                                                    <button
+                                                        type="button"
+                                                        onClick={supApprove}
+                                                        disabled={supBusy}
+                                                        className={sharedBtnClass}
+                                                        title="主管確認可送董事審核"
+                                                    >
+                                                        <span>通過送董事</span>
+                                                        <span className="text-xs font-normal text-slate-400">→ 董事審核</span>
+                                                    </button>
+                                                </div>
                                             );
                                         }
                                         // 其他角色看不到任何主管按鈕，但 needsSupervisorForBoard=true 會讓「進入下一階段」disabled
@@ -2367,6 +2425,144 @@ function App() {
 
                 </div>
             </main>
+
+            {retreatModal && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                    onClick={() => {
+                        if (!retreatBusy) {
+                            setRetreatModal(null);
+                            setRetreatReason('');
+                        }
+                    }}
+                >
+                    <ModalEscapeListener onClose={() => {
+                        if (!retreatBusy) {
+                            setRetreatModal(null);
+                            setRetreatReason('');
+                        }
+                    }} />
+                    <div
+                        className="w-full max-w-md rounded-xl bg-white shadow-xl border border-slate-200 overflow-hidden"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div className="px-5 py-4 border-b border-slate-100">
+                            <h3 className="text-lg font-bold text-slate-900">
+                                退回至「{retreatModal.label}」
+                            </h3>
+                            <p className="text-sm text-slate-500 mt-1">
+                                請填寫退回原因，承辦人會在該階段看到這段說明。
+                            </p>
+                        </div>
+                        <div className="px-5 py-4">
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">
+                                退回原因 <span className="text-orange-500">*</span>
+                            </label>
+                            <textarea
+                                value={retreatReason}
+                                onChange={e => setRetreatReason(e.target.value)}
+                                rows={5}
+                                maxLength={500}
+                                className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none focus:border-orange-400 focus:ring-2 focus:ring-orange-100"
+                                placeholder="請說明需要修正或補充的內容"
+                            />
+                            <div className="mt-1 flex justify-between text-xs text-slate-400">
+                                <span>至少 3 字</span>
+                                <span>{retreatReason.length}/500</span>
+                            </div>
+                        </div>
+                        <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setRetreatModal(null);
+                                    setRetreatReason('');
+                                }}
+                                disabled={retreatBusy}
+                                className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+                            >
+                                取消
+                            </button>
+                            <button
+                                type="button"
+                                onClick={confirmRetreatStage}
+                                disabled={retreatBusy || retreatReason.trim().length < 3}
+                                className="px-4 py-2 rounded-lg bg-orange-600 text-white text-sm font-semibold hover:bg-orange-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                確認退回
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {showSupRejectForm && (
+                <div
+                    className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+                    onClick={() => {
+                        if (!supBusy) {
+                            setShowSupRejectForm(false);
+                            setSupRejectNote('');
+                        }
+                    }}
+                >
+                    <ModalEscapeListener onClose={() => {
+                        if (!supBusy) {
+                            setShowSupRejectForm(false);
+                            setSupRejectNote('');
+                        }
+                    }} />
+                    <div
+                        className="w-full max-w-md rounded-xl bg-white shadow-xl border border-slate-200 overflow-hidden"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div className="px-5 py-4 border-b border-slate-100">
+                            <h3 className="text-lg font-bold text-slate-900">主管審閱不通過</h3>
+                            <p className="text-sm text-slate-500 mt-1">
+                                案件會停留在家庭訪視階段，officer 可依原因修正後重送主管。
+                            </p>
+                        </div>
+                        <div className="px-5 py-4">
+                            <label className="block text-sm font-semibold text-slate-700 mb-2">
+                                不通過原因 <span className="text-rose-500">*</span>
+                            </label>
+                            <textarea
+                                value={supRejectNote}
+                                onChange={e => setSupRejectNote(e.target.value)}
+                                rows={5}
+                                maxLength={500}
+                                className="w-full resize-none rounded-lg border border-slate-300 px-3 py-2 text-sm text-slate-800 outline-none focus:border-rose-400 focus:ring-2 focus:ring-rose-100"
+                                placeholder="請說明需修正的項目，例如家訪資料不足、案件說明需補充..."
+                            />
+                            <div className="mt-1 flex justify-between text-xs text-slate-400">
+                                <span>至少 3 字</span>
+                                <span>{supRejectNote.length}/500</span>
+                            </div>
+                        </div>
+                        <div className="px-5 py-4 bg-slate-50 border-t border-slate-100 flex justify-end gap-2">
+                            <button
+                                type="button"
+                                onClick={() => {
+                                    setShowSupRejectForm(false);
+                                    setSupRejectNote('');
+                                }}
+                                disabled={supBusy}
+                                className="px-4 py-2 rounded-lg border border-slate-200 bg-white text-slate-700 text-sm font-medium hover:bg-slate-50 disabled:opacity-50"
+                            >
+                                取消
+                            </button>
+                            <button
+                                type="button"
+                                onClick={handleSupervisorRejectForBoard}
+                                disabled={supBusy || supRejectNote.trim().length < 3}
+                                className="px-4 py-2 rounded-lg bg-rose-600 text-white text-sm font-semibold hover:bg-rose-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                            >
+                                確認退件
+                            </button>
+                        </div>
+                    </div>
+                </div>
+            )}
 
             {/* 關懷紀錄唯讀檢視 Modal */}
             {showCareRecordsModal && selectedAppId && loggedInUser && (

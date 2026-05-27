@@ -234,10 +234,11 @@ export async function fetchSelfPayMedicalReport(
                    hv.updated_at AS home_visit_at,
                    /* 待收文件：撥款 phase 必備、目前尚無任何 status='1'（符合）的文件 */
                    (SELECT array_agg(dtc.label ORDER BY dtc.id)
-                      FROM document_type_config dtc
+                     FROM document_type_config dtc
                      WHERE dtc.phase = 'reimbursement'
                        AND dtc.is_required = true
                        AND COALESCE(dtc.is_active, true) = true
+                       AND (dtc.subsidy_subtype IS NULL OR dtc.subsidy_subtype = a.subsidy_subtype)
                        AND NOT EXISTS (
                            SELECT 1 FROM application_documents ad
                             WHERE ad.application_id = a.id

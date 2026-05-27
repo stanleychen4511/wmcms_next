@@ -13,7 +13,7 @@ import { checkEligibility, type ApplicantData } from '../utils/eligibility';
 import { ApplicantFormValues } from '../schemas/applicant';
 import { queryApplicantEligibility, submitExternalApplication } from '../app/actions/intakeActions';
 import { twIdError } from '../lib/validateTwId';
-import { fetchDocumentTypeConfigs } from '../app/actions/documentActions';
+import { fetchDocumentTypeConfigs, type DocumentTypeConfig } from '../app/actions/documentActions';
 import { uploadFileToBlob } from '../lib/uploadClient';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
@@ -203,23 +203,6 @@ export function ExternalIntake() {
             .then(setSubtypeMaxAmounts)
             .catch(err => console.error('fetchSubsidyAmountLimitsMap error:', err));
     }, []);
-    useEffect(() => {
-        fetchDocumentTypeConfigs().then(configs => {
-            const applyDocs: DocFile[] = configs
-                .filter(c => c.phase === 'apply' && c.is_active)
-                .map(c => ({
-                    docId: String(c.id),
-                    field: `doc_${c.id}`,
-                    label: c.label,
-                    required: c.is_required,
-                    allowSupplement: c.allow_supplement,
-                    file: null,
-                    uploadStatus: 'idle',
-                    uploadProgress: 0,
-                }));
-            if (applyDocs.length > 0) setDocs(applyDocs);
-        });
-    }, []);
     const [ineligibleReason, setIneligibleReason] = useState('');
     const [errorMsg, setErrorMsg] = useState('');
     const [caseNumber, setCaseNumber] = useState('');
@@ -235,8 +218,36 @@ export function ExternalIntake() {
     const [referralErrors, setReferralErrors] = useState<{ unit?: string; name?: string; title?: string; phone?: string }>({});
     const [qualFormValid, setQualFormValid] = useState(false);
     const [qualFormValues, setQualFormValues] = useState<ApplicantFormValues>(DEFAULT_QUALIFICATION);
+    const [documentConfigs, setDocumentConfigs] = useState<DocumentTypeConfig[]>([]);
     const [docs, setDocs] = useState<DocFile[]>([]);
     const [quota, setQuota] = useState<{ cumulativeApproved: number; maxAmount: number; remaining: number } | null>(null);
+
+    useEffect(() => {
+        fetchDocumentTypeConfigs()
+            .then(setDocumentConfigs)
+            .catch(err => console.error('fetchDocumentTypeConfigs error:', err));
+    }, []);
+
+    useEffect(() => {
+        const selectedSubtype = qualFormValues.subsidyType;
+        const applyDocs: DocFile[] = documentConfigs
+            .filter(c => (
+                c.phase === 'apply'
+                && c.is_active
+                && (!c.subsidy_subtype || c.subsidy_subtype === selectedSubtype)
+            ))
+            .map(c => ({
+                docId: String(c.id),
+                field: `doc_${c.id}`,
+                label: c.label,
+                required: c.is_required,
+                allowSupplement: c.allow_supplement,
+                file: null,
+                uploadStatus: 'idle',
+                uploadProgress: 0,
+            }));
+        setDocs(applyDocs);
+    }, [documentConfigs, qualFormValues.subsidyType]);
 
     /** 資格判定狀態：null = 尚未執行；checked + eligible 兩段式 */
     const [eligibilityCheck, setEligibilityCheck] =
@@ -334,11 +345,11 @@ export function ExternalIntake() {
                 ...d, uploadStatus: 'done', uploadProgress: 100,
                 url: uploaded.url, mimeType: uploaded.mimeType, size: uploaded.size,
             } : d));
-        } catch (err: any) {
+        } catch (err: unknown) {
             console.error('blob upload failed for', field, err);
             setDocs(prev => prev.map(d => d.field === field ? {
                 ...d, uploadStatus: 'error',
-                errorMsg: err?.message ?? '上傳失敗，請重試',
+                errorMsg: err instanceof Error ? err.message : '上傳失敗，請重試',
             } : d));
         }
     };
@@ -355,6 +366,20 @@ export function ExternalIntake() {
     if (step === 'landing') {
         const econMax = subtypeMaxAmounts['1'] ?? 30000;
         const midMax  = subtypeMaxAmounts['2'] ?? 350000;
+        const formatDocList = (
+            subtype: '1' | '2',
+            predicate: (doc: DocumentTypeConfig) => boolean,
+        ) => {
+            const labels = documentConfigs
+                .filter(doc => (
+                    doc.phase === 'apply'
+                    && doc.is_active
+                    && (!doc.subsidy_subtype || doc.subsidy_subtype === subtype)
+                    && predicate(doc)
+                ))
+                .map(doc => doc.label);
+            return labels.length > 0 ? labels.join(' / ') : '無';
+        };
         const startApplication = (subtype: '1' | '2') => {
             setQualFormValues(prev => ({ ...prev, subsidyType: subtype }));
             setStep('query');
@@ -391,11 +416,11 @@ export function ExternalIntake() {
                         <div className="border-t border-rose-200 pt-2">
                             <p className="text-[11px] font-semibold text-rose-600 mb-1">送出前必備文件</p>
                             <p className="text-[11px] text-slate-600 leading-relaxed">
-                                申請表 / 身分證正反面 / 個資及肖像同意書 / 綜合所得稅清單 / 全戶戶籍謄本 / 重大傷病證明 / 診斷證明
+                                {formatDocList('1', doc => doc.is_required && !doc.allow_supplement)}
                             </p>
                             <p className="text-[11px] font-semibold text-amber-600 mt-2 mb-1">可送出後補件</p>
                             <p className="text-[11px] text-slate-600 leading-relaxed">
-                                醫療費收據正本 / 存摺封面影本
+                                {formatDocList('1', doc => doc.is_required && doc.allow_supplement)}
                             </p>
                         </div>
                         <div className="flex items-center justify-end gap-1 pt-2 text-xs font-semibold text-rose-600 group-hover:text-rose-700">
@@ -424,15 +449,15 @@ export function ExternalIntake() {
                         <div className="border-t border-blue-200 pt-2">
                             <p className="text-[11px] font-semibold text-blue-600 mb-1">送出前必備文件</p>
                             <p className="text-[11px] text-slate-600 leading-relaxed">
-                                申請表 / 身分證 / 個資同意書 / 綜合所得稅清單 / 全國財產稅總歸戶清單 / 戶籍謄本 / 重大傷病證明 / 診斷證明
+                                {formatDocList('2', doc => doc.is_required && !doc.allow_supplement)}
                             </p>
                             <p className="text-[11px] font-semibold text-amber-600 mt-2 mb-1">可送出後補件</p>
                             <p className="text-[11px] text-slate-600 leading-relaxed">
-                                投資人有價證券餘額表 / 醫療費收據正本
+                                {formatDocList('2', doc => doc.is_required && doc.allow_supplement)}
                             </p>
                             <p className="text-[11px] font-semibold text-slate-500 mt-2 mb-1">選填</p>
                             <p className="text-[11px] text-slate-600 leading-relaxed">
-                                購屋貸款利息單據 / 現職醫事人員在職工作證明
+                                {formatDocList('2', doc => !doc.is_required)}
                             </p>
                         </div>
                         <div className="flex items-center justify-end gap-1 pt-2 text-xs font-semibold text-blue-600 group-hover:text-blue-700">

@@ -49,6 +49,7 @@ export interface DocumentEntry {
     /** 是否可延後補件：true 表示收件當下未上傳也能進入家訪階段，但送董事審核前須齊全 */
     allowSupplement: boolean;
     phase?: string; // 'apply' | 'reimbursement'
+    subsidySubtype?: '1' | '2' | null;
     storageLocationPath?: string | null;
 }
 
@@ -63,7 +64,11 @@ export interface DocumentTypeConfig {
     sort_order: number;
     is_active: boolean;
     scope: 'C' | 'D';
+    subsidy_subtype: '1' | '2' | null;
 }
+
+export type DocumentPhase = 'apply' | 'reimbursement';
+export type DocumentSubsidySubtype = '1' | '2' | null;
 
 export async function fetchDocumentTypeConfigs(): Promise<DocumentTypeConfig[]> {
     const client = await pool.connect();
@@ -80,12 +85,102 @@ export async function fetchDocumentTypeConfigs(): Promise<DocumentTypeConfig[]> 
             )
             SELECT d.id, d.label, d.phase, d.is_required, d.allow_supplement,
                    d.storage_location_id, d.sort_order, d.is_active, d.scope,
+                   d.subsidy_subtype,
                    lp.full_path AS storage_location_path
             FROM document_type_config d
             LEFT JOIN loc_path lp ON lp.id = d.storage_location_id
             ORDER BY d.phase, d.sort_order, d.id
         `);
         return res.rows;
+    } finally {
+        client.release();
+    }
+}
+
+export async function createDocumentTypeConfig(
+    data: {
+        label: string;
+        phase: DocumentPhase;
+        is_required: boolean;
+        allow_supplement: boolean;
+        storage_location_id?: number | null;
+        subsidy_subtype?: DocumentSubsidySubtype;
+    }
+): Promise<{ success: boolean; id?: number; error?: string }> {
+    const label = data.label.trim();
+    if (!label) return { success: false, error: '請輸入文件名稱' };
+    if (data.phase !== 'apply' && data.phase !== 'reimbursement') {
+        return { success: false, error: '文件階段不正確' };
+    }
+    const subsidySubtype =
+        data.subsidy_subtype === '1' || data.subsidy_subtype === '2'
+            ? data.subsidy_subtype
+            : null;
+    const client = await pool.connect();
+    try {
+        const res = await client.query<{ id: number }>(
+            `WITH next_sort AS (
+                 SELECT COALESCE(MAX(sort_order), 0) + 10 AS sort_order
+                 FROM document_type_config
+                 WHERE phase = $2
+             )
+             INSERT INTO document_type_config
+                 (label, phase, is_required, allow_supplement, storage_location_id,
+                  sort_order, is_active, scope, subsidy_subtype)
+             SELECT $1, $2, $3, $4, $5, next_sort.sort_order, true, 'C', $6
+             FROM next_sort
+             RETURNING id`,
+            [
+                label,
+                data.phase,
+                data.is_required,
+                data.allow_supplement && data.is_required,
+                data.storage_location_id ?? null,
+                subsidySubtype,
+            ]
+        );
+        return { success: true, id: res.rows[0]?.id };
+    } catch (err: any) {
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function reorderDocumentTypeConfigs(
+    phase: DocumentPhase,
+    orderedIds: number[],
+): Promise<{ success: boolean; error?: string }> {
+    if (phase !== 'apply' && phase !== 'reimbursement') {
+        return { success: false, error: '文件階段不正確' };
+    }
+    if (orderedIds.length === 0) return { success: true };
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const validRes = await client.query<{ id: number }>(
+            `SELECT id
+             FROM document_type_config
+             WHERE phase = $1 AND id = ANY($2::int[])`,
+            [phase, orderedIds]
+        );
+        const validIds = new Set(validRes.rows.map(row => row.id));
+        for (let index = 0; index < orderedIds.length; index++) {
+            const id = orderedIds[index];
+            if (!validIds.has(id)) continue;
+            await client.query(
+                `UPDATE document_type_config
+                 SET sort_order = $1
+                 WHERE id = $2 AND phase = $3`,
+                [(index + 1) * 10, id, phase]
+            );
+        }
+        await client.query('COMMIT');
+        return { success: true };
+    } catch (err: any) {
+        await client.query('ROLLBACK');
+        return { success: false, error: err.message };
     } finally {
         client.release();
     }
@@ -101,6 +196,7 @@ export async function updateDocumentTypeConfig(
         storage_location_id?: number | null;
         sort_order?: number;
         is_active?: boolean;
+        subsidy_subtype?: '1' | '2' | null;
     }
 ): Promise<{ success: boolean; error?: string }> {
     const fields: string[] = [];
@@ -113,6 +209,7 @@ export async function updateDocumentTypeConfig(
     if (data.storage_location_id !== undefined) { fields.push(`storage_location_id = $${i++}`); values.push(data.storage_location_id); }
     if (data.sort_order !== undefined)          { fields.push(`sort_order = $${i++}`);          values.push(data.sort_order); }
     if (data.is_active !== undefined)           { fields.push(`is_active = $${i++}`);           values.push(data.is_active); }
+    if (data.subsidy_subtype !== undefined)     { fields.push(`subsidy_subtype = $${i++}`);     values.push(data.subsidy_subtype); }
     if (fields.length === 0) return { success: true };
     values.push(id);
     const client = await pool.connect();
@@ -507,16 +604,26 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                 FROM file_storage_location l JOIN loc_path lp ON l.parent_id = lp.id
             )
             SELECT d.id::text, d.label, d.phase, d.is_required, d.allow_supplement, d.sort_order,
+                   d.subsidy_subtype,
                    lp.full_path AS storage_location_path
             FROM document_type_config d
             LEFT JOIN loc_path lp ON lp.id = d.storage_location_id
             WHERE d.is_active = true AND d.scope = 'C'
+              AND (
+                  d.subsidy_subtype IS NULL
+                  OR d.subsidy_subtype = (
+                      SELECT a.subsidy_subtype
+                      FROM applications a
+                      WHERE a.id = $1::bigint
+                  )
+              )
             ORDER BY d.phase, d.sort_order, d.id
-        `);
+        `, [applicationId]);
 
         const docTypes = configRes.rows as {
             id: string; label: string; phase: string;
             is_required: boolean; allow_supplement: boolean;
+            subsidy_subtype: '1' | '2' | null;
             storage_location_path: string | null;
         }[];
 
@@ -544,6 +651,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                     isRequired: doc.is_required,
                     allowSupplement: doc.allow_supplement,
                     phase: doc.phase,
+                    subsidySubtype: doc.subsidy_subtype,
                     storageLocationPath: doc.storage_location_path,
                 };
             }
@@ -554,6 +662,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                 isRequired: doc.is_required,
                 allowSupplement: doc.allow_supplement,
                 phase: doc.phase,
+                subsidySubtype: doc.subsidy_subtype,
                 storageLocationPath: doc.storage_location_path,
             };
         });

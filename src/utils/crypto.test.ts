@@ -1,35 +1,31 @@
 import { describe, it, expect } from 'vitest';
-import { encryptData, decryptData } from './crypto';
+import { decryptAES, encryptAES } from '../lib/crypto';
 
 describe('Crypto Utils', () => {
     it('should encrypt and decrypt data correctly', () => {
         const original = 'Secret Data 123';
-        const key = 'my-secret-key';
 
-        const encrypted = encryptData(original, key);
-        expect(encrypted).not.toBe(original);
-        expect(encrypted).not.toBe('');
+        const encrypted = encryptAES(original);
+        expect(encrypted.enc).toBeInstanceOf(Buffer);
+        expect(encrypted.iv).toBeInstanceOf(Buffer);
+        expect(encrypted.enc?.toString('utf8')).not.toBe(original);
 
-        const decrypted = decryptData(encrypted, key);
+        const decrypted = decryptAES(encrypted.enc!, encrypted.iv!);
         expect(decrypted).toBe(original);
     });
 
-    it('should return empty string for empty input', () => {
-        expect(encryptData('')).toBe('');
-        expect(decryptData('')).toBe('');
+    it('should return null buffers for empty input', () => {
+        expect(encryptAES('')).toEqual({ enc: null, iv: null });
+        expect(decryptAES(null as unknown as Buffer, null as unknown as Buffer)).toBe('');
     });
 
-    it('should fail to decrypt with wrong key', () => {
+    it('should return empty string when decrypting with a wrong iv', () => {
         const original = 'Secret Data';
-        const key = 'key-1';
-        const wrongKey = 'key-2';
 
-        const encrypted = encryptData(original, key);
-        const decrypted = decryptData(encrypted, wrongKey);
+        const encrypted = encryptAES(original);
+        const wrongIv = Buffer.alloc(16, 1);
+        const decrypted = decryptAES(encrypted.enc!, wrongIv);
 
-        // AES decryption with wrong key usually results in garbage or empty string depending on implementation/padding
-        // In crypto-js, it might return empty or garbage. 
-        // Let's just ensure it's NOT the original.
         expect(decrypted).not.toBe(original);
     });
 });

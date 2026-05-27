@@ -1,10 +1,13 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
-import { FileText, Pencil, Check, X, ChevronUp, ChevronDown } from 'lucide-react';
+import { Check, FileText, GripVertical, Pencil, Plus, X } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
+    createDocumentTypeConfig,
+    DocumentPhase,
     DocumentTypeConfig,
     fetchDocumentTypeConfigs,
+    reorderDocumentTypeConfigs,
     updateDocumentTypeConfig,
 } from '../app/actions/documentActions';
 import { StorageLocation, fetchAllStorageLocations } from '../app/actions/storageLocationActions';
@@ -15,12 +18,45 @@ const PHASE_LABEL: Record<string, string> = {
     reimbursement: '核銷撥款階段',
 };
 
+const SUBSIDY_SUBTYPE_LABEL: Record<'1' | '2', string> = {
+    '1': '經濟弱勢',
+    '2': '小康家庭',
+};
+
+type DraftByPhase = Record<DocumentPhase, {
+    label: string;
+    subsidy_subtype: '' | '1' | '2';
+    is_required: boolean;
+    allow_supplement: boolean;
+    storage_location_id: number | null;
+}>;
+
+const EMPTY_DRAFT: DraftByPhase = {
+    apply: {
+        label: '',
+        subsidy_subtype: '',
+        is_required: true,
+        allow_supplement: false,
+        storage_location_id: null,
+    },
+    reimbursement: {
+        label: '',
+        subsidy_subtype: '',
+        is_required: true,
+        allow_supplement: false,
+        storage_location_id: null,
+    },
+};
+
 export function DocumentTypeManager() {
     const { push: pushToast } = useToast();
     const [configs, setConfigs] = useState<DocumentTypeConfig[]>([]);
     const [locations, setLocations] = useState<StorageLocation[]>([]);
     const [editingId, setEditingId] = useState<number | null>(null);
     const [editData, setEditData] = useState<Partial<DocumentTypeConfig>>({});
+    const [drafts, setDrafts] = useState<DraftByPhase>(EMPTY_DRAFT);
+    const [creatingPhase, setCreatingPhase] = useState<DocumentPhase | null>(null);
+    const [draggingId, setDraggingId] = useState<number | null>(null);
     const [saving, setSaving] = useState(false);
 
     const load = useCallback(async () => {
@@ -44,6 +80,7 @@ export function DocumentTypeManager() {
             storage_location_id: cfg.storage_location_id,
             sort_order: cfg.sort_order,
             is_active: cfg.is_active,
+            subsidy_subtype: cfg.subsidy_subtype,
         });
     }
 
@@ -65,11 +102,77 @@ export function DocumentTypeManager() {
         await load();
     }
 
+    async function handleCreate(phase: DocumentPhase) {
+        const draft = drafts[phase];
+        const label = draft.label.trim();
+        if (!label) {
+            pushToast({ type: 'error', msg: '請輸入文件名稱' });
+            return;
+        }
+        setSaving(true);
+        const res = await createDocumentTypeConfig({
+            label,
+            phase,
+            is_required: draft.is_required,
+            allow_supplement: draft.allow_supplement,
+            storage_location_id: draft.storage_location_id,
+            subsidy_subtype: draft.subsidy_subtype || null,
+        });
+        setSaving(false);
+        if (!res.success) {
+            pushToast({ type: 'error', msg: res.error ?? '新增失敗' });
+            return;
+        }
+        setDrafts(prev => ({
+            ...prev,
+            [phase]: { ...EMPTY_DRAFT[phase] },
+        }));
+        setCreatingPhase(null);
+        await load();
+    }
+
+    async function persistOrder(phase: DocumentPhase, orderedItems: DocumentTypeConfig[]) {
+        const res = await reorderDocumentTypeConfigs(phase, orderedItems.map(item => item.id));
+        if (!res.success) {
+            pushToast({ type: 'error', msg: res.error ?? '排序儲存失敗' });
+            await load();
+            return;
+        }
+        await load();
+    }
+
+    function moveDraggedItem(phase: DocumentPhase, targetId: number) {
+        if (!draggingId || draggingId === targetId) return null;
+        const phaseItems = grouped[phase] ?? [];
+        const fromIndex = phaseItems.findIndex(item => item.id === draggingId);
+        const toIndex = phaseItems.findIndex(item => item.id === targetId);
+        if (fromIndex < 0 || toIndex < 0) return null;
+
+        const reordered = [...phaseItems];
+        const [moved] = reordered.splice(fromIndex, 1);
+        reordered.splice(toIndex, 0, moved);
+        setConfigs(prev => {
+            const byId = new Map(reordered.map((item, index) => [
+                item.id,
+                { ...item, sort_order: (index + 1) * 10 },
+            ]));
+            return prev
+                .map(item => byId.get(item.id) ?? item)
+                .sort((a, b) => (
+                    a.phase.localeCompare(b.phase)
+                    || a.sort_order - b.sort_order
+                    || a.id - b.id
+                ));
+        });
+        return reordered;
+    }
+
     // Group by phase
     const grouped = configs.reduce<Record<string, DocumentTypeConfig[]>>((acc, c) => {
         (acc[c.phase] ??= []).push(c);
         return acc;
     }, {});
+    Object.values(grouped).forEach(items => items.sort((a, b) => a.sort_order - b.sort_order || a.id - b.id));
 
     // Flat location options (depth-aware label)
     function buildLocationOptions(locs: StorageLocation[]): { id: number; label: string }[] {
@@ -95,21 +198,36 @@ export function DocumentTypeManager() {
                     <FileText className="w-6 h-6 text-blue-600" />
                     文件類型管理
                 </h2>
-                <p className="text-sm text-slate-500 mt-1">管理各申請階段的應繳文件與其對應的實體存放位置</p>
+                <p className="text-sm text-slate-500 mt-1">管理各申請階段、核銷撥款階段的應繳文件、適用補助類別與實體存放位置</p>
             </div>
 
             <div className="flex-1 overflow-y-auto p-6 space-y-6">
-                {Object.entries(grouped).map(([phase, items]) => (
+                {(['apply', 'reimbursement'] as DocumentPhase[]).map((phase) => {
+                    const items = grouped[phase] ?? [];
+                    const draft = drafts[phase];
+                    const isCreating = creatingPhase === phase;
+                    return (
                     <div key={phase}>
-                        <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider mb-3">
-                            {PHASE_LABEL[phase] ?? phase}
-                        </h3>
+                        <div className="flex items-center justify-between gap-3 mb-3">
+                            <h3 className="text-sm font-semibold text-slate-500 uppercase tracking-wider">
+                                {PHASE_LABEL[phase] ?? phase}
+                            </h3>
+                            <button
+                                type="button"
+                                onClick={() => setCreatingPhase(prev => prev === phase ? null : phase)}
+                                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 text-xs font-medium"
+                            >
+                                {isCreating ? <X className="w-3.5 h-3.5" /> : <Plus className="w-3.5 h-3.5" />}
+                                {isCreating ? '取消新增' : '新增文件'}
+                            </button>
+                        </div>
                         <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
                             <table className="w-full text-sm">
                                 <thead className="bg-slate-50 border-b border-slate-200">
                                     <tr>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-8">#</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600">文件名稱</th>
+                                        <th className="px-4 py-3 text-left font-semibold text-slate-600 w-32">適用類別</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-28">必填</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-28">可補件</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600">實體存放位置</th>
@@ -118,10 +236,152 @@ export function DocumentTypeManager() {
                                     </tr>
                                 </thead>
                                 <tbody className="divide-y divide-slate-100">
-                                    {items.map((cfg, idx) => {
+                                    {isCreating && (
+                                    <tr className="bg-slate-50/70">
+                                        <td className="px-4 py-3 text-slate-300">
+                                            <Plus className="w-4 h-4" />
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <input
+                                                type="text"
+                                                value={draft.label}
+                                                onChange={e => setDrafts(prev => ({
+                                                    ...prev,
+                                                    [phase]: { ...prev[phase], label: e.target.value },
+                                                }))}
+                                                placeholder={`新增${PHASE_LABEL[phase]}文件`}
+                                                className="w-full border border-slate-300 rounded px-2 py-1 text-sm bg-white"
+                                            />
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <select
+                                                value={draft.subsidy_subtype}
+                                                onChange={e => setDrafts(prev => ({
+                                                    ...prev,
+                                                    [phase]: {
+                                                        ...prev[phase],
+                                                        subsidy_subtype: e.target.value === '1' || e.target.value === '2'
+                                                            ? e.target.value
+                                                            : '',
+                                                    },
+                                                }))}
+                                                className="border border-slate-300 rounded px-2 py-1 text-sm bg-white"
+                                            >
+                                                <option value="">共用</option>
+                                                <option value="1">經濟弱勢</option>
+                                                <option value="2">小康家庭</option>
+                                            </select>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <select
+                                                value={draft.is_required ? '1' : '0'}
+                                                onChange={e => setDrafts(prev => ({
+                                                    ...prev,
+                                                    [phase]: {
+                                                        ...prev[phase],
+                                                        is_required: e.target.value === '1',
+                                                        allow_supplement: e.target.value === '1'
+                                                            ? prev[phase].allow_supplement
+                                                            : false,
+                                                    },
+                                                }))}
+                                                className="border border-slate-300 rounded px-2 py-1 text-sm bg-white"
+                                            >
+                                                <option value="1">必填</option>
+                                                <option value="0">非必填</option>
+                                            </select>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <select
+                                                value={draft.allow_supplement ? '1' : '0'}
+                                                onChange={e => setDrafts(prev => ({
+                                                    ...prev,
+                                                    [phase]: { ...prev[phase], allow_supplement: e.target.value === '1' },
+                                                }))}
+                                                disabled={!draft.is_required}
+                                                className="border border-slate-300 rounded px-2 py-1 text-sm bg-white disabled:bg-slate-100 disabled:text-slate-400"
+                                            >
+                                                <option value="0">須隨附</option>
+                                                <option value="1">可補件</option>
+                                            </select>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <select
+                                                value={draft.storage_location_id ?? ''}
+                                                onChange={e => setDrafts(prev => ({
+                                                    ...prev,
+                                                    [phase]: {
+                                                        ...prev[phase],
+                                                        storage_location_id: e.target.value ? Number(e.target.value) : null,
+                                                    },
+                                                }))}
+                                                className="w-full border border-slate-300 rounded px-2 py-1 text-sm bg-white"
+                                            >
+                                                <option value="">— 未設定 —</option>
+                                                {locationOptions.map(opt => (
+                                                    <option key={opt.id} value={opt.id}>{opt.label}</option>
+                                                ))}
+                                            </select>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-green-100 text-green-700">
+                                                啟用
+                                            </span>
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <div className="flex items-center gap-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => handleCreate(phase)}
+                                                disabled={saving || !draft.label.trim()}
+                                                className="p-1.5 rounded-lg bg-blue-600 text-white hover:bg-blue-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                title="新增"
+                                            >
+                                                <Check className="w-3.5 h-3.5" />
+                                            </button>
+                                            <button
+                                                type="button"
+                                                onClick={() => {
+                                                    setDrafts(prev => ({
+                                                        ...prev,
+                                                        [phase]: { ...EMPTY_DRAFT[phase] },
+                                                    }));
+                                                    setCreatingPhase(null);
+                                                }}
+                                                disabled={saving}
+                                                className="p-1.5 rounded-lg bg-slate-200 text-slate-600 hover:bg-slate-300 disabled:opacity-50"
+                                                title="取消新增"
+                                            >
+                                                <X className="w-3.5 h-3.5" />
+                                            </button>
+                                            </div>
+                                        </td>
+                                    </tr>
+                                    )}
+                                    {items.map((cfg, index) => {
                                         const isEditing = editingId === cfg.id;
                                         return (
-                                            <tr key={cfg.id} className={clsx('transition-colors', isEditing ? 'bg-blue-50' : 'hover:bg-slate-50')}>
+                                            <tr
+                                                key={cfg.id}
+                                                draggable={!isEditing}
+                                                onDragStart={() => setDraggingId(cfg.id)}
+                                                onDragOver={e => {
+                                                    e.preventDefault();
+                                                    moveDraggedItem(phase, cfg.id);
+                                                }}
+                                                onDrop={async e => {
+                                                    e.preventDefault();
+                                                    const reordered = moveDraggedItem(phase, cfg.id);
+                                                    setDraggingId(null);
+                                                    if (reordered) await persistOrder(phase, reordered);
+                                                }}
+                                                onDragEnd={() => setDraggingId(null)}
+                                                className={clsx(
+                                                    'transition-colors',
+                                                    draggingId === cfg.id && 'opacity-50',
+                                                    isEditing ? 'bg-blue-50' : 'hover:bg-slate-50'
+                                                )}
+                                            >
                                                 {/* Sort order */}
                                                 <td className="px-4 py-3 text-slate-400">
                                                     {isEditing ? (
@@ -134,7 +394,10 @@ export function DocumentTypeManager() {
                                                             className="w-12 border border-slate-300 rounded px-1 py-0.5 text-center text-sm"
                                                         />
                                                     ) : (
-                                                        <span className="text-xs">{cfg.sort_order}</span>
+                                                        <span className="inline-flex items-center gap-1 text-xs cursor-grab active:cursor-grabbing" title="拖曳調整排序">
+                                                            <GripVertical className="w-4 h-4" />
+                                                            {index + 1}
+                                                        </span>
                                                     )}
                                                 </td>
                                                 {/* Label */}
@@ -148,6 +411,38 @@ export function DocumentTypeManager() {
                                                         />
                                                     ) : (
                                                         <span className="font-medium text-slate-800">{cfg.label}</span>
+                                                    )}
+                                                </td>
+                                                {/* Subsidy subtype */}
+                                                <td className="px-4 py-3">
+                                                    {isEditing ? (
+                                                        <select
+                                                            value={editData.subsidy_subtype ?? ''}
+                                                            onChange={e => setEditData(p => ({
+                                                                ...p,
+                                                                subsidy_subtype: e.target.value === '1' || e.target.value === '2'
+                                                                    ? e.target.value
+                                                                    : null,
+                                                            }))}
+                                                            className="border border-slate-300 rounded px-2 py-1 text-sm"
+                                                        >
+                                                            <option value="">共用</option>
+                                                            <option value="1">經濟弱勢</option>
+                                                            <option value="2">小康家庭</option>
+                                                        </select>
+                                                    ) : (
+                                                        cfg.subsidy_subtype ? (
+                                                            <span className={clsx(
+                                                                'text-xs font-semibold px-2 py-0.5 rounded-full',
+                                                                cfg.subsidy_subtype === '1'
+                                                                    ? 'bg-rose-100 text-rose-700'
+                                                                    : 'bg-emerald-100 text-emerald-700'
+                                                            )}>
+                                                                {SUBSIDY_SUBTYPE_LABEL[cfg.subsidy_subtype]}
+                                                            </span>
+                                                        ) : (
+                                                            <span className="text-xs font-semibold px-2 py-0.5 rounded-full bg-slate-100 text-slate-500">共用</span>
+                                                        )
                                                     )}
                                                 </td>
                                                 {/* Required */}
@@ -263,7 +558,8 @@ export function DocumentTypeManager() {
                             </table>
                         </div>
                     </div>
-                ))}
+                    );
+                })}
             </div>
         </div>
     );
