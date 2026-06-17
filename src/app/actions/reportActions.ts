@@ -13,6 +13,7 @@
 import { pool } from '../../lib/db';
 import { decryptAES } from '../../lib/crypto';
 import { CLOSE_REASON_LABEL } from '../../lib/closeReasonConstants';
+import { formatDateOnly } from '../../lib/dateOnly';
 
 const ALLOWED_ROLES = ['admin', 'supervisor', 'board_member', 'executive', 'chairman'];
 
@@ -78,6 +79,8 @@ export interface SelfPayReportRow {
     boardReviewedAt: string | null;
     /** 董事審核（board_review）通過/未通過 + 說明 */
     boardReviewText: string | null;
+    beneficiaryDisclosureConsent: boolean | null;
+    lastDisbursementPaidAt: string | null;
     /** 待收到的資料（撥款 phase 必備但未上傳/未符合的文件 label 列表） */
     pendingDocuments: string[];
     /** 案件狀態 */
@@ -95,10 +98,9 @@ export interface DisbursementReportRow {
     /** 給付方式：給付醫院 / 給付申請人 */
     paymentMethod: string | null;
     receiptNo: string | null;
-    /** 給付日期（YYYY-MM-DD，西元；UI/匯出再轉民國）。
-     *  優先 sent_at；NULL 時 fallback 到 executive_signed_at / created_at */
+    /** 給付日期（YYYY-MM-DD，西元；UI/匯出再轉民國）；只採人工填寫的 sent_at */
     paidAt: string | null;
-    /** 此筆給付日期是 fallback 推估的（sent_at 沒填，用簽核時間估）；UI 可加個提示 icon */
+    /** 保留給舊前端相容；目前不再使用推估日期 */
     paidAtEstimated: boolean;
     /** 給付金額（原始 number；UI/匯出做千分位 format） */
     amount: number | null;
@@ -143,11 +145,7 @@ function decryptName(enc: Buffer | null, iv: Buffer | null): string {
 }
 
 function formatDate(d: unknown): string | null {
-    if (!d) return null;
-    const dt = new Date(d as string | number | Date);
-    if (Number.isNaN(dt.getTime())) return null;
-    const p = (n: number) => String(n).padStart(2, '0');
-    return `${dt.getFullYear()}-${p(dt.getMonth() + 1)}-${p(dt.getDate())}`;
+    return formatDateOnly(d);
 }
 
 /** YYYY-MM-DD HH:MM:SS（Asia/Taipei）— 給含時分秒的欄位用 */
@@ -230,6 +228,8 @@ export async function fetchSelfPayMedicalReport(
                    CASE WHEN cs.cur_stage = 'reimbursement' THEN wfb.is_approved END AS board_approved,
                    CASE WHEN cs.cur_stage = 'reimbursement' THEN wfb.reviewed_at END AS board_at,
                    bra.assigned_at AS board_received_at,
+                   last_pd.donor_disclosure_consent AS last_disbursement_disclosure_consent,
+                   last_pd.sent_at AS last_disbursement_paid_at,
                    /* 家訪時間：home_visit.updated_at（真正含時分秒的 timestamp；visit_date 只有日期） */
                    hv.updated_at AS home_visit_at,
                    /* 待收文件：撥款 phase 必備、目前尚無任何 status='1'（符合）的文件 */
@@ -254,6 +254,16 @@ export async function fetchSelfPayMedicalReport(
             LEFT JOIN wf_board wfb ON wfb.application_id = a.id
             LEFT JOIN board_review_assignments bra ON bra.application_id = a.id
             LEFT JOIN home_visit hv ON hv.application_id = a.id
+            LEFT JOIN LATERAL (
+                SELECT pd.sent_at, pd.donor_disclosure_consent
+                FROM payment_disbursements pd
+                WHERE pd.application_id = a.id
+                  AND pd.review_stage = '9'
+                ORDER BY pd.executive_signed_at DESC NULLS LAST,
+                         pd.created_at DESC NULLS LAST,
+                         pd.id DESC
+                LIMIT 1
+            ) last_pd ON TRUE
             WHERE ${where.join(' AND ')}
             ORDER BY a.apply_at ASC, a.case_number ASC
             LIMIT 5000
@@ -287,6 +297,8 @@ export async function fetchSelfPayMedicalReport(
                 boardReceivedAt: formatDateTime(r.board_received_at),
                 boardReviewedAt: formatDateTime(r.board_at),
                 boardReviewText: boardText,
+                beneficiaryDisclosureConsent: r.last_disbursement_disclosure_consent ?? null,
+                lastDisbursementPaidAt: formatDate(r.last_disbursement_paid_at),
                 pendingDocuments: Array.isArray(r.pending_doc_labels) ? r.pending_doc_labels.filter(Boolean) : [],
                 status: r.status,
             };
@@ -329,9 +341,9 @@ export async function fetchDisbursementReport(
                    u_app.id_number_enc, u_app.id_number_iv,
                    pd.id AS pd_id,
                    pd.payment_method, pd.amount,
-                   /* 給付日期：手動填的 sent_at 優先；沒填 fallback 到執行長簽核時間，再 fallback 到建立時間 */
-                   COALESCE(pd.sent_at, pd.executive_signed_at, pd.created_at) AS paid_at,
-                   pd.sent_at IS NULL AND pd.executive_signed_at IS NOT NULL AS paid_at_is_estimated,
+                   /* 給付日期：只採人工填寫的 sent_at，未填則報表留白 */
+                   pd.sent_at AS paid_at,
+                   false AS paid_at_is_estimated,
                    pd.receipt_number, pd.external_code,
                    pd.notes
             FROM applications a
@@ -339,7 +351,7 @@ export async function fetchDisbursementReport(
             LEFT JOIN payment_disbursements pd ON pd.application_id = a.id
             WHERE ${where.join(' AND ')}
             ORDER BY a.apply_at ASC, a.case_number ASC,
-                     COALESCE(pd.sent_at, pd.executive_signed_at, pd.created_at) NULLS LAST,
+                     pd.created_at NULLS LAST,
                      pd.id NULLS LAST
             LIMIT 10000
         `;
@@ -438,8 +450,38 @@ export async function fetchRejectedReport(
             LIMIT 5000
         `;
         const res = await client.query(sql, params);
+        const archiveParams: unknown[] = [];
+        const archiveWhere: string[] = [];
+        const archiveDateWhere = buildDateWhere('ra.apply_at', archiveParams, filter.from, filter.to);
+        if (archiveDateWhere) archiveWhere.push(archiveDateWhere);
+        if (filter.officerId && /^\d+$/.test(filter.officerId)) {
+            archiveParams.push(filter.officerId);
+            archiveWhere.push(`ra.officer_id = $${archiveParams.length}::bigint`);
+        }
+        if (filter.reasonCodes && filter.reasonCodes.length > 0) {
+            const valid = filter.reasonCodes.filter(c => /^[0-9]{2}$/.test(c));
+            if (valid.length > 0) {
+                archiveParams.push(valid);
+                archiveWhere.push(`EXISTS (
+                    SELECT 1
+                    FROM jsonb_array_elements(ra.reason_rows) reason
+                    WHERE reason->>'code' = ANY($${archiveParams.length}::text[])
+                )`);
+            }
+        }
+        const archiveSql = `
+            SELECT ra.id, ra.apply_at, ra.application_form, ra.reason_rows, ra.notes,
+                   ra.applicant_name_enc AS app_name_enc, ra.applicant_name_iv AS app_name_iv,
+                   u_off.name_enc AS off_name_enc, u_off.name_iv AS off_name_iv, u_off.account AS off_account
+            FROM rejected_application_archives ra
+            LEFT JOIN users u_off ON u_off.id = ra.officer_id
+            ${archiveWhere.length > 0 ? `WHERE ${archiveWhere.join(' AND ')}` : ''}
+            ORDER BY ra.apply_at ASC, ra.id ASC
+            LIMIT 5000
+        `;
+        const archiveRes = await client.query(archiveSql, archiveParams);
 
-        const out: RejectedReportRow[] = res.rows.map((r, idx) => {
+        const out: Array<RejectedReportRow & { _sortAt: string; _sortKey: string }> = res.rows.map((r) => {
             const reasonRows: Array<{ code: string; detail: string | null }> = Array.isArray(r.reason_rows)
                 ? r.reason_rows.map((j: any) => ({ code: j.code, detail: j.detail ?? null }))
                 : [];
@@ -450,7 +492,7 @@ export async function fetchRejectedReport(
                 }).join('；')
                 : (r.last_comments ?? '');
             return {
-                rowNo: idx + 1,
+                rowNo: 0,
                 applicantName: decryptName(r.app_name_enc, r.app_name_iv),
                 applyAt: formatDate(r.apply_at),
                 applicationForm: (r.application_form === 'P' || r.application_form === 'E') ? r.application_form : null,
@@ -458,9 +500,39 @@ export async function fetchRejectedReport(
                 reasonCodes: Array.isArray(r.reason_codes) ? r.reason_codes : [],
                 officerName: r.off_name_enc ? decryptName(r.off_name_enc, r.off_name_iv) : (r.off_account ?? ''),
                 notes: r.board_review_comments ?? null,
+                _sortAt: formatDate(r.apply_at) ?? '',
+                _sortKey: r.case_number ?? '',
             };
         });
-        return { success: true, data: out };
+        for (const r of archiveRes.rows) {
+            const reasonRows: Array<{ code: string; detail: string | null }> = Array.isArray(r.reason_rows)
+                ? r.reason_rows.map((j: any) => ({ code: j.code, detail: j.detail ?? null }))
+                : [];
+            const reasonsText = reasonRows.map(rr => {
+                const label = CLOSE_REASON_LABEL[rr.code] ?? rr.code;
+                return rr.detail ? `${label}：${rr.detail}` : label;
+            }).join('；');
+            out.push({
+                rowNo: 0,
+                applicantName: decryptName(r.app_name_enc, r.app_name_iv),
+                applyAt: formatDate(r.apply_at),
+                applicationForm: (r.application_form === 'P' || r.application_form === 'E') ? r.application_form : null,
+                reasonsText,
+                reasonCodes: reasonRows.map(rr => rr.code),
+                officerName: r.off_name_enc ? decryptName(r.off_name_enc, r.off_name_iv) : (r.off_account ?? ''),
+                notes: r.notes ?? null,
+                _sortAt: formatDate(r.apply_at) ?? '',
+                _sortKey: `archive-${r.id}`,
+            });
+        }
+        out.sort((a, b) => a._sortAt.localeCompare(b._sortAt) || a._sortKey.localeCompare(b._sortKey));
+        return {
+            success: true,
+            data: out.map((row, idx) => {
+                const { _sortAt, _sortKey, ...rest } = row;
+                return { ...rest, rowNo: idx + 1 };
+            }),
+        };
     } catch (err: any) {
         console.error('fetchRejectedReport', err);
         return { success: false, error: err.message ?? '查詢失敗' };

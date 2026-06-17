@@ -1,6 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Search, Filter, Clock, ChevronLeft, ChevronRight } from 'lucide-react';
 import { fetchAuditLogs, AuditLogEntry, AuditAction, AuditTargetType } from '../app/actions/auditActions';
+import { DateInput } from './DateInput';
 
 // ── Chinese label maps ────────────────────────────────────────────────────────
 
@@ -143,17 +144,15 @@ export function AuditLogViewer() {
                     <div className="lg:col-span-2">
                         <label className="block text-xs font-semibold text-slate-500 uppercase tracking-wider mb-1.5">日期區間</label>
                         <div className="flex items-center gap-2">
-                            <input
-                                type="date"
+                            <DateInput
                                 value={dateFrom}
-                                onChange={e => setDateFrom(e.target.value)}
+                                onChange={setDateFrom}
                                 className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                             />
                             <span className="text-slate-400 text-sm shrink-0">至</span>
-                            <input
-                                type="date"
+                            <DateInput
                                 value={dateTo}
-                                onChange={e => setDateTo(e.target.value)}
+                                onChange={setDateTo}
                                 className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 bg-white"
                             />
                         </div>

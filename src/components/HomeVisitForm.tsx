@@ -4,6 +4,7 @@ import { Home, Save, Loader2, ChevronDown, Plus, Trash2, Upload, Image as ImageI
 import { fetchHomeVisit, saveHomeVisit, HomeVisitData } from '../app/actions/homeVisitActions';
 import { useToast } from './FloatingToast';
 import { uploadFileToBlob } from '../lib/uploadClient';
+import { DateInput } from './DateInput';
 
 interface HomeVisitFormProps {
     applicationId: string;
@@ -290,10 +291,9 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false, 
                         <label className="block text-sm font-semibold text-slate-700">
                             家訪日期 <span className="text-red-500">*</span>
                         </label>
-                        <input
-                            type="date"
+                        <DateInput
                             value={form.visit_date ?? ''}
-                            onChange={e => set('visit_date')(e.target.value)}
+                            onChange={set('visit_date')}
                             disabled={readOnly}
                             required
                             className="w-full bg-slate-50 border border-slate-200 rounded-xl px-4 py-2.5 text-sm focus:outline-none focus:ring-2 focus:ring-blue-400 focus:bg-white disabled:opacity-60"

@@ -16,7 +16,7 @@
  * 權限由 server action 端 hasAnyRole 把守。
  */
 
-import { useEffect, useState } from 'react';
+import { ReactNode, useEffect, useRef, useState } from 'react';
 import {
     FileSpreadsheet, Filter, Download, Loader2, ArrowLeft,
 } from 'lucide-react';
@@ -31,6 +31,7 @@ import {
     type RejectedReportRow,
 } from '../app/actions/reportActions';
 import { CLOSE_REASON_OPTIONS } from '../lib/closeReasonConstants';
+import { DateInput } from './DateInput';
 
 interface Props {
     operatorUserId: string;
@@ -75,6 +76,74 @@ function defaultDateRange(): { from: string; to: string } {
     const oneYearAgo = new Date(today);
     oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
     return { from: fmt(oneYearAgo), to: fmt(today) };
+}
+
+type ColumnDef = { key: string; width: number };
+
+function useResizableColumns(columns: ColumnDef[]) {
+    const [widths, setWidths] = useState<Record<string, number>>(
+        () => Object.fromEntries(columns.map(c => [c.key, c.width])),
+    );
+    const dragRef = useRef<{ key: string; startX: number; startWidth: number } | null>(null);
+
+    const startResize = (key: string, e: React.MouseEvent) => {
+        e.preventDefault();
+        dragRef.current = { key, startX: e.clientX, startWidth: widths[key] ?? 120 };
+
+        const onMove = (event: MouseEvent) => {
+            const drag = dragRef.current;
+            if (!drag) return;
+            const next = Math.max(56, drag.startWidth + event.clientX - drag.startX);
+            setWidths(prev => ({ ...prev, [drag.key]: next }));
+        };
+        const onUp = () => {
+            dragRef.current = null;
+            window.removeEventListener('mousemove', onMove);
+            window.removeEventListener('mouseup', onUp);
+        };
+        window.addEventListener('mousemove', onMove);
+        window.addEventListener('mouseup', onUp);
+    };
+
+    return { widths, startResize };
+}
+
+function ResizableColGroup({ columns, widths }: { columns: ColumnDef[]; widths: Record<string, number> }) {
+    return (
+        <colgroup>
+            {columns.map(col => <col key={col.key} style={{ width: widths[col.key] ?? col.width }} />)}
+        </colgroup>
+    );
+}
+
+function ResizableTh({
+    column,
+    widths,
+    onResizeStart,
+    children,
+}: {
+    column: ColumnDef;
+    widths: Record<string, number>;
+    onResizeStart: (key: string, e: React.MouseEvent) => void;
+    children: ReactNode;
+}) {
+    return (
+        <th
+            className="relative text-left px-2 py-2 pr-3 font-semibold text-slate-600 select-none"
+            style={{ width: widths[column.key] ?? column.width }}
+        >
+            <span className="block truncate">{children}</span>
+            <span
+                role="separator"
+                aria-orientation="vertical"
+                title="拖曳調整欄寬"
+                onMouseDown={e => onResizeStart(column.key, e)}
+                className="absolute right-0 top-0 h-full w-2 cursor-col-resize touch-none group"
+            >
+                <span className="absolute right-0.5 top-1/2 h-5 -translate-y-1/2 border-r border-slate-300 group-hover:border-blue-500" />
+            </span>
+        </th>
+    );
 }
 
 export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogout }: Props) {
@@ -130,6 +199,16 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
 
     const runSearch = () => {
         setAppliedFilter({ from, to, subsidy, reason: new Set(reasonFilter) });
+    };
+
+    const resetSearch = () => {
+        const nextRange = defaultDateRange();
+        setFrom(nextRange.from);
+        setTo(nextRange.to);
+        setSubsidy('');
+        setReasonFilter(new Set());
+        setFlatten(false);
+        setAppliedFilter({ from: nextRange.from, to: nextRange.to, subsidy: '', reason: new Set() });
     };
 
     const handleExport = async () => {
@@ -225,12 +304,12 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                         <div>
                             <label className="block text-xs font-medium text-slate-600 mb-1">起始日（申請日期）</label>
-                            <input type="date" value={from} onChange={e => setFrom(e.target.value)}
+                            <DateInput value={from} onChange={setFrom}
                                 className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
                         </div>
                         <div>
                             <label className="block text-xs font-medium text-slate-600 mb-1">結束日</label>
-                            <input type="date" value={to} onChange={e => setTo(e.target.value)}
+                            <DateInput value={to} onChange={setTo}
                                 className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
                         </div>
                         {tab !== 'rejected' && (
@@ -282,7 +361,11 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
                         <button type="button" onClick={runSearch} disabled={loading}
                             className="px-4 py-1.5 text-sm bg-emerald-600 hover:bg-emerald-700 text-white rounded disabled:opacity-50">
                             {loading ? <Loader2 className="w-3.5 h-3.5 animate-spin inline mr-1" /> : null}
-                            套用篩選
+                            查詢
+                        </button>
+                        <button type="button" onClick={resetSearch} disabled={loading}
+                            className="px-4 py-1.5 text-sm border border-slate-300 text-slate-700 hover:bg-slate-50 rounded disabled:opacity-50">
+                            重設查詢條件
                         </button>
                         <button type="button" onClick={handleExport} disabled={exporting || loading || totalCount === 0}
                             className="inline-flex items-center gap-1.5 px-4 py-1.5 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded disabled:opacity-50">
@@ -300,7 +383,7 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
                 {/* 表格 */}
                 <div className={`bg-white border border-slate-200 rounded-lg overflow-x-auto transition-opacity ${loading ? 'opacity-60' : 'opacity-100'}`}>
                     {tab === 'self_pay' && <SelfPayTable rows={selfPayRows.slice(0, 100)} />}
-                    {tab === 'disbursement' && <DisbursementTable rows={disbursementRows.slice(0, 100)} />}
+                    {tab === 'disbursement' && <DisbursementTable rows={disbursementRows.slice(0, 100)} flatten={flatten} />}
                     {tab === 'rejected' && <RejectedTable rows={rejectedRows.slice(0, 100)} />}
                 </div>
             </main>
@@ -310,52 +393,103 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
 
 // ─── Tables ─────────────────────────────────────────────────────────────────
 
-function SelfPayTable({ rows }: { rows: SelfPayReportRow[] }) {
+const SELF_PAY_COLUMNS: ColumnDef[] = [
+    { key: 'officer', width: 76 },
+    { key: 'caseNumber', width: 86 },
+    { key: 'subsidy', width: 72 },
+    { key: 'way', width: 56 },
+    { key: 'applicant', width: 72 },
+    { key: 'applyAt', width: 92 },
+    { key: 'form', width: 72 },
+    { key: 'phase', width: 72 },
+    { key: 'stage', width: 64 },
+    { key: 'adminText', width: 72 },
+    { key: 'adminAt', width: 144 },
+    { key: 'homeVisitAt', width: 144 },
+    { key: 'boardReceivedAt', width: 144 },
+    { key: 'boardReviewedAt', width: 144 },
+    { key: 'boardText', width: 72 },
+    { key: 'disclosure', width: 96 },
+    { key: 'lastPaidAt', width: 110 },
+    { key: 'pendingDocs', width: 160 },
+    { key: 'status', width: 72 },
+];
+
+const DISBURSEMENT_COLUMNS: ColumnDef[] = [
+    { key: 'caseNumber', width: 92 },
+    { key: 'way', width: 72 },
+    { key: 'applicant', width: 90 },
+    { key: 'applyAt', width: 92 },
+    { key: 'approvedAmount', width: 94 },
+    { key: 'paymentMethod', width: 90 },
+    { key: 'receiptNo', width: 110 },
+    { key: 'paidAt', width: 96 },
+    { key: 'amount', width: 98 },
+    { key: 'notes', width: 220 },
+];
+
+const REJECTED_COLUMNS: ColumnDef[] = [
+    { key: 'rowNo', width: 56 },
+    { key: 'applicant', width: 120 },
+    { key: 'applyAt', width: 96 },
+    { key: 'form', width: 90 },
+    { key: 'reasons', width: 240 },
+    { key: 'officer', width: 90 },
+    { key: 'notes', width: 220 },
+];
+
+
+function HeaderCells({ columns, labels, widths, startResize }: {
+    columns: ColumnDef[];
+    labels: string[];
+    widths: Record<string, number>;
+    startResize: (key: string, e: React.MouseEvent) => void;
+}) {
     return (
-        <table className="w-full text-xs">
+        <>
+            {columns.map((column, index) => (
+                <ResizableTh key={column.key} column={column} widths={widths} onResizeStart={startResize}>
+                    {labels[index] ?? column.key}
+                </ResizableTh>
+            ))}
+        </>
+    );
+}
+
+function SelfPayTable({ rows }: { rows: SelfPayReportRow[] }) {
+    const columns = SELF_PAY_COLUMNS;
+    const labels = ['承辦人', '案號', '案別', '自/轉', '申請者', '申請日', '形式', '階段', '期數', '行政審核', '行政通過時間', '家訪時間', '董事收到時間', '董事通過時間', '董事審核', '同意公開受補助', '最後補助款核發日', '待收文件', '狀態'];
+    const { widths, startResize } = useResizableColumns(columns);
+    return (
+        <table className="w-full min-w-max text-xs table-fixed">
+            <ResizableColGroup columns={columns} widths={widths} />
             <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
-                <tr>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">承辦人</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">案號</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">案別</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">自/轉</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">申請者</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">申請日</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">形式</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">階段</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">期數</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">行政審核</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">行政通過時間</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">家訪時間</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">董事收到時間</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">董事通過時間</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">董事審核</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">待收文件</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">狀態</th>
-                </tr>
+                <tr><HeaderCells columns={columns} labels={labels} widths={widths} startResize={startResize} /></tr>
             </thead>
             <tbody>
                 {rows.length === 0 ? (
-                    <tr><td colSpan={17} className="px-2 py-8 text-center text-slate-400">無資料</td></tr>
+                    <tr><td colSpan={columns.length} className="px-2 py-8 text-center text-slate-400">無資料</td></tr>
                 ) : rows.map((r, i) => (
                     <tr key={i} className="border-b border-slate-100 hover:bg-slate-50/60">
-                        <td className="px-2 py-1.5">{r.officerName}</td>
-                        <td className="px-2 py-1.5 font-mono">{r.caseNumber}</td>
-                        <td className="px-2 py-1.5">{r.subsidySubtype ? SUBSIDY_LABEL[r.subsidySubtype] : ''}</td>
-                        <td className="px-2 py-1.5">{r.applicationWay === '2' ? '轉介' : '自行'}</td>
-                        <td className="px-2 py-1.5">{r.applicantName}</td>
-                        <td className="px-2 py-1.5 font-mono">{toRoc(r.applyAt)}</td>
-                        <td className="px-2 py-1.5">{r.applicationForm ? APP_FORM_LABEL[r.applicationForm] : ''}</td>
-                        <td className="px-2 py-1.5">{r.treatmentPhase ? PHASE_LABEL[r.treatmentPhase] : ''}</td>
-                        <td className="px-2 py-1.5">{r.cancerStage ?? ''}</td>
-                        <td className="px-2 py-1.5" title={r.adminReviewText ?? ''}>{r.adminReviewText ?? ''}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.officerName}>{r.officerName}</td>
+                        <td className="px-2 py-1.5 font-mono truncate" title={r.caseNumber}>{r.caseNumber}</td>
+                        <td className="px-2 py-1.5 truncate">{r.subsidySubtype ? SUBSIDY_LABEL[r.subsidySubtype] : ''}</td>
+                        <td className="px-2 py-1.5 truncate">{r.applicationWay === '2' ? '轉介' : '自行'}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.applicantName}>{r.applicantName}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRoc(r.applyAt)}</td>
+                        <td className="px-2 py-1.5 truncate">{r.applicationForm ? APP_FORM_LABEL[r.applicationForm] : ''}</td>
+                        <td className="px-2 py-1.5 truncate">{r.treatmentPhase ? PHASE_LABEL[r.treatmentPhase] : ''}</td>
+                        <td className="px-2 py-1.5 truncate">{r.cancerStage ?? ''}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.adminReviewText ?? ''}>{r.adminReviewText ?? ''}</td>
                         <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRocDateTime(r.adminReviewAt)}</td>
                         <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRocDateTime(r.homeVisitAt)}</td>
                         <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRocDateTime(r.boardReceivedAt)}</td>
                         <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRocDateTime(r.boardReviewedAt)}</td>
-                        <td className="px-2 py-1.5" title={r.boardReviewText ?? ''}>{r.boardReviewText ?? ''}</td>
-                        <td className="px-2 py-1.5">{r.pendingDocuments.length > 0 ? r.pendingDocuments.join('、') : <span className="text-slate-400">已收齊</span>}</td>
-                        <td className="px-2 py-1.5">{STATUS_LABEL[r.status] ?? r.status}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.boardReviewText ?? ''}>{r.boardReviewText ?? ''}</td>
+                        <td className="px-2 py-1.5 truncate">{r.beneficiaryDisclosureConsent == null ? '' : (r.beneficiaryDisclosureConsent ? '同意' : '不同意')}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRoc(r.lastDisbursementPaidAt)}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.pendingDocuments.join('、')}>{r.pendingDocuments.length > 0 ? r.pendingDocuments.join('、') : <span className="text-slate-400">已收齊</span>}</td>
+                        <td className="px-2 py-1.5 truncate">{STATUS_LABEL[r.status] ?? r.status}</td>
                     </tr>
                 ))}
             </tbody>
@@ -363,53 +497,69 @@ function SelfPayTable({ rows }: { rows: SelfPayReportRow[] }) {
     );
 }
 
-function DisbursementTable({ rows }: { rows: DisbursementReportRow[] }) {
-    const totalAmount = rows.reduce((sum, r) => sum + (r.amount ?? 0), 0);
-    const totalApproved = rows.reduce((sum, r) => sum + (r.approvedAmount ?? 0), 0);
+function DisbursementTable({ rows, flatten }: { rows: DisbursementReportRow[]; flatten: boolean }) {
+    const columns = DISBURSEMENT_COLUMNS;
+    const labels = ['案號', '自/轉', '申請者', '申請日', '通過額度', '給付方式', '收據編號', '給付日期', '給付費用', '備註'];
+    const { widths, startResize } = useResizableColumns(columns);
+    let lastCase: Pick<DisbursementReportRow, 'caseNumber' | 'applicationWay' | 'applicantName' | 'applyAt' | 'approvedAmount'> = {
+        caseNumber: null,
+        applicationWay: null,
+        applicantName: null,
+        applyAt: null,
+        approvedAmount: null,
+    };
+    const displayRows = flatten ? rows.map(row => {
+        if (row.caseNumber) {
+            lastCase = {
+                caseNumber: row.caseNumber,
+                applicationWay: row.applicationWay,
+                applicantName: row.applicantName,
+                applyAt: row.applyAt,
+                approvedAmount: row.approvedAmount,
+            };
+        }
+        return {
+            ...row,
+            caseNumber: row.caseNumber ?? lastCase.caseNumber,
+            applicationWay: row.applicationWay ?? lastCase.applicationWay,
+            applicantName: row.applicantName ?? lastCase.applicantName,
+            applyAt: row.applyAt ?? lastCase.applyAt,
+            approvedAmount: row.approvedAmount ?? lastCase.approvedAmount,
+        };
+    }) : rows;
+    const totalAmount = displayRows.reduce((sum, r) => sum + (r.amount ?? 0), 0);
+    const totalApproved = displayRows.reduce((sum, r) => sum + (r.approvedAmount ?? 0), 0);
     return (
-        <table className="w-full text-xs">
+        <table className="w-full min-w-max text-xs table-fixed">
+            <ResizableColGroup columns={columns} widths={widths} />
             <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
-                <tr>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">案號</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">自/轉</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">申請者</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">申請日</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">通過額度</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">給付方式</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">收據編號</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">給付日期</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">給付費用</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">備註</th>
-                </tr>
+                <tr><HeaderCells columns={columns} labels={labels} widths={widths} startResize={startResize} /></tr>
             </thead>
             <tbody>
-                {rows.length === 0 ? (
-                    <tr><td colSpan={10} className="px-2 py-8 text-center text-slate-400">無資料</td></tr>
-                ) : rows.map((r, i) => (
+                {displayRows.length === 0 ? (
+                    <tr><td colSpan={columns.length} className="px-2 py-8 text-center text-slate-400">無資料</td></tr>
+                ) : displayRows.map((r, i) => (
                     <tr key={i} className="border-b border-slate-100 hover:bg-slate-50/60">
-                        <td className="px-2 py-1.5 font-mono">{r.caseNumber ?? ''}</td>
-                        <td className="px-2 py-1.5">{r.applicationWay ? (r.applicationWay === '2' ? '轉介' : '自行') : ''}</td>
-                        <td className="px-2 py-1.5">{r.applicantName ?? ''}</td>
-                        <td className="px-2 py-1.5 font-mono">{r.applyAt ? toRoc(r.applyAt) : ''}</td>
+                        <td className="px-2 py-1.5 font-mono truncate" title={r.caseNumber ?? ''}>{r.caseNumber ?? ''}</td>
+                        <td className="px-2 py-1.5 truncate">{r.applicationWay ? (r.applicationWay === '2' ? '轉介' : '自行') : ''}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.applicantName ?? ''}>{r.applicantName ?? ''}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{r.applyAt ? toRoc(r.applyAt) : ''}</td>
                         <td className="px-2 py-1.5 text-left">{r.approvedAmount != null ? r.approvedAmount.toLocaleString() : ''}</td>
-                        <td className="px-2 py-1.5">{r.paymentMethod ?? ''}</td>
-                        <td className="px-2 py-1.5 font-mono">{r.receiptNo ?? ''}</td>
-                        <td className="px-2 py-1.5 font-mono">
+                        <td className="px-2 py-1.5 truncate" title={r.paymentMethod ?? ''}>{r.paymentMethod ?? ''}</td>
+                        <td className="px-2 py-1.5 font-mono truncate" title={r.receiptNo ?? ''}>{r.receiptNo ?? ''}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">
                             {r.paidAt ? toRoc(r.paidAt) : ''}
-                            {r.paidAtEstimated && (
-                                <span className="ml-1 text-[10px] text-amber-600" title="實際撥款日 (sent_at) 未填寫，此處顯示執行長簽核時間做為估計">*</span>
-                            )}
                         </td>
-                        <td className="px-2 py-1.5 text-left">{r.amount != null ? `NT$${r.amount.toLocaleString()}` : ''}</td>
-                        <td className="px-2 py-1.5 max-w-[240px] truncate" title={r.notes ?? ''}>{r.notes ?? ''}</td>
+                        <td className="px-2 py-1.5 text-left">{r.amount != null ? 'NT$' + r.amount.toLocaleString() : ''}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.notes ?? ''}>{r.notes ?? ''}</td>
                     </tr>
                 ))}
-                {rows.length > 0 && (
+                {displayRows.length > 0 && (
                     <tr className="bg-slate-100 font-semibold border-t-2 border-slate-300">
                         <td className="px-2 py-2" colSpan={4}>合計</td>
                         <td className="px-2 py-2 text-left">{totalApproved.toLocaleString()}</td>
                         <td className="px-2 py-2" colSpan={3}></td>
-                        <td className="px-2 py-2 text-left">NT${totalAmount.toLocaleString()}</td>
+                        <td className="px-2 py-2 text-left">{'NT$' + totalAmount.toLocaleString()}</td>
                         <td className="px-2 py-2"></td>
                     </tr>
                 )}
@@ -419,31 +569,27 @@ function DisbursementTable({ rows }: { rows: DisbursementReportRow[] }) {
 }
 
 function RejectedTable({ rows }: { rows: RejectedReportRow[] }) {
+    const columns = REJECTED_COLUMNS;
+    const labels = ['NO', '姓名', '申請日', '文件屬性', '未符合原因', '承辦人', '備註'];
+    const { widths, startResize } = useResizableColumns(columns);
     return (
-        <table className="w-full text-xs">
+        <table className="w-full min-w-max text-xs table-fixed">
+            <ResizableColGroup columns={columns} widths={widths} />
             <thead className="bg-slate-50 border-b border-slate-200 sticky top-0">
-                <tr>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">NO</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">姓名</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">申請日</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">文件屬性</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">未符合原因</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">承辦人</th>
-                    <th className="text-left px-2 py-2 font-semibold text-slate-600">備註</th>
-                </tr>
+                <tr><HeaderCells columns={columns} labels={labels} widths={widths} startResize={startResize} /></tr>
             </thead>
             <tbody>
                 {rows.length === 0 ? (
-                    <tr><td colSpan={7} className="px-2 py-8 text-center text-slate-400">無資料</td></tr>
+                    <tr><td colSpan={columns.length} className="px-2 py-8 text-center text-slate-400">無資料</td></tr>
                 ) : rows.map((r, i) => (
                     <tr key={i} className="border-b border-slate-100 hover:bg-slate-50/60">
                         <td className="px-2 py-1.5 text-right">{r.rowNo}</td>
-                        <td className="px-2 py-1.5">{r.applicantName}</td>
-                        <td className="px-2 py-1.5 font-mono">{toRoc(r.applyAt)}</td>
-                        <td className="px-2 py-1.5">{r.applicationForm ? APP_FORM_LABEL[r.applicationForm] : ''}</td>
-                        <td className="px-2 py-1.5">{r.reasonsText}</td>
-                        <td className="px-2 py-1.5">{r.officerName}</td>
-                        <td className="px-2 py-1.5 max-w-[200px] truncate" title={r.notes ?? ''}>{r.notes ?? ''}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.applicantName}>{r.applicantName}</td>
+                        <td className="px-2 py-1.5 font-mono whitespace-nowrap">{toRoc(r.applyAt)}</td>
+                        <td className="px-2 py-1.5 truncate">{r.applicationForm ? APP_FORM_LABEL[r.applicationForm] : ''}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.reasonsText}>{r.reasonsText}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.officerName}>{r.officerName}</td>
+                        <td className="px-2 py-1.5 truncate" title={r.notes ?? ''}>{r.notes ?? ''}</td>
                     </tr>
                 ))}
             </tbody>

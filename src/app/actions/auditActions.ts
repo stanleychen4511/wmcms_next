@@ -15,6 +15,10 @@ export type AuditAction =
     | 'application.request_supervisor_review_board'
     | 'application.supervisor_approve_board'
     | 'application.supervisor_reject_board'
+    | 'application.board_reconsideration_request'
+    | 'application.board_reconsideration_approve'
+    | 'application.board_reconsideration_reject'
+    | 'rejected_archive.create'
     | 'home_visit.create'
     | 'home_visit.update'
     | 'document.upload'
@@ -84,6 +88,7 @@ export type AuditAction =
     | 'payment_disbursement.completed'
     | 'payment_disbursement.rejected'
     | 'payment_disbursement.receipt_generated'
+    | 'payment_disbursement.approval_email_sent'
     | 'payment_disbursement.receipt_email_sent'
     | 'payment_disbursement.print_merged';
 
@@ -105,6 +110,7 @@ export type AuditTargetType =
     | 'board_assignment'
     | 'event'
     | 'contact_record'
+    | 'rejected_application_archive'
     | 'payment_disbursement';
 
 export interface WriteAuditLogParams {

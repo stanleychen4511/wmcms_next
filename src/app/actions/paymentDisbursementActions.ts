@@ -20,6 +20,7 @@ import * as crypto from 'crypto';
 import { writeAuditLog } from './auditActions';
 // 'use server' 檔案不可 export 非 async function；常數與型別搬到 lib/paymentDisbursementConstants.ts
 import { REVIEW_STAGE_LABEL, type ReviewStage } from '../../lib/paymentDisbursementConstants';
+import { formatDateOnly } from '../../lib/dateOnly';
 
 export interface PaymentDisbursement {
     id: string;
@@ -38,6 +39,8 @@ export interface PaymentDisbursement {
     sentAt: string | null;
     receivedAt: string | null;
     receiptFilePath: string | null;
+    remittanceSlipFilePath: string | null;
+    medicalReceiptStatus: 'official' | 'unpaid' | null;
     notes: string | null;
     createdBy: string | null;
     createdAt: string;
@@ -88,6 +91,7 @@ export interface DisbursementSummary {
     totalInFlight: number;        // SUM(amount where stage IN '1'..'4')
     remaining: number;            // approved - (disbursed + in-flight)
     canCloseCase: boolean;        // received >= approved
+    closeCaseBlockReason: string | null;
     hasInFlight: boolean;         // 是否有 in-flight 撥款（用於串行守門）
     disbursements: PaymentDisbursement[];
 }
@@ -214,9 +218,12 @@ function rowToDisbursement(r: any): PaymentDisbursement {
         bankName: r.bank_name ?? null,
         bankBranch: r.bank_branch ?? null,
         bankAccount: r.bank_account ?? null,
-        sentAt: r.sent_at ? new Date(r.sent_at).toISOString().split('T')[0] : null,
-        receivedAt: r.received_at ? new Date(r.received_at).toISOString().split('T')[0] : null,
+        sentAt: formatDateOnly(r.sent_at),
+        receivedAt: formatDateOnly(r.received_at),
         receiptFilePath: r.receipt_file_path ?? null,
+        medicalReceiptStatus: (r.medical_receipt_status === 'official' || r.medical_receipt_status === 'unpaid')
+            ? r.medical_receipt_status
+            : null,
         notes: r.notes ?? null,
         createdBy: r.created_by ? String(r.created_by) : null,
         createdAt: r.created_at ? new Date(r.created_at).toISOString() : '',
@@ -240,6 +247,7 @@ function rowToDisbursement(r: any): PaymentDisbursement {
         accountantBoardOpinionCheck:      !!r.accountant_board_opinion_check,
         accountantBankSetupCheck:         !!r.accountant_bank_setup_check,
         executiveFinalCheck:              !!r.executive_final_check,
+        remittanceSlipFilePath:           r.remittance_slip_file_path ?? null,
         paymentReceiptScanUploaded:       !!r.payment_receipt_scan_uploaded,
         paymentReceiptScanUrl:            r.payment_receipt_scan_url ?? null,
         lastReceiptEmailStatus:           r.last_receipt_email_status ?? null,
@@ -262,7 +270,7 @@ const SELECT_ALL_COLS = `
     id, application_id, receipt_number, external_code, amount,
     payee_name, payee_id_number, payee_relation, payee_relation_other,
     payment_method, bank_name, bank_branch, bank_account,
-    sent_at, received_at, receipt_file_path, notes,
+    sent_at, received_at, receipt_file_path, remittance_slip_file_path, medical_receipt_status, notes,
     created_by, created_at, updated_at,
     review_stage, officer_signed_at,
     supervisor_user_id, supervisor_signed_at,
@@ -356,6 +364,12 @@ export async function fetchDisbursements(
         const totalDisbursed = completed.reduce((s, d) => s + d.amount, 0);
         const totalInFlight  = inFlight.reduce((s, d) => s + d.amount, 0);
         const totalReceived  = completed.filter(d => d.receivedAt).reduce((s, d) => s + d.amount, 0);
+        const missingRemittanceSlip = completed.find(d => d.receivedAt && !d.remittanceSlipFilePath);
+        const closeCaseBlockReason = missingRemittanceSlip
+            ? `撥款單號${missingRemittanceSlip.externalCode || missingRemittanceSlip.receiptNumber}未上傳匯款單掃描檔`
+            : totalReceived < approvedAmount
+                ? '尚有撥款未完成回收紙本；累積回收金額需達核定金額才能結案'
+                : null;
 
         return {
             success: true,
@@ -365,7 +379,8 @@ export async function fetchDisbursements(
                 totalReceived,
                 totalInFlight,
                 remaining: approvedAmount - totalDisbursed - totalInFlight,
-                canCloseCase: approvedAmount > 0 && totalReceived >= approvedAmount,
+                canCloseCase: approvedAmount > 0 && !closeCaseBlockReason,
+                closeCaseBlockReason,
                 hasInFlight: inFlight.length > 0,
                 disbursements,
             },
@@ -527,14 +542,21 @@ export async function updateDisbursement(
     const client = await pool.connect();
     try {
         const cur = await client.query(
-            `SELECT review_stage, application_id::text FROM payment_disbursements WHERE id = $1::bigint`,
+            `SELECT pd.review_stage, pd.application_id::text, a.status AS application_status
+             FROM payment_disbursements pd
+             JOIN applications a ON a.id = pd.application_id
+             WHERE pd.id = $1::bigint`,
             [disbursementId]
         );
         if (cur.rowCount === 0) return { success: false, error: '撥款紀錄不存在' };
         const stage = cur.rows[0].review_stage as ReviewStage;
+        const inputKeys = Object.keys(input);
+        const sentAtOnlyUpdate = inputKeys.length === 1 && input.sentAt !== undefined;
         // 僅 stage='1'（個管師持有中）允許編輯
         if (stage !== '1') {
-            return { success: false, error: `撥款已進入 ${REVIEW_STAGE_LABEL[stage]}，無法編輯` };
+            if (!(stage === '9' && sentAtOnlyUpdate && cur.rows[0].application_status !== '4')) {
+                return { success: false, error: `撥款已進入 ${REVIEW_STAGE_LABEL[stage]}，無法編輯` };
+            }
         }
         if (!(await hasAnyRole(operatorUserId, ['case_officer', 'admin']))) {
             return { success: false, error: '權限不足' };
@@ -624,6 +646,19 @@ async function checkOfficerGate(client: any, disbursementId: string, cur: any): 
     if (recRes.rowCount === 0) {
         return '尚未上傳領款收據紙本掃描檔';
     }
+    // 醫療收據（document_type_config.id=17）改由個管階段上傳，並需標記正式收據/未繳款領據
+    const medRes = await client.query(
+        `SELECT 1 FROM application_documents
+         WHERE id = 17 AND disbursement_id = $1::bigint AND file_path IS NOT NULL
+         LIMIT 1`,
+        [disbursementId]
+    );
+    if (medRes.rowCount === 0) {
+        return '尚未上傳醫療收據 PDF';
+    }
+    if (!cur.medical_receipt_status) {
+        return '請先選擇醫療收據狀態（正式收據 / 未繳款領據）';
+    }
     // 已成功寄送過領款收據 email（最近一次需為 sent）
     const mailRes = await client.query(
         `SELECT status FROM notification_logs
@@ -667,6 +702,25 @@ async function checkOfficerGate(client: any, disbursementId: string, cur: any): 
         if (letterRes.rowCount === 0) {
             return '勾選「不同意公開捐贈者姓名」時，需上傳捐贈/受補助者聲明書';
         }
+    }
+    const finalRes = await client.query(
+        `SELECT a.approved_amount,
+                COALESCE((
+                    SELECT SUM(pd.amount)
+                    FROM payment_disbursements pd
+                    WHERE pd.application_id = a.id
+                      AND pd.id <> $2::bigint
+                      AND pd.review_stage = '9'
+                ), 0) AS completed_amount
+         FROM applications a
+         WHERE a.id = $1::bigint`,
+        [cur.application_id, disbursementId]
+    );
+    const approvedAmount = Number(finalRes.rows[0]?.approved_amount ?? 0);
+    const completedAmount = Number(finalRes.rows[0]?.completed_amount ?? 0);
+    const currentAmount = Number(cur.amount ?? 0);
+    if (approvedAmount > 0 && completedAmount + currentAmount >= approvedAmount && !cur.sent_at) {
+        return '最後一筆補助款請填寫核發日期';
     }
     return null;
 }
@@ -734,7 +788,9 @@ async function advanceStageInternal(
                     officer_doc_check, supervisor_doc_check,
                     accountant_medical_uploaded_check, accountant_amount_match_check,
                     accountant_board_opinion_check, accountant_bank_setup_check,
-                    executive_final_check
+                    executive_final_check,
+                    medical_receipt_status,
+                    sent_at
              FROM payment_disbursements WHERE id = $1::bigint FOR UPDATE`,
             [disbursementId]
         );
@@ -931,7 +987,16 @@ export interface CaseAuxiliaryData {
     boardReview: {
         approvedAmount: number | null;
         boardReviewComments: string | null;     // 彙整後的文字
-        signatures: { signerName: string; signedAt: string | null }[];
+        signatures: { signerName: string; signedAt: string | null; memberAmount?: number | null; memberComments?: string | null }[];
+        rounds: Array<{
+            id: string;
+            roundNo: number;
+            isLatest: boolean;
+            approvedAmount: number | null;
+            comments: string | null;
+            completedAt: string | null;
+            signatures: Array<{ signerName: string; signedAt: string | null; memberAmount?: number | null; memberComments?: string | null }>;
+        }>;
     };
 }
 
@@ -974,7 +1039,7 @@ export async function fetchCaseAuxiliaryData(
         if (hvRes.rowCount && hvRes.rowCount > 0) {
             const hv = hvRes.rows[0];
             homeVisit = {
-                visitDate: hv.visit_date ? new Date(hv.visit_date).toISOString().split('T')[0] : null,
+                visitDate: formatDateOnly(hv.visit_date),
                 visitorName: hv.visitor_name ?? null,
                 visitorTitle: hv.visitor_title ?? null,
                 selfReportedCondition: hv.self_reported_condition ?? null,
@@ -1004,7 +1069,7 @@ export async function fetchCaseAuxiliaryData(
             [applicationId]
         );
         const sigRes = await client.query(
-            `SELECT s.signed_at, u.name_enc, u.name_iv, u.account
+            `SELECT s.signed_at, s.member_amount, s.member_comments, u.name_enc, u.name_iv, u.account
              FROM board_review_signatures s
              JOIN users u ON u.id = s.signer_user_id
              WHERE s.application_id = $1::bigint
@@ -1017,7 +1082,43 @@ export async function fetchCaseAuxiliaryData(
                 ? (decryptAES(r.name_enc, r.name_iv) || r.account)
                 : (r.account ?? '未知'),
             signedAt: r.signed_at ? new Date(r.signed_at).toISOString() : null,
+            memberAmount: r.member_amount != null ? Number(r.member_amount) : null,
+            memberComments: r.member_comments ?? null,
         }));
+        const roundRes = await client.query(
+            `SELECT id::text, round_no, approved_amount, comments, signatures, completed_at, is_latest
+             FROM board_review_rounds
+             WHERE application_id = $1::bigint
+             ORDER BY round_no DESC`,
+            [applicationId]
+        );
+        const rounds = roundRes.rows.map((r: any) => ({
+            id: String(r.id),
+            roundNo: Number(r.round_no),
+            isLatest: !!r.is_latest,
+            approvedAmount: r.approved_amount != null ? Number(r.approved_amount) : null,
+            comments: r.comments ?? null,
+            completedAt: r.completed_at ? new Date(r.completed_at).toISOString() : null,
+            signatures: Array.isArray(r.signatures)
+                ? r.signatures.map((s: any) => ({
+                    signerName: s.signerName ?? s.signer_name ?? s.account ?? '未知',
+                    signedAt: s.signedAt ?? s.signed_at ?? null,
+                    memberAmount: s.memberAmount != null ? Number(s.memberAmount) : s.member_amount != null ? Number(s.member_amount) : null,
+                    memberComments: s.memberComments ?? s.member_comments ?? null,
+                }))
+                : [],
+        }));
+        if (rounds.length === 0 && (appRes.rows[0]?.board_review_comments || signatures.length > 0)) {
+            rounds.push({
+                id: 'legacy-current',
+                roundNo: 1,
+                isLatest: true,
+                approvedAmount: appRes.rows[0]?.approved_amount != null ? Number(appRes.rows[0].approved_amount) : null,
+                comments: appRes.rows[0]?.board_review_comments ?? null,
+                completedAt: null,
+                signatures,
+            });
+        }
 
         return {
             success: true,
@@ -1029,6 +1130,7 @@ export async function fetchCaseAuxiliaryData(
                         ? Number(appRes.rows[0].approved_amount) : null,
                     boardReviewComments: appRes.rows[0]?.board_review_comments ?? null,
                     signatures,
+                    rounds,
                 },
             },
         };
@@ -1204,6 +1306,166 @@ export async function generateDisbursementPaymentReceipt(
  * 須先 generateDisbursementPaymentReceipt 過至少一次（receipt_file_path 不為空）。
  * 觸發 case_payment_receipt_to_applicant，dispatcher 會夾帶 PDF 並寫 notification_logs（含 disbursement_id）。
  */
+export type DisbursementNotificationKind = 'approval' | 'receipt';
+
+export interface DisbursementEmailRecipientInput {
+    user_id: string;
+    name: string;
+    email: string;
+    is_applicant?: boolean;
+    is_bcc?: boolean;
+    roles?: string[];
+}
+
+export async function sendDisbursementNotificationEmail(
+    operatorUserId: string,
+    disbursementId: string,
+    kind: DisbursementNotificationKind,
+    recipients: DisbursementEmailRecipientInput[],
+    subject: string,
+    body: string,
+): Promise<ActionResult> {
+    if (!/^\d+$/.test(disbursementId)) return { success: false, error: '無效的撥款 ID' };
+    if (kind !== 'approval' && kind !== 'receipt') return { success: false, error: '不正確的通知類型' };
+    if (!(await hasAnyRole(operatorUserId, ['case_officer']))) {
+        return { success: false, error: '僅個管師可寄送撥款階段通知' };
+    }
+    const cleanRecipients = recipients
+        .map(r => ({
+            user_id: String(r.user_id ?? '').trim(),
+            name: String(r.name ?? '').trim(),
+            email: String(r.email ?? '').trim(),
+            is_applicant: !!r.is_applicant,
+            is_bcc: !!r.is_bcc,
+            roles: r.roles ?? [],
+        }))
+        .filter(r => r.user_id && r.name && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email));
+    if (cleanRecipients.length === 0) return { success: false, error: '請至少設定一位有效收件人' };
+    if (!cleanRecipients.some(r => r.is_applicant)) return { success: false, error: '收件人必須包含申請人' };
+    const trimmedSubject = subject.trim();
+    const trimmedBody = body.trim();
+    if (!trimmedSubject) return { success: false, error: '請輸入主旨' };
+    if (!trimmedBody) return { success: false, error: '請輸入通知內容' };
+
+    const client = await pool.connect();
+    let applicationId = '';
+    let caseNumber = '';
+    let overrides: import('../../lib/pdf/generateDisbursementPaymentReceiptPdf').DisbursementOverrides | null = null;
+    let hasReceiptPdf = false;
+    try {
+        const r = await client.query(
+            `SELECT pd.review_stage, pd.application_id::text, pd.receipt_file_path,
+                    pd.amount, pd.external_code, pd.payment_method, pd.bank_name, pd.bank_branch,
+                    pd.bank_account, pd.payee_name, pd.payee_relation, pd.payee_relation_other,
+                    a.case_number
+             FROM payment_disbursements pd
+             JOIN applications a ON a.id = pd.application_id
+             WHERE pd.id = $1::bigint`,
+            [disbursementId],
+        );
+        if (r.rowCount === 0) return { success: false, error: '撥款紀錄不存在' };
+        const row = r.rows[0];
+        const stage = row.review_stage as ReviewStage;
+        if (stage !== '1') return { success: false, error: `當前狀態為「${REVIEW_STAGE_LABEL[stage]}」，無法寄送通知` };
+        applicationId = row.application_id;
+        caseNumber = row.case_number ?? applicationId;
+        hasReceiptPdf = !!row.receipt_file_path;
+        overrides = {
+            amount: Number(row.amount),
+            externalCode: row.external_code ?? '',
+            paymentMethod: row.payment_method,
+            bankName: row.bank_name,
+            bankBranch: row.bank_branch,
+            bankAccount: row.bank_account,
+            payeeName: row.payee_name,
+            payeeRelation: row.payee_relation,
+            payeeRelationOther: row.payee_relation_other,
+        };
+    } finally {
+        client.release();
+    }
+
+    if (kind === 'receipt' && !hasReceiptPdf) {
+        return { success: false, error: '請先產生領款收據 PDF，再寄送領據通知' };
+    }
+
+    const templateName = kind === 'receipt'
+        ? 'email_case_payment_receipt_to_applicant'
+        : 'email_case_disbursement_approval_to_applicant';
+    const templateClient = await pool.connect();
+    let templateId: number | null = null;
+    try {
+        const tr = await templateClient.query(
+            `SELECT id FROM notification_templates WHERE name = $1 AND status = 1 LIMIT 1`,
+            [templateName],
+        );
+        templateId = tr.rows[0]?.id ?? null;
+    } finally {
+        templateClient.release();
+    }
+
+    let attachments: import('./notificationActions').EmailAttachment[] | undefined;
+    if (kind === 'receipt') {
+        const adminClient = await pool.connect();
+        let adminUserId = '';
+        try {
+            const ar = await adminClient.query(
+                `SELECT u.id::text AS id
+                 FROM users u
+                 JOIN user_roles ur ON ur.user_id = u.id
+                 JOIN roles r ON r.id = ur.role_id
+                 WHERE r.code = 'admin' AND u.is_active = TRUE
+                 ORDER BY u.id ASC LIMIT 1`,
+            );
+            adminUserId = ar.rows[0]?.id ?? '';
+        } finally {
+            adminClient.release();
+        }
+        if (!adminUserId) return { success: false, error: '系統找不到可產生領據 PDF 的 admin 帳號' };
+        const { generateDisbursementPaymentReceiptPdf } = await import('../../lib/pdf/generateDisbursementPaymentReceiptPdf');
+        const pdfBuffer = await generateDisbursementPaymentReceiptPdf(applicationId, adminUserId, overrides ?? undefined);
+        attachments = [{
+            filename: `領款收據_${caseNumber}.pdf`,
+            content: pdfBuffer,
+            contentType: 'application/pdf',
+        }];
+    }
+
+    try {
+        const { sendNotificationEmail } = await import('./notificationActions');
+        const res = await sendNotificationEmail(
+            applicationId,
+            cleanRecipients,
+            trimmedSubject,
+            trimmedBody,
+            templateId,
+            operatorUserId,
+            false,
+            attachments,
+            kind === 'receipt' ? disbursementId : null,
+        );
+        if (!res.success) return { success: false, error: res.error ?? '通知寄送失敗' };
+
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: kind === 'receipt'
+                ? 'payment_disbursement.receipt_email_sent'
+                : 'payment_disbursement.approval_email_sent',
+            targetType: 'payment_disbursement',
+            targetId: disbursementId,
+            detail: {
+                applicationId,
+                recipients: cleanRecipients.map(r => ({ email: r.email, is_bcc: r.is_bcc })),
+                notification_kind: kind,
+            },
+        });
+        return { success: true, data: undefined };
+    } catch (err: any) {
+        console.error('sendDisbursementNotificationEmail error:', err);
+        return { success: false, error: err.message ?? '通知寄送失敗' };
+    }
+}
+
 export async function sendDisbursementPaymentReceiptEmail(
     operatorUserId: string,
     disbursementId: string,
@@ -1362,6 +1624,45 @@ export async function setDisbursementDonorConsent(
         return { success: true, data: undefined };
     } catch (err: any) {
         console.error('setDisbursementDonorConsent error:', err);
+        return { success: false, error: err.message ?? '更新失敗' };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── 設定醫療收據狀態（officer only, stage='1'） ────────────────────
+
+export async function setDisbursementMedicalReceiptStatus(
+    operatorUserId: string,
+    disbursementId: string,
+    status: 'official' | 'unpaid',
+): Promise<ActionResult> {
+    if (!/^\d+$/.test(disbursementId)) return { success: false, error: '無效的撥款 ID' };
+    if (status !== 'official' && status !== 'unpaid') return { success: false, error: '不正確的醫療收據狀態' };
+    const client = await pool.connect();
+    try {
+        const cur = await client.query(
+            `SELECT review_stage FROM payment_disbursements WHERE id = $1::bigint`,
+            [disbursementId]
+        );
+        if (cur.rowCount === 0) return { success: false, error: '撥款紀錄不存在' };
+        const stage = cur.rows[0].review_stage as ReviewStage;
+        if (stage !== '1') {
+            return { success: false, error: '僅在個管師持有中階段可設定醫療收據狀態' };
+        }
+        if (!(await hasAnyRole(operatorUserId, rolesForStage('1')))) {
+            return { success: false, error: '僅個管師可設定醫療收據狀態' };
+        }
+        await client.query(
+            `UPDATE payment_disbursements
+             SET medical_receipt_status = $1,
+                 updated_at = NOW()
+             WHERE id = $2::bigint`,
+            [status, disbursementId]
+        );
+        return { success: true, data: undefined };
+    } catch (err: any) {
+        console.error('setDisbursementMedicalReceiptStatus error:', err);
         return { success: false, error: err.message ?? '更新失敗' };
     } finally {
         client.release();
@@ -1530,6 +1831,62 @@ export async function markDisbursementReceived(
 }
 
 // ─── 刪除撥款紀錄（僅 stage='1' 個管師可刪、admin 可隨時刪） ─────────
+
+export async function updateDisbursementRemittanceSlip(
+    operatorUserId: string,
+    disbursementId: string,
+    fileUrl: string,
+): Promise<ActionResult> {
+    if (!/^\d+$/.test(disbursementId)) return { success: false, error: '不正確的撥款 ID' };
+    const trimmedUrl = fileUrl.trim();
+    if (!trimmedUrl) return { success: false, error: '請提供匯款單掃描檔' };
+    if (!(await hasAnyRole(operatorUserId, ['case_officer', 'admin']))) {
+        return { success: false, error: '權限不足' };
+    }
+
+    const client = await pool.connect();
+    try {
+        const cur = await client.query(
+            `SELECT review_stage, application_id::text, receipt_number
+             FROM payment_disbursements
+             WHERE id = $1::bigint`,
+            [disbursementId],
+        );
+        if (cur.rowCount === 0) return { success: false, error: '找不到撥款紀錄' };
+        const row = cur.rows[0];
+        const stage = row.review_stage as ReviewStage;
+        if (stage !== '9') {
+            return { success: false, error: '撥款完成後才能上傳匯款單掃描檔' };
+        }
+
+        await client.query(
+            `UPDATE payment_disbursements
+             SET remittance_slip_file_path = $1,
+                 updated_at = NOW()
+             WHERE id = $2::bigint`,
+            [trimmedUrl, disbursementId],
+        );
+
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'payment_disbursement.updated',
+            targetType: 'payment_disbursement',
+            targetId: disbursementId,
+            detail: {
+                application_id: row.application_id,
+                receipt_number: row.receipt_number,
+                changed_fields: ['remittance_slip_file_path'],
+            },
+        });
+
+        return { success: true, data: undefined };
+    } catch (err: any) {
+        console.error('updateDisbursementRemittanceSlip error:', err);
+        return { success: false, error: err.message ?? '上傳匯款單掃描檔失敗' };
+    } finally {
+        client.release();
+    }
+}
 
 export async function deleteDisbursement(
     operatorUserId: string,

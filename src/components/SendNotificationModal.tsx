@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { X, Send, Users, FileText, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, UserCircle, ClipboardList } from 'lucide-react';
+import { X, Send, Users, FileText, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, UserCircle, ClipboardList, Plus, Trash2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
     NotificationTemplate,
@@ -94,6 +94,7 @@ export function SendNotificationModal({
 
     const [selectedTemplateId, setSelectedTemplateId] = useState<number | null>(null);
     const [selectedRecipients, setSelectedRecipients] = useState<Set<string>>(new Set());
+    const [bccRecipients, setBccRecipients] = useState<Set<string>>(new Set());
     const [subject, setSubject] = useState('');
     const [body, setBody] = useState('');
 
@@ -101,12 +102,17 @@ export function SendNotificationModal({
     const [result, setResult] = useState<{ type: 'success' | 'error'; msg: string } | null>(null);
     const [showRecipients, setShowRecipients] = useState(true);
     const [isPendingDocReminder, setIsPendingDocReminder] = useState(false);
+    const [customRecipientName, setCustomRecipientName] = useState('');
+    const [customRecipientEmail, setCustomRecipientEmail] = useState('');
+    const [customRecipients, setCustomRecipients] = useState<NotificationRecipient[]>([]);
+    const [customRecipientError, setCustomRecipientError] = useState('');
 
     const bodyRef = useRef<HTMLTextAreaElement>(null);
 
     const allRecipients: NotificationRecipient[] = [
         ...(applicantRecipient ? [applicantRecipient] : []),
         ...staffRecipients,
+        ...customRecipients,
     ];
     const totalCount = allRecipients.length;
 
@@ -121,7 +127,10 @@ export function SendNotificationModal({
             isApplicationInPendingDocState(applicationId),
         ]);
         if (tRes.success && tRes.data) setTemplates(tRes.data);
-        if (rRes.success && rRes.data) setStaffRecipients(rRes.data);
+        if (rRes.success && rRes.data) {
+            setStaffRecipients(rRes.data);
+            setBccRecipients(new Set(rRes.data.map(r => r.user_id)));
+        }
         if (aRes.success && aRes.data) setApplicantRecipient(aRes.data);
         if (pdRes.success) setIsPendingDocReminder(!!pdRes.data);
         setLoadingInit(false);
@@ -166,8 +175,31 @@ export function SendNotificationModal({
         setBody(applyPlaceholders(tpl.body, placeholderVars));
     };
 
+    const shouldDefaultBcc = (userId: string) =>
+        staffRecipients.some(r => r.user_id === userId);
+
     const toggleRecipient = (userId: string) => {
         setSelectedRecipients(prev => {
+            const next = new Set(prev);
+            if (next.has(userId)) {
+                next.delete(userId);
+                setBccRecipients(prevBcc => {
+                    const nextBcc = new Set(prevBcc);
+                    nextBcc.delete(userId);
+                    return nextBcc;
+                });
+            } else {
+                next.add(userId);
+                if (shouldDefaultBcc(userId)) {
+                    setBccRecipients(prevBcc => new Set(prevBcc).add(userId));
+                }
+            }
+            return next;
+        });
+    };
+
+    const toggleBccRecipient = (userId: string) => {
+        setBccRecipients(prev => {
             const next = new Set(prev);
             next.has(userId) ? next.delete(userId) : next.add(userId);
             return next;
@@ -179,8 +211,24 @@ export function SendNotificationModal({
         const allChecked = ids.every(id => selectedRecipients.has(id));
         setSelectedRecipients(prev => {
             const next = new Set(prev);
-            if (allChecked) ids.forEach(id => next.delete(id));
-            else ids.forEach(id => next.add(id));
+            if (allChecked) {
+                ids.forEach(id => next.delete(id));
+                setBccRecipients(prevBcc => {
+                    const nextBcc = new Set(prevBcc);
+                    ids.forEach(id => nextBcc.delete(id));
+                    return nextBcc;
+                });
+            }
+            else {
+                ids.forEach(id => next.add(id));
+                setBccRecipients(prevBcc => {
+                    const nextBcc = new Set(prevBcc);
+                    ids.forEach(id => {
+                        if (shouldDefaultBcc(id)) nextBcc.add(id);
+                    });
+                    return nextBcc;
+                });
+            }
             return next;
         });
     };
@@ -188,9 +236,55 @@ export function SendNotificationModal({
     const toggleAll = () => {
         if (selectedRecipients.size === totalCount) {
             setSelectedRecipients(new Set());
+            setBccRecipients(new Set());
         } else {
             setSelectedRecipients(new Set(allRecipients.map(r => r.user_id)));
+            setBccRecipients(new Set(staffRecipients.map(r => r.user_id)));
         }
+    };
+
+    const addCustomRecipient = () => {
+        const name = customRecipientName.trim();
+        const email = customRecipientEmail.trim().toLowerCase();
+
+        if (!name) {
+            setCustomRecipientError('請輸入收件人姓名');
+            return;
+        }
+        if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+            setCustomRecipientError('請輸入有效的 Email');
+            return;
+        }
+        if (allRecipients.some(r => r.email.trim().toLowerCase() === email)) {
+            setCustomRecipientError('這個 Email 已在收件人清單中');
+            return;
+        }
+
+        const recipient: NotificationRecipient = {
+            user_id: `custom:${email}`,
+            name,
+            email,
+            roles: ['external'],
+        };
+        setCustomRecipients(prev => [...prev, recipient]);
+        setSelectedRecipients(prev => new Set(prev).add(recipient.user_id));
+        setCustomRecipientName('');
+        setCustomRecipientEmail('');
+        setCustomRecipientError('');
+    };
+
+    const removeCustomRecipient = (userId: string) => {
+        setCustomRecipients(prev => prev.filter(r => r.user_id !== userId));
+        setSelectedRecipients(prev => {
+            const next = new Set(prev);
+            next.delete(userId);
+            return next;
+        });
+        setBccRecipients(prev => {
+            const next = new Set(prev);
+            next.delete(userId);
+            return next;
+        });
     };
 
     const handleSend = async () => {
@@ -201,7 +295,9 @@ export function SendNotificationModal({
         setSending(true);
         setResult(null);
 
-        const recipients = allRecipients.filter(r => selectedRecipients.has(r.user_id));
+        const recipients = allRecipients
+            .filter(r => selectedRecipients.has(r.user_id))
+            .map(r => ({ ...r, is_bcc: bccRecipients.has(r.user_id) }));
         const res = await sendNotificationEmail(
             applicationId,
             recipients,
@@ -310,7 +406,7 @@ export function SendNotificationModal({
                                                     <span className="text-xs font-semibold text-amber-700">申請人</span>
                                                     <span className="text-xs text-amber-500 ml-1">（本案）</span>
                                                 </div>
-                                                <label className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-amber-50 transition border-b border-slate-100">
+                                                <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-amber-50 transition border-b border-slate-100">
                                                     <input
                                                         type="checkbox"
                                                         checked={selectedRecipients.has(applicantRecipient.user_id)}
@@ -319,7 +415,17 @@ export function SendNotificationModal({
                                                     />
                                                     <span className="text-sm text-slate-800">{applicantRecipient.name}</span>
                                                     <span className="text-xs text-slate-400 ml-auto">{applicantRecipient.email}</span>
-                                                </label>
+                                                    <label className="inline-flex items-center gap-1.5 text-xs text-slate-500 shrink-0 cursor-pointer">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={bccRecipients.has(applicantRecipient.user_id)}
+                                                            onChange={() => toggleBccRecipient(applicantRecipient.user_id)}
+                                                            disabled={!selectedRecipients.has(applicantRecipient.user_id)}
+                                                            className="w-3.5 h-3.5 accent-slate-600 disabled:opacity-40"
+                                                        />
+                                                        密件
+                                                    </label>
+                                                </div>
                                             </div>
                                         )}
 
@@ -342,7 +448,7 @@ export function SendNotificationModal({
                                                         <span className="text-xs text-slate-400 ml-auto">{group.members.length} 人</span>
                                                     </label>
                                                     {group.members.map(r => (
-                                                        <label key={r.user_id} className="flex items-center gap-3 px-4 py-2.5 cursor-pointer hover:bg-blue-50 transition border-b border-slate-100 last:border-b-0">
+                                                        <div key={r.user_id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-blue-50 transition border-b border-slate-100 last:border-b-0">
                                                             <input
                                                                 type="checkbox"
                                                                 checked={selectedRecipients.has(r.user_id)}
@@ -351,11 +457,104 @@ export function SendNotificationModal({
                                                             />
                                                             <span className="text-sm text-slate-800">{r.name}</span>
                                                             <span className="text-xs text-slate-400 ml-auto">{r.email}</span>
-                                                        </label>
+                                                            <label className="inline-flex items-center gap-1.5 text-xs text-slate-500 shrink-0 cursor-pointer">
+                                                                <input
+                                                                    type="checkbox"
+                                                                    checked={bccRecipients.has(r.user_id)}
+                                                                    onChange={() => toggleBccRecipient(r.user_id)}
+                                                                    disabled={!selectedRecipients.has(r.user_id)}
+                                                                    className="w-3.5 h-3.5 accent-slate-600 disabled:opacity-40"
+                                                                />
+                                                                密件
+                                                            </label>
+                                                        </div>
                                                     ))}
                                                 </div>
                                             );
                                         })}
+
+                                        {/* Custom external recipients */}
+                                        {customRecipients.length > 0 && (
+                                            <div>
+                                                <div className="px-4 py-1.5 bg-violet-50 border-b border-violet-100 flex items-center gap-1.5">
+                                                    <UserCircle className="w-3 h-3 text-violet-500" />
+                                                    <span className="text-xs font-semibold text-violet-700">自行新增收件人</span>
+                                                </div>
+                                                {customRecipients.map(r => (
+                                                    <div key={r.user_id} className="flex items-center gap-3 px-4 py-2.5 hover:bg-violet-50 transition border-b border-slate-100 last:border-b-0">
+                                                        <input
+                                                            type="checkbox"
+                                                            checked={selectedRecipients.has(r.user_id)}
+                                                            onChange={() => toggleRecipient(r.user_id)}
+                                                            className="w-4 h-4 accent-violet-600 shrink-0"
+                                                        />
+                                                        <span className="text-sm text-slate-800">{r.name}</span>
+                                                        <span className="text-xs text-slate-400 ml-auto">{r.email}</span>
+                                                        <label className="inline-flex items-center gap-1.5 text-xs text-slate-500 shrink-0 cursor-pointer">
+                                                            <input
+                                                                type="checkbox"
+                                                                checked={bccRecipients.has(r.user_id)}
+                                                                onChange={() => toggleBccRecipient(r.user_id)}
+                                                                disabled={!selectedRecipients.has(r.user_id)}
+                                                                className="w-3.5 h-3.5 accent-slate-600 disabled:opacity-40"
+                                                            />
+                                                            密件
+                                                        </label>
+                                                        <button
+                                                            type="button"
+                                                            onClick={() => removeCustomRecipient(r.user_id)}
+                                                            className="text-slate-400 hover:text-red-600 transition"
+                                                            title="移除此收件人"
+                                                        >
+                                                            <Trash2 className="w-3.5 h-3.5" />
+                                                        </button>
+                                                    </div>
+                                                ))}
+                                            </div>
+                                        )}
+                                    </div>
+
+                                    <div className="border-t border-slate-100 bg-white px-4 py-3 space-y-2">
+                                        <p className="text-[11px] text-slate-400">勾選「密件」後，該收件人會放在 Bcc，不會顯示在其他收件人的收件人列表中。</p>
+                                        <p className="text-xs font-semibold text-slate-500">新增其他收件人</p>
+                                        <div className="grid grid-cols-1 sm:grid-cols-[minmax(0,0.9fr)_minmax(0,1.4fr)_auto] gap-2">
+                                            <input
+                                                className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                value={customRecipientName}
+                                                onChange={e => {
+                                                    setCustomRecipientName(e.target.value);
+                                                    setCustomRecipientError('');
+                                                }}
+                                                placeholder="姓名"
+                                            />
+                                            <input
+                                                type="email"
+                                                className="border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                                value={customRecipientEmail}
+                                                onChange={e => {
+                                                    setCustomRecipientEmail(e.target.value);
+                                                    setCustomRecipientError('');
+                                                }}
+                                                onKeyDown={e => {
+                                                    if (e.key === 'Enter') {
+                                                        e.preventDefault();
+                                                        addCustomRecipient();
+                                                    }
+                                                }}
+                                                placeholder="email@example.com"
+                                            />
+                                            <button
+                                                type="button"
+                                                onClick={addCustomRecipient}
+                                                className="inline-flex items-center justify-center gap-1.5 rounded-lg bg-slate-800 px-3 py-2 text-sm font-medium text-white hover:bg-slate-700 transition"
+                                            >
+                                                <Plus className="w-4 h-4" />
+                                                新增
+                                            </button>
+                                        </div>
+                                        {customRecipientError && (
+                                            <p className="text-xs text-red-600">{customRecipientError}</p>
+                                        )}
                                     </div>
                                 </div>
                             )}

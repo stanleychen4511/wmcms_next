@@ -14,6 +14,7 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Search, X, Loader2, Phone, Heart, Plus, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
+import { DateInput } from './DateInput';
 import {
     fetchContactRecords,
     searchContactsByIdNumber,
@@ -283,19 +284,17 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                     <div className="flex gap-2">
                         <div className="flex-1">
                             <label className="text-xs font-medium text-slate-600">起始日</label>
-                            <input
-                                type="date"
+                            <DateInput
                                 value={dateFrom}
-                                onChange={e => setDateFrom(e.target.value)}
+                                onChange={setDateFrom}
                                 className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
                             />
                         </div>
                         <div className="flex-1">
                             <label className="text-xs font-medium text-slate-600">結束日</label>
-                            <input
-                                type="date"
+                            <DateInput
                                 value={dateTo}
-                                onChange={e => setDateTo(e.target.value)}
+                                onChange={setDateTo}
                                 className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
                             />
                         </div>

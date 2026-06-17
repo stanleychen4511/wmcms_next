@@ -12,6 +12,7 @@
  */
 
 import { pool } from '../../lib/db';
+import { formatDateOnly } from '../../lib/dateOnly';
 import { decryptAES } from '../../lib/crypto';
 import { writeAuditLog } from './auditActions';
 
@@ -460,7 +461,7 @@ export async function fetchCaseStatisticsDrillDown(
             caseId: r.id,
             caseNumber: r.case_number,
             applicantName: decryptName(r.app_name_enc, r.app_name_iv, '（未知）'),
-            applyAt: r.apply_at ? new Date(r.apply_at).toISOString().split('T')[0] : '',
+            applyAt: formatDateOnly(r.apply_at) ?? '',
             approvedAmount: r.approved_amount != null ? Number(r.approved_amount) : null,
             latestComment: r.latest_comment ?? '',
         }));

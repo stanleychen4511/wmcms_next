@@ -1,10 +1,12 @@
 'use server';
 
 import { pool } from '../../lib/db';
+import { formatDateOnly } from '../../lib/dateOnly';
 import { generateBlindIndex } from '../../lib/crypto';
 import { CaseSummary, ApplicationRecord, WorkflowStage, ApplicationStatus } from '../../types';
 import { STATUS_TO_STAGE, DB_STAGE_TO_FRONTEND, STATUS_LABEL } from '../../lib/stageMaps';
 import { writeAuditLog } from './auditActions';
+import { verifyEmailVerificationToken } from './emailVerificationActions';
 
 export interface ApplicationStatusResult {
     found: boolean;
@@ -173,6 +175,7 @@ export async function createNewApplication(
         contactName?: string;
         contactTitle?: string;
         contactPhone?: string;
+        contactEmail?: string;
     },
     /** 補助子類型（115 年辦法）：'1'=經濟弱勢、'2'=小康家庭；未指定則 NULL（後續可在資格表單補填） */
     subsidySubtype?: '1' | '2' | null,
@@ -188,6 +191,8 @@ export async function createNewApplication(
     applicationForm: 'P' | 'E' | '' = '',
     /** 治療階段：'B' 治療前 / 'A' 治療後 / 'X' 治療前後（必填） */
     treatmentPhase: 'B' | 'A' | 'X' | '' = '',
+    emailVerificationToken: string = '',
+    referralEmailVerificationToken: string = '',
 ): Promise<{ success: boolean; caseId?: string; error?: string }> {
     // Email 必填驗證（核銷階段需自動寄領款收據至此信箱）
     const trimmedEmail = (email ?? '').trim();
@@ -195,6 +200,9 @@ export async function createNewApplication(
         return { success: false, error: '請填寫有效的 Email 地址' };
     }
     // 申請人電話必填
+    if (!(await verifyEmailVerificationToken(trimmedEmail, 'applicant_application', emailVerificationToken))) {
+        return { success: false, error: '請先完成申請人 Email 驗證' };
+    }
     const trimmedPhone = (applicantPhone ?? '').trim();
     if (!trimmedPhone) {
         return { success: false, error: '請填寫申請人聯絡電話' };
@@ -217,7 +225,7 @@ export async function createNewApplication(
         return { success: false, error: '請選擇申請形式（紙本／電子郵件）' };
     }
     if (treatmentPhase !== 'B' && treatmentPhase !== 'A' && treatmentPhase !== 'X') {
-        return { success: false, error: '請選擇治療階段（治療前／治療後／治療前後）' };
+        return { success: false, error: '請選擇欲申請治療項目（治療完成三個月以內／治療未開始／兩者皆有）' };
     }
     // 案件來源與轉介單位驗證：way='1' 時一律寫 NULL；way='2' 時須提供轉介單位
     //   - 可從 referral_units 表選（referralUnitId）
@@ -230,6 +238,13 @@ export async function createNewApplication(
         const hasFreeText = !!(referralInfo?.unitName?.trim());
         if (!hasUnitId && !hasFreeText) {
             return { success: false, error: '選擇「轉介」時請選擇或自由填寫轉介單位' };
+        }
+        const referralEmail = referralInfo?.contactEmail?.trim() ?? '';
+        if (!referralEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(referralEmail)) {
+            return { success: false, error: '轉介申請須填寫有效的轉介人 Email' };
+        }
+        if (!(await verifyEmailVerificationToken(referralEmail, 'referral_application', referralEmailVerificationToken))) {
+            return { success: false, error: '請先完成轉介人 Email 驗證' };
         }
         if (hasUnitId) effectiveUnitId = String(referralUnitId);
     }
@@ -369,11 +384,11 @@ export async function createNewApplication(
             INSERT INTO applications (
                 case_number, applicant_id, officer_id, status, apply_at,
                 application_type, apply_amount, application_way, referral_unit_id,
-                referral_unit_name, referral_contact_name, referral_contact_title, referral_contact_phone,
+                referral_unit_name, referral_contact_name, referral_contact_title, referral_contact_phone, referral_contact_email,
                 subsidy_subtype, applicant_phone,
                 applicant_dob, cancer_type, cancer_stage,
                 application_form, treatment_phase
-            ) VALUES ($1, $2, $3, '1', NOW(), $4, $5, $6, $7::bigint, $8, $9, $10, $11, $12, $13, $14::date, $15, $16, $17, $18)
+            ) VALUES ($1, $2, $3, '1', NOW(), $4, $5, $6, $7::bigint, $8, $9, $10, $11, $12, $13, $14, $15::date, $16, $17, $18, $19)
             RETURNING id;
         `, [
             caseNumber, applicantId, officerId, typePrefix, applyAmount ?? null, way, effectiveUnitId,
@@ -381,6 +396,7 @@ export async function createNewApplication(
             referralInfo?.contactName?.trim() || null,
             referralInfo?.contactTitle?.trim() || null,
             referralInfo?.contactPhone?.trim() || null,
+            referralInfo?.contactEmail?.trim() || null,
             effectiveSubtype,
             trimmedPhone,
             trimmedDob, trimmedCancerType, trimmedCancerStage,
@@ -529,7 +545,7 @@ export async function fetchCaseSummaries(
                 applicantPhone: row.applicant_phone ?? null,
                 applicationCount: parseInt(row.app_count),
                 totalAmount: parseInt(row.total_approved) || 0,
-                appliedAt: row.apply_at ? row.apply_at.toISOString().split('T')[0] : '',
+                appliedAt: formatDateOnly(row.apply_at) ?? '',
                 stage,
                 officer: offName,
                 officerId: row.officer_id ? String(row.officer_id) : null,
@@ -633,7 +649,7 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
                 caseNumber: row.case_number ?? undefined,
                 applicantId,
                 applicantName,
-                appliedAt: row.apply_at ? row.apply_at.toISOString().split('T')[0] : '',
+                appliedAt: formatDateOnly(row.apply_at) ?? '',
                 stage,
                 officer: offName,
                 status,
@@ -698,7 +714,7 @@ export async function fetchUnassignedCases(): Promise<Array<{ applicationId: str
                 applicationId: row.app_id,
                 caseNumber: row.case_number ?? '',
                 applicantName: name,
-                appliedAt: row.apply_at ? row.apply_at.toISOString().split('T')[0] : null,
+                appliedAt: formatDateOnly(row.apply_at),
             };
         });
     } catch (err) {
@@ -1117,7 +1133,7 @@ export async function updateApplicationBasics(
         if (patch.treatmentPhase !== undefined) {
             if (patch.treatmentPhase !== 'B' && patch.treatmentPhase !== 'A' && patch.treatmentPhase !== 'X') {
                 await client.query('ROLLBACK');
-                return { success: false, error: '治療階段必須為治療前／治療後／治療前後' };
+                return { success: false, error: '欲申請治療項目必須為治療完成三個月以內、治療未開始或兩者皆有' };
             }
             if (patch.treatmentPhase !== row.treatment_phase) {
                 treatmentPhaseChanged = true;

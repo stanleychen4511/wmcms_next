@@ -8,6 +8,8 @@ import {
     upsertAnnouncement, deleteAnnouncement,
     upsertCategory, deleteCategory,
 } from '../app/actions/announcementActions';
+import { DateInput } from './DateInput';
+import { todayDateOnly } from '../lib/dateOnly';
 
 interface AnnouncementManagerProps {
     userId?: string;
@@ -27,7 +29,7 @@ const COLOR_PRESETS = [
     { label: '青',  value: 'bg-teal-100 text-teal-700' },
 ];
 
-const today = () => new Date().toISOString().split('T')[0];
+const today = todayDateOnly;
 
 interface AnnForm {
     title: string;
@@ -292,19 +294,19 @@ export function AnnouncementManager({ userId }: AnnouncementManagerProps) {
                                 {/* Publish date */}
                                 <div>
                                     <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">公告時間 *</label>
-                                    <input type="date" value={annForm.publish_date} onChange={e => setAnnForm(p => ({ ...p, publish_date: e.target.value }))}
+                                    <DateInput value={annForm.publish_date} onChange={value => setAnnForm(p => ({ ...p, publish_date: value }))}
                                         className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                                 </div>
 
                                 {/* Date range */}
                                 <div>
                                     <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">顯示區間開始 *</label>
-                                    <input type="date" value={annForm.start_date} onChange={e => setAnnForm(p => ({ ...p, start_date: e.target.value }))}
+                                    <DateInput value={annForm.start_date} onChange={value => setAnnForm(p => ({ ...p, start_date: value }))}
                                         className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                                 </div>
                                 <div>
                                     <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">顯示區間結束 <span className="font-normal text-gray-400">（空白 = 永久）</span></label>
-                                    <input type="date" value={annForm.end_date} onChange={e => setAnnForm(p => ({ ...p, end_date: e.target.value }))}
+                                    <DateInput value={annForm.end_date} onChange={value => setAnnForm(p => ({ ...p, end_date: value }))}
                                         className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
                                 </div>
 

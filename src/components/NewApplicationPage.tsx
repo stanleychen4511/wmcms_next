@@ -6,6 +6,8 @@ import { AppHeader } from './AppHeader';
 import { useToast } from './FloatingToast';
 import { ApplicationForm } from './ApplicationForm';
 import { ContactSearchModal } from './ContactSearchModal';
+import { EmailVerificationControl } from './EmailVerificationControl';
+import { DateInput } from './DateInput';
 import type { ApplicantFormValues } from '../schemas/applicant';
 
 interface NewApplicationPageProps {
@@ -17,6 +19,17 @@ interface NewApplicationPageProps {
     onGoHome: () => void;
     onLogout: () => void;
     onSubmitSuccess: (newCaseId: string) => void;
+}
+
+function calculateAgeFromDob(value: string): number | null {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const dob = new Date(`${value}T00:00:00`);
+    if (Number.isNaN(dob.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - dob.getFullYear();
+    const monthDelta = today.getMonth() - dob.getMonth();
+    if (monthDelta < 0 || (monthDelta === 0 && today.getDate() < dob.getDate())) age--;
+    return age >= 0 ? age : null;
 }
 
 
@@ -140,6 +153,7 @@ export function NewApplicationPage({
     const [name, setName] = useState('');
     const [idNumber, setIdNumber] = useState('');
     const [email, setEmail] = useState('');
+    const [emailVerificationToken, setEmailVerificationToken] = useState('');
     const [emailError, setEmailError] = useState('');
     const [applicantPhone, setApplicantPhone] = useState('');
     const [applicantPhoneError, setApplicantPhoneError] = useState('');
@@ -167,9 +181,11 @@ export function NewApplicationPage({
     const [referralContactName, setReferralContactName] = useState('');
     const [referralContactTitle, setReferralContactTitle] = useState('');
     const [referralContactPhone, setReferralContactPhone] = useState('');
+    const [referralContactEmail, setReferralContactEmail] = useState('');
+    const [referralEmailVerificationToken, setReferralEmailVerificationToken] = useState('');
     /** 4 個轉介必填欄位的個別錯誤訊息 */
     const [referralFieldErrors, setReferralFieldErrors] = useState<{
-        unit?: string; name?: string; title?: string; phone?: string;
+        unit?: string; name?: string; title?: string; phone?: string; email?: string;
     }>({});
     /** referralUnitId 特殊值 'other' 表示「其他/不在清單中」，提交時將該名稱新建為 referral_unit */
     const OTHER_UNIT = 'other';
@@ -349,6 +365,9 @@ export function NewApplicationPage({
         } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
             setEmailError('請填寫有效的 Email 地址');
             ok = false;
+        } else if (!emailVerificationToken) {
+            setEmailError('請先完成申請人 Email 驗證');
+            ok = false;
         } else {
             setEmailError('');
         }
@@ -429,6 +448,14 @@ export function NewApplicationPage({
             if (!referralContactName.trim()) errs.name  = '承辦人姓名必填';
             if (!referralContactTitle.trim()) errs.title = '承辦人職稱必填';
             if (!referralContactPhone.trim()) errs.phone = '承辦人聯絡電話必填';
+            if (!referralContactEmail.trim()) {
+                errs.email = '承辦人 Email 必填';
+            } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(referralContactEmail.trim())) {
+                errs.email = '請填寫有效的承辦人 Email';
+            }
+            if (!errs.email && !referralEmailVerificationToken) {
+                errs.email = '請先完成承辦人 Email 驗證';
+            }
             setReferralFieldErrors(errs);
             if (Object.keys(errs).length > 0) ok = false;
         } else {
@@ -542,6 +569,7 @@ export function NewApplicationPage({
                     contactName:  referralContactName.trim() || undefined,
                     contactTitle: referralContactTitle.trim() || undefined,
                     contactPhone: referralContactPhone.trim() || undefined,
+                    contactEmail: referralContactEmail.trim() || undefined,
                 } : undefined,
                 subsidySubtype === '' ? null : subsidySubtype,
                 applicantPhone.trim(),
@@ -550,6 +578,8 @@ export function NewApplicationPage({
                 cancerStage.trim(),
                 applicationForm || '',
                 treatmentPhase || '',
+                emailVerificationToken,
+                applicationWay === '2' ? referralEmailVerificationToken : '',
             );
             if (res.success && res.caseId) {
                 // 寫入資格預審資料（婚姻 / 子女 / 收入 / 動產 / 不動產 / 經濟弱勢專屬）
@@ -679,9 +709,6 @@ export function NewApplicationPage({
                         >
                             <option value="">請選擇申請類別</option>
                             <option value="A">A 類－自費醫療補助</option>
-                            <option value="B">B 類－臨終安寧自費醫療補助</option>
-                            <option value="C">C 類－預立醫療照護諮商補助</option>
-                            <option value="D">D 類－醫事人員進修補助</option>
                         </select>
                         {appTypeError && (
                             <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
@@ -824,8 +851,16 @@ export function NewApplicationPage({
                                 'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
                                 emailError
                                     ? 'border-red-400 focus:ring-red-200 bg-red-50'
-                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                                : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
                             ].join(' ')}
+                        />
+                        <EmailVerificationControl
+                            email={email}
+                            purpose="applicant_application"
+                            verifiedToken={emailVerificationToken}
+                            onVerified={setEmailVerificationToken}
+                            onReset={() => setEmailVerificationToken('')}
+                            label="申請人 Email"
                         />
                         {emailError && (
                             <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
@@ -868,10 +903,16 @@ export function NewApplicationPage({
                         <label className="block text-sm font-semibold text-slate-700 mb-1.5">
                             出生年月日（西元）<span className="text-red-500 ml-1">*</span>
                         </label>
-                        <input
-                            type="date"
+                        <DateInput
                             value={applicantDob}
-                            onChange={e => { setApplicantDob(e.target.value); setApplicantDobError(''); }}
+                            onChange={value => {
+                                setApplicantDob(value);
+                                setApplicantDobError('');
+                                const age = calculateAgeFromDob(value);
+                                if (age !== null) {
+                                    setQualFormValues(prev => ({ ...prev, age }));
+                                }
+                            }}
                             className={[
                                 'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
                                 applicantDobError
@@ -954,13 +995,13 @@ export function NewApplicationPage({
                         </div>
                         <div>
                             <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                                治療階段 <span className="text-red-500 ml-1">*</span>
+                                欲申請治療項目 <span className="text-red-500 ml-1">*</span>
                             </label>
                             <div className="flex gap-2 mt-1">
                                 {([
-                                    { v: 'B', label: '治療前' },
-                                    { v: 'A', label: '治療後' },
-                                    { v: 'X', label: '治療前後' },
+                                    { v: 'A', label: '治療完成（三個月以內）' },
+                                    { v: 'B', label: '治療未開始' },
+                                    { v: 'X', label: '兩者皆有' },
                                 ] as const).map(opt => (
                                     <label key={opt.v} className={`inline-flex items-center gap-1 px-2 py-2 rounded-lg border cursor-pointer text-sm flex-1 justify-center ${
                                         treatmentPhase === opt.v
@@ -1039,6 +1080,12 @@ export function NewApplicationPage({
                                     <ul className="list-disc list-inside space-y-1 text-xs ml-1">
                                         {eligibilityCheck.reasons.map((r, i) => <li key={i}>{r}</li>)}
                                     </ul>
+                                    <div className="rounded border border-amber-200 bg-amber-100/50 px-3 py-2 text-[11px] text-amber-800 space-y-1">
+                                        <p>建議可在另一補助類型輸入資料，確認是否符合另一補助。</p>
+                                        {subsidySubtype === '2' && (
+                                            <p>小康家庭若最新年度收入未達最低標準，可由近三年綜所稅中任選一年有達標的年收入提出申請。</p>
+                                        )}
+                                    </div>
                                     <p className="text-[11px] text-amber-700">請調整上方資料後再次按「執行資格判定」。</p>
                                 </div>
                             )}
@@ -1074,7 +1121,7 @@ export function NewApplicationPage({
                                     onChange={() => setApplicationWay('2')}
                                     className="w-4 h-4 accent-blue-600"
                                 />
-                                <span className="text-sm text-slate-700">轉介</span>
+                                <span className="text-sm text-slate-700">轉介（社工/個管師等代為申請)</span>
                             </label>
                         </div>
 
@@ -1207,6 +1254,32 @@ export function NewApplicationPage({
                                             />
                                             {referralFieldErrors.phone && (
                                                 <p className="text-xs text-red-500 mt-0.5">{referralFieldErrors.phone}</p>
+                                            )}
+                                        </div>
+                                        <div className="md:col-span-2">
+                                            <label className="block text-xs font-medium text-slate-600 mb-1">
+                                                承辦人 Email <span className="text-red-500">*</span>
+                                            </label>
+                                            <input
+                                                type="email" maxLength={100}
+                                                value={referralContactEmail}
+                                                onChange={e => {
+                                                    setReferralContactEmail(e.target.value);
+                                                    setReferralFieldErrors(p => ({ ...p, email: undefined }));
+                                                }}
+                                                placeholder="例：social.worker@example.org"
+                                                className={`w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ${referralFieldErrors.email ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                                            />
+                                            <EmailVerificationControl
+                                                email={referralContactEmail}
+                                                purpose="referral_application"
+                                                verifiedToken={referralEmailVerificationToken}
+                                                onVerified={setReferralEmailVerificationToken}
+                                                onReset={() => setReferralEmailVerificationToken('')}
+                                                label="承辦人 Email"
+                                            />
+                                            {referralFieldErrors.email && (
+                                                <p className="text-xs text-red-500 mt-0.5">{referralFieldErrors.email}</p>
                                             )}
                                         </div>
                                     </div>

@@ -3,7 +3,7 @@
 import { useState, useRef, useCallback, useEffect } from 'react';
 import {
     CheckCircle, CheckCircle2, XCircle, Loader2, Upload, X, FileText, ChevronRight, ArrowLeft,
-    AlertTriangle, ShieldQuestion, Lock,
+    AlertTriangle, ShieldQuestion, Lock, Info,
 } from 'lucide-react';
 import { clsx } from 'clsx';
 import { ApplicationForm } from './ApplicationForm';
@@ -11,10 +11,12 @@ import { fetchEligibilityRules } from '../app/actions/eligibilityRulesActions';
 import { fetchSetting } from '../app/actions/settingsActions';
 import { checkEligibility, type ApplicantData } from '../utils/eligibility';
 import { ApplicantFormValues } from '../schemas/applicant';
-import { queryApplicantEligibility, submitExternalApplication } from '../app/actions/intakeActions';
+import { fetchApplicantQuota, queryApplicantEligibility, submitExternalApplication, type ApplicantQuota } from '../app/actions/intakeActions';
 import { twIdError } from '../lib/validateTwId';
 import { fetchDocumentTypeConfigs, type DocumentTypeConfig } from '../app/actions/documentActions';
 import { uploadFileToBlob } from '../lib/uploadClient';
+import { EmailVerificationControl } from './EmailVerificationControl';
+import { DateInput } from './DateInput';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -27,10 +29,22 @@ interface DocFile {
     required: boolean;
     allowSupplement: boolean;
     file: File | null;
+    files: UploadedDocFile[];
     /** 上傳狀態 — 客戶端直接 PUT 到 Vercel Blob（避開 4.5 MB function 上限） */
     uploadStatus: 'idle' | 'uploading' | 'done' | 'error';
     uploadProgress: number;        // 0–100
     url?: string;                  // 上傳完成後的 Blob URL
+    mimeType?: string;
+    size?: number;
+    errorMsg?: string;
+    tooltipText?: string | null;
+}
+
+interface UploadedDocFile {
+    file: File;
+    uploadStatus: 'uploading' | 'done' | 'error';
+    uploadProgress: number;
+    url?: string;
     mimeType?: string;
     size?: number;
     errorMsg?: string;
@@ -61,6 +75,17 @@ const DEFAULT_QUALIFICATION: ApplicantFormValues = {
     econDeposit: undefined,
     econMonthlyIncome: undefined,
 };
+
+function calculateAgeFromDob(value: string): number | null {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return null;
+    const dob = new Date(`${value}T00:00:00`);
+    if (Number.isNaN(dob.getTime())) return null;
+    const today = new Date();
+    let age = today.getFullYear() - dob.getFullYear();
+    const monthDelta = today.getMonth() - dob.getMonth();
+    if (monthDelta < 0 || (monthDelta === 0 && today.getDate() < dob.getDate())) age--;
+    return age >= 0 ? age : null;
+}
 
 // ─── Step Indicator ───────────────────────────────────────────────────────────
 
@@ -99,17 +124,24 @@ function StepIndicator({ current }: { current: number }) {
 
 // ─── Document Upload Row ──────────────────────────────────────────────────────
 
-function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (file: File | null) => void }) {
+function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (files: File[] | null) => void }) {
     const inputRef = useRef<HTMLInputElement>(null);
     const isUploading = doc.uploadStatus === 'uploading';
-    const isDone = doc.uploadStatus === 'done';
     const isError = doc.uploadStatus === 'error';
+    const hasFiles = doc.files.length > 0;
 
     return (
         <div className="py-2.5 border-b border-gray-100 last:border-0">
             <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium text-gray-700">{doc.label}</span>
+                    <span className="text-sm font-medium text-gray-700">
+                        {doc.label}
+                        {doc.tooltipText && (
+                            <span className="ml-1 inline-flex align-middle text-slate-400" title={doc.tooltipText}>
+                                <Info className="w-3.5 h-3.5" />
+                            </span>
+                        )}
+                    </span>
                     {doc.required && !doc.allowSupplement && (
                         <span className="ml-1 text-red-500 text-xs" title="送出前必須上傳">*</span>
                     )}
@@ -118,26 +150,33 @@ function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (file: File |
                             可補件
                         </span>
                     )}
-                    {doc.file && (
-                        <p className={clsx(
-                            'text-xs mt-0.5 truncate',
-                            isDone   ? 'text-green-600' :
-                            isError  ? 'text-red-600' :
-                            'text-gray-500'
-                        )}>
-                            {doc.file.name}
-                            {isDone   && '（已就緒 ✓）'}
-                            {isUploading && `（上傳中 ${doc.uploadProgress}%）`}
-                            {isError  && `（${doc.errorMsg ?? '上傳失敗'}）`}
-                        </p>
+                    {hasFiles && (
+                        <div className="mt-1 space-y-0.5">
+                            {doc.files.map((item, index) => (
+                                <p
+                                    key={`${item.file.name}-${index}`}
+                                    className={clsx(
+                                        'text-xs truncate',
+                                        item.uploadStatus === 'done' ? 'text-green-600' :
+                                        item.uploadStatus === 'error' ? 'text-red-600' :
+                                        'text-gray-500'
+                                    )}
+                                >
+                                    {item.file.name}
+                                    {item.uploadStatus === 'done' && '（已就緒 ✓）'}
+                                    {item.uploadStatus === 'uploading' && `（上傳中 ${item.uploadProgress}%）`}
+                                    {item.uploadStatus === 'error' && `（${item.errorMsg ?? '上傳失敗'}）`}
+                                </p>
+                            ))}
+                        </div>
                     )}
                 </div>
-                {doc.file ? (
+                {hasFiles ? (
                     <div className="flex items-center gap-2 shrink-0">
                         {isError && (
                             <button
                                 type="button"
-                                onClick={() => onChange(doc.file)}
+                                onClick={() => onChange(doc.files.filter(item => item.uploadStatus === 'error').map(item => item.file))}
                                 className="flex items-center gap-1 text-xs text-blue-600 hover:text-blue-800"
                                 title="重新上傳"
                             >
@@ -171,9 +210,13 @@ function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (file: File |
                 <input
                     ref={inputRef}
                     type="file"
+                    multiple
                     accept=".pdf,.doc,.docx,.jpg,.jpeg,.png"
                     className="hidden"
-                    onChange={e => onChange(e.target.files?.[0] ?? null)}
+                    onChange={e => {
+                        onChange(e.target.files ? Array.from(e.target.files) : null);
+                        e.currentTarget.value = '';
+                    }}
                 />
             </div>
             {isUploading && (
@@ -193,6 +236,7 @@ function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (file: File |
 export function ExternalIntake() {
     const [step, setStep] = useState<Step>('landing');
     const [email, setEmail] = useState('');
+    const [emailVerificationToken, setEmailVerificationToken] = useState('');
     const [applicantPhone, setApplicantPhone] = useState('');
     const [applicantPhoneError, setApplicantPhoneError] = useState('');
     const [applicantDob, setApplicantDob] = useState('');
@@ -216,9 +260,10 @@ export function ExternalIntake() {
             .catch(err => console.error('fetchSubsidyAmountLimitsMap error:', err));
     }, []);
     const [ineligibleReason, setIneligibleReason] = useState('');
+    const [activeApplicationStatus, setActiveApplicationStatus] = useState<{ caseNumber: string; progress: string } | null>(null);
     const [errorMsg, setErrorMsg] = useState('');
     const [caseNumber, setCaseNumber] = useState('');
-    const [applicationType, setApplicationType] = useState('');
+    const [applicationType, setApplicationType] = useState('A');
     // 轉介模式 + 轉介窗口（user feedback #1 + #6）
     // 經濟弱勢 → 強制 way='2' 轉介；小康 → 預設 '1' 自提，可改 '2' 轉介
     const [applicationWay, setApplicationWay] = useState<'1' | '2'>('1');
@@ -227,12 +272,13 @@ export function ExternalIntake() {
     const [referralContactTitle, setReferralContactTitle] = useState('');
     const [referralContactPhone, setReferralContactPhone] = useState('');
     const [referralContactEmail, setReferralContactEmail] = useState('');
-    const [referralErrors, setReferralErrors] = useState<{ unit?: string; name?: string; title?: string; phone?: string }>({});
+    const [referralEmailVerificationToken, setReferralEmailVerificationToken] = useState('');
+    const [referralErrors, setReferralErrors] = useState<{ unit?: string; name?: string; title?: string; phone?: string; email?: string }>({});
     const [qualFormValid, setQualFormValid] = useState(false);
     const [qualFormValues, setQualFormValues] = useState<ApplicantFormValues>(DEFAULT_QUALIFICATION);
     const [documentConfigs, setDocumentConfigs] = useState<DocumentTypeConfig[]>([]);
     const [docs, setDocs] = useState<DocFile[]>([]);
-    const [quota, setQuota] = useState<{ cumulativeApproved: number; maxAmount: number; remaining: number } | null>(null);
+    const [quota, setQuota] = useState<ApplicantQuota | null>(null);
 
     useEffect(() => {
         fetchDocumentTypeConfigs()
@@ -255,8 +301,10 @@ export function ExternalIntake() {
                 required: c.is_required,
                 allowSupplement: c.allow_supplement,
                 file: null,
+                files: [],
                 uploadStatus: 'idle',
                 uploadProgress: 0,
+                tooltipText: c.tooltip_text,
             }));
         setDocs(applyDocs);
     }, [documentConfigs, qualFormValues.subsidyType]);
@@ -266,13 +314,14 @@ export function ExternalIntake() {
         useState<{ checked: boolean; eligible: boolean; reasons: string[] } | null>(null);
     const [eligibilityChecking, setEligibilityChecking] = useState(false);
 
-    /** 不符合資格時顯示的萬美聯絡方式（LINE 官方帳號 + 電話） */
-    const [orgContact, setOrgContact] = useState<{ lineId: string; phone: string }>({ lineId: '', phone: '' });
+    /** 後台設定的萬美聯絡方式（LINE 官方帳號 + 電話 + QR code） */
+    const [orgContact, setOrgContact] = useState<{ lineId: string; phone: string; qrUrl: string }>({ lineId: '', phone: '', qrUrl: '' });
     useEffect(() => {
         Promise.all([
             fetchSetting('line_official_account_id', ''),
             fetchSetting('org_phone', ''),
-        ]).then(([lineId, phone]) => setOrgContact({ lineId, phone }));
+            fetchSetting('org_line_qr_url', ''),
+        ]).then(([lineId, phone, qrUrl]) => setOrgContact({ lineId, phone, qrUrl }));
     }, []);
 
     /** 動態計算當前 form 適用的最大值：選了子類型就用該值，否則取較大者 */
@@ -281,6 +330,49 @@ export function ExternalIntake() {
         if (st === '1' || st === '2') return subtypeMaxAmounts[st];
         return Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2']);
     })();
+
+    const currentQuota = (() => {
+        if (!quota) return null;
+        const st = qualFormValues?.subsidyType;
+        if (st === '1') {
+            return {
+                cumulativeApproved: quota.econUsed,
+                maxAmount: quota.econMax,
+                remaining: quota.econRemaining,
+            };
+        }
+        if (st === '2') {
+            return {
+                cumulativeApproved: quota.midUsed,
+                maxAmount: quota.midMax,
+                remaining: quota.midRemaining,
+            };
+        }
+        return {
+            cumulativeApproved: quota.cumulativeApproved,
+            maxAmount: quota.maxAmount,
+            remaining: quota.remaining,
+        };
+    })();
+
+    const effectiveMax = currentQuota ? Math.min(currentQuota.remaining, maxApplyAmount) : maxApplyAmount;
+
+    useEffect(() => {
+        if (applyAmount === '') {
+            setApplyAmountError('');
+            return;
+        }
+        const amount = Number(applyAmount);
+        if (!Number.isFinite(amount) || amount <= 0) {
+            setApplyAmountError('請輸入申請金額');
+            return;
+        }
+        if (amount > effectiveMax) {
+            setApplyAmountError(`申請金額不可超過 ${effectiveMax.toLocaleString()} 元`);
+            return;
+        }
+        setApplyAmountError('');
+    }, [applyAmount, effectiveMax]);
 
     const handleQualValidation = useCallback((isValid: boolean, values: ApplicantFormValues) => {
         setQualFormValid(isValid);
@@ -328,51 +420,103 @@ export function ExternalIntake() {
     }, [qualFormValues, eligibilityChecking]);
 
     /** 選檔（或重試）→ 立刻在背景上傳到 Vercel Blob，UI 顯示進度 */
-    const updateDoc = async (field: string, file: File | null) => {
+    const updateDoc = async (field: string, files: File[] | null) => {
         // 移除檔案
-        if (!file) {
+        if (!files || files.length === 0) {
             setDocs(prev => prev.map(d => d.field === field ? {
-                ...d, file: null, uploadStatus: 'idle', uploadProgress: 0,
+                ...d, file: null, files: [], uploadStatus: 'idle', uploadProgress: 0,
                 url: undefined, mimeType: undefined, size: undefined, errorMsg: undefined,
             } : d));
             return;
         }
 
         // 進入上傳中狀態
+        const uploadItems: UploadedDocFile[] = files.map(file => ({
+            file,
+            uploadStatus: 'uploading',
+            uploadProgress: 0,
+        }));
         setDocs(prev => prev.map(d => d.field === field ? {
-            ...d, file, uploadStatus: 'uploading', uploadProgress: 0,
+            ...d, file: files[0], files: uploadItems, uploadStatus: 'uploading', uploadProgress: 0,
             url: undefined, errorMsg: undefined,
         } : d));
 
-        try {
-            const safeId = (idNumber || 'anonymous').replace(/[^A-Z0-9]/gi, '');
-            const uploaded = await uploadFileToBlob(file, {
-                pathPrefix: `intake/${safeId}`,
-                onProgress: (pct) => {
-                    setDocs(prev => prev.map(d => d.field === field
-                        ? { ...d, uploadProgress: pct } : d));
-                },
-            });
-            setDocs(prev => prev.map(d => d.field === field ? {
-                ...d, uploadStatus: 'done', uploadProgress: 100,
-                url: uploaded.url, mimeType: uploaded.mimeType, size: uploaded.size,
-            } : d));
-        } catch (err: unknown) {
-            console.error('blob upload failed for', field, err);
-            setDocs(prev => prev.map(d => d.field === field ? {
-                ...d, uploadStatus: 'error',
-                errorMsg: err instanceof Error ? err.message : '上傳失敗，請重試',
-            } : d));
+        const safeId = (idNumber || 'anonymous').replace(/[^A-Z0-9]/gi, '');
+
+        for (let index = 0; index < files.length; index += 1) {
+            const file = files[index];
+            try {
+                const uploaded = await uploadFileToBlob(file, {
+                    pathPrefix: `intake/${safeId}`,
+                    onProgress: (pct) => {
+                        setDocs(prev => prev.map(d => {
+                            if (d.field !== field) return d;
+                            const nextFiles = d.files.map((item, itemIndex) => (
+                                itemIndex === index ? { ...item, uploadProgress: pct } : item
+                            ));
+                            const avgProgress = Math.round(nextFiles.reduce((sum, item) => sum + item.uploadProgress, 0) / nextFiles.length);
+                            return { ...d, files: nextFiles, uploadProgress: avgProgress };
+                        }));
+                    },
+                });
+                setDocs(prev => prev.map(d => {
+                    if (d.field !== field) return d;
+                    const nextFiles = d.files.map((item, itemIndex) => (
+                        itemIndex === index
+                            ? {
+                                ...item,
+                                uploadStatus: 'done' as const,
+                                uploadProgress: 100,
+                                url: uploaded.url,
+                                mimeType: uploaded.mimeType,
+                                size: uploaded.size,
+                            }
+                            : item
+                    ));
+                    const hasUploading = nextFiles.some(item => item.uploadStatus === 'uploading');
+                    const hasError = nextFiles.some(item => item.uploadStatus === 'error');
+                    const firstDone = nextFiles.find(item => item.uploadStatus === 'done');
+                    return {
+                        ...d,
+                        files: nextFiles,
+                        uploadStatus: hasUploading ? 'uploading' : hasError ? 'error' : 'done',
+                        uploadProgress: hasUploading ? d.uploadProgress : 100,
+                        file: firstDone?.file ?? nextFiles[0]?.file ?? null,
+                        url: firstDone?.url,
+                        mimeType: firstDone?.mimeType,
+                        size: firstDone?.size,
+                        errorMsg: hasError ? '部分檔案上傳失敗，請重試' : undefined,
+                    };
+                }));
+            } catch (err: unknown) {
+                console.error('blob upload failed for', field, err);
+                setDocs(prev => prev.map(d => {
+                    if (d.field !== field) return d;
+                    const message = err instanceof Error ? err.message : '上傳失敗，請重試';
+                    const nextFiles = d.files.map((item, itemIndex) => (
+                        itemIndex === index
+                            ? { ...item, uploadStatus: 'error' as const, errorMsg: message }
+                            : item
+                    ));
+                    const hasUploading = nextFiles.some(item => item.uploadStatus === 'uploading');
+                    return {
+                        ...d,
+                        files: nextFiles,
+                        uploadStatus: hasUploading ? 'uploading' : 'error',
+                        errorMsg: message,
+                    };
+                }));
+            }
         }
     };
 
     // 必填且不可補件的文件，需要「已成功上傳」才算有
     const requiredDocsMissing = docs.filter(d =>
-        d.required && !d.allowSupplement && d.uploadStatus !== 'done'
+        d.required && !d.allowSupplement && !d.files.some(file => file.uploadStatus === 'done')
     );
     /** 還有檔案上傳中或上傳失敗 → 暫時不允許送出 */
-    const hasInflightUploads = docs.some(d => d.uploadStatus === 'uploading');
-    const hasFailedUploads = docs.some(d => d.uploadStatus === 'error');
+    const hasInflightUploads = docs.some(d => d.files.some(file => file.uploadStatus === 'uploading'));
+    const hasFailedUploads = docs.some(d => d.files.some(file => file.uploadStatus === 'error'));
 
     // ── Step: Landing ─────────────────────────────────────────────────────────
     if (step === 'landing') {
@@ -479,6 +623,18 @@ export function ExternalIntake() {
                     </button>
                 </div>
 
+                <div className="mb-6 text-center">
+                    <a
+                        href="https://wan-mei.org/service/#self-paid-medical-subsidy"
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="inline-flex items-center gap-1.5 rounded-lg border border-blue-200 bg-white px-4 py-2 text-sm font-medium text-blue-700 shadow-sm transition hover:border-blue-300 hover:bg-blue-50"
+                    >
+                        <FileText className="w-4 h-4" />
+                        申請文件下載處
+                    </a>
+                </div>
+
                 <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-6 text-sm text-amber-800">
                     <strong>注意事項：</strong>每位申請人「同時間僅可有一個進行中案件」；累計補助上限依您選擇的子類型而定（如上）。
                 </div>
@@ -491,42 +647,29 @@ export function ExternalIntake() {
     if (step === 'query') {
         const handleQuery = async (e: React.FormEvent) => {
             e.preventDefault();
-            const trimmedEmail = email.trim();
-            if (!trimmedEmail) {
-                setErrorMsg('請填寫 Email');
-                return;
-            }
-            if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
-                setErrorMsg('請填寫有效的 Email 地址');
-                return;
-            }
             const idErr = twIdError(idNumber.trim());
             if (idErr) { setErrorMsg(idErr); return; }
             setErrorMsg('');
             setStep('checking');
 
-            const result = await queryApplicantEligibility(idNumber.trim().toUpperCase());
+            const selectedSubtype =
+                qualFormValues.subsidyType === '1' || qualFormValues.subsidyType === '2'
+                    ? qualFormValues.subsidyType
+                    : undefined;
+            const result = await queryApplicantEligibility(idNumber.trim().toUpperCase(), selectedSubtype);
 
             if (result.error) {
                 setErrorMsg(result.error);
                 setStep('query');
             } else if (!result.eligible) {
                 setIneligibleReason(result.reason ?? '不符合申請資格');
+                setActiveApplicationStatus(result.activeApplication ?? null);
                 setStep('ineligible');
             } else {
+                setActiveApplicationStatus(null);
                 setStep('form');
-                // Use quota data already returned by eligibility check (avoids redundant DB call).
-                // For first-time applicants result.remaining is undefined → show full max amount.
-                if (result.remaining !== undefined && result.maxAmount !== undefined) {
-                    setQuota({
-                        cumulativeApproved: result.cumulativeApproved ?? 0,
-                        maxAmount: result.maxAmount,
-                        remaining: result.remaining,
-                    });
-                } else {
-                    // First-time applicant: no prior history — 顯示用兩者較大值
-                    setQuota({ cumulativeApproved: 0, maxAmount: maxApplyAmount, remaining: maxApplyAmount });
-                }
+                const latestQuota = await fetchApplicantQuota(idNumber.trim().toUpperCase());
+                setQuota(latestQuota);
             }
         };
 
@@ -535,23 +678,8 @@ export function ExternalIntake() {
                 <StepIndicator current={0} />
                 <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
                     <h3 className="text-lg font-bold text-gray-800 mb-1">資格查詢</h3>
-                    <p className="text-sm text-gray-500 mb-6">請輸入您的電子郵件及身分證字號以確認申請資格。</p>
+                    <p className="text-sm text-gray-500 mb-6">請輸入您的身分證字號以確認申請資格。</p>
                     <form onSubmit={handleQuery} className="space-y-4">
-                        <div>
-                            <label className="block text-sm font-medium text-gray-700 mb-1">
-                                電子郵件 <span className="text-red-500">*</span>
-                            </label>
-                            <input
-                                type="email"
-                                value={email}
-                                onChange={e => setEmail(e.target.value)}
-                                required
-                                placeholder="your@email.com"
-                                title="請填寫 Email — 案件通過後會將領款收據寄至此信箱"
-                                className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                            />
-                            <p className="text-[11px] text-gray-500 mt-1">案件通過後會將領款收據寄至此信箱，請務必填寫正確</p>
-                        </div>
                         <div>
                             <label className="block text-sm font-medium text-gray-700 mb-1">身分證字號</label>
                             <input
@@ -591,11 +719,27 @@ export function ExternalIntake() {
 
     // ── Step: Ineligible ──────────────────────────────────────────────────────
     if (step === 'ineligible') {
+        const ineligibleTitle = activeApplicationStatus
+            ? '您已正在申請中'
+            : /額度|上限/.test(ineligibleReason)
+                ? '您申請額度已滿'
+                : '目前無法送出申請';
         return (
             <div className="max-w-md mx-auto py-12 px-4 text-center">
                 <XCircle className="w-14 h-14 text-red-400 mx-auto mb-4" />
-                <h3 className="text-xl font-bold text-gray-800 mb-2">不符合申請資格</h3>
+                <h3 className="text-xl font-bold text-gray-800 mb-2">{ineligibleTitle}</h3>
                 <p className="text-sm text-gray-500 mb-6 leading-relaxed">{ineligibleReason}</p>
+                {activeApplicationStatus && (
+                    <div className="mb-6 rounded-xl border border-blue-200 bg-blue-50 px-4 py-3 text-left">
+                        <p className="text-xs font-semibold text-blue-600 mb-2">目前申請進度</p>
+                        <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-x-3 gap-y-1 text-sm">
+                            <span className="text-blue-700/70">案件編號</span>
+                            <span className="font-mono font-bold text-blue-900 break-all">{activeApplicationStatus.caseNumber || '—'}</span>
+                            <span className="text-blue-700/70">目前狀態</span>
+                            <span className="font-semibold text-blue-900">{activeApplicationStatus.progress}</span>
+                        </div>
+                    </div>
+                )}
                 <button
                     onClick={() => setStep('landing')}
                     className="inline-flex items-center gap-2 text-sm text-gray-600 hover:text-gray-800 border border-gray-300 rounded-lg px-4 py-2 transition"
@@ -610,7 +754,6 @@ export function ExternalIntake() {
     // ── Step: Form ────────────────────────────────────────────────────────────
     if (step === 'form' || step === 'submitting') {
         const amountNum = applyAmount === '' ? 0 : Number(applyAmount);
-        const effectiveMax = quota ? Math.min(quota.remaining, maxApplyAmount) : maxApplyAmount;
         const amountValid = amountNum > 0 && amountNum <= effectiveMax;
         const eligibilityPassed = !!(eligibilityCheck?.checked && eligibilityCheck?.eligible);
         const canUpload = eligibilityPassed;
@@ -633,6 +776,20 @@ export function ExternalIntake() {
             }
             // 申請人電話 / 出生年月日 / 癌別 / 期數 必填
             let formOk = true;
+            const trimmedEmail = email.trim();
+            if (!trimmedEmail) {
+                setErrorMsg('請填寫申請人 Email');
+                formOk = false;
+            } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+                setErrorMsg('請填寫有效的申請人 Email 地址');
+                formOk = false;
+            } else {
+                setErrorMsg('');
+            }
+            if (!emailVerificationToken) {
+                setErrorMsg('請先完成申請人 Email 驗證');
+                formOk = false;
+            }
             if (!applicantPhone.trim()) { setApplicantPhoneError('請填寫聯絡電話'); formOk = false; } else setApplicantPhoneError('');
             if (!/^\d{4}-\d{2}-\d{2}$/.test(applicantDob.trim())) { setApplicantDobError('請選擇出生年月日'); formOk = false; } else setApplicantDobError('');
             if (!cancerType.trim()) { setCancerTypeError('請填寫癌別'); formOk = false; } else setCancerTypeError('');
@@ -649,6 +806,13 @@ export function ExternalIntake() {
                 if (!referralContactName.trim())  refErrs.name  = '請填寫轉介人姓名';
                 if (!referralContactTitle.trim()) refErrs.title = '請填寫轉介人職稱';
                 if (!referralContactPhone.trim()) refErrs.phone = '請填寫轉介人聯絡電話';
+                if (!referralContactEmail.trim()) {
+                    refErrs.email = '請填寫轉介人 Email';
+                } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(referralContactEmail.trim())) {
+                    refErrs.email = '請填寫有效的轉介人 Email 地址';
+                } else if (!referralEmailVerificationToken) {
+                    refErrs.email = '請先完成轉介人 Email 驗證';
+                }
                 setReferralErrors(refErrs);
                 if (Object.keys(refErrs).length > 0) formOk = false;
             } else {
@@ -662,6 +826,7 @@ export function ExternalIntake() {
             fd.append('name', name.trim());
             fd.append('idNumber', idNumber);
             fd.append('email', email);
+            fd.append('email_verification_token', emailVerificationToken);
             fd.append('applicant_phone', applicantPhone.trim());
             fd.append('applicant_dob', applicantDob.trim());
             fd.append('cancer_type', cancerType.trim());
@@ -701,19 +866,21 @@ export function ExternalIntake() {
                 fd.append('referral_contact_name', referralContactName.trim());
                 fd.append('referral_contact_title', referralContactTitle.trim());
                 fd.append('referral_contact_phone', referralContactPhone.trim());
-                if (referralContactEmail.trim()) fd.append('referral_contact_email', referralContactEmail.trim());
+                fd.append('referral_contact_email', referralContactEmail.trim());
+                fd.append('referral_email_verification_token', referralEmailVerificationToken);
             }
 
             // 文件已在背景上傳到 Blob；此處只送 metadata + URL
             const documentsPayload = docs
-                .filter(d => d.uploadStatus === 'done' && d.url)
-                .map(d => ({
-                    docId: d.docId,
-                    url: d.url,
-                    originalName: d.file?.name,
-                    mimeType: d.mimeType,
-                    size: d.size,
-                }));
+                .flatMap(d => d.files
+                    .filter(file => file.uploadStatus === 'done' && file.url)
+                    .map(file => ({
+                        docId: d.docId,
+                        url: file.url,
+                        originalName: file.file.name,
+                        mimeType: file.mimeType,
+                        size: file.size,
+                    })));
             fd.append('documents', JSON.stringify(documentsPayload));
 
             const result = await submitExternalApplication(fd);
@@ -748,6 +915,14 @@ export function ExternalIntake() {
                                     placeholder="請輸入真實姓名"
                                     className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
+                                <EmailVerificationControl
+                                    email={email}
+                                    purpose="applicant_application"
+                                    verifiedToken={emailVerificationToken}
+                                    onVerified={setEmailVerificationToken}
+                                    onReset={() => setEmailVerificationToken('')}
+                                    label="申請人 Email"
+                                />
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-1">身分證字號</label>
@@ -759,13 +934,17 @@ export function ExternalIntake() {
                                 />
                             </div>
                             <div className="md:col-span-2">
-                                <label className="block text-sm font-medium text-gray-700 mb-1">電子郵件</label>
+                                <label className="block text-sm font-medium text-gray-700 mb-1">
+                                    申請人 Email <span className="text-red-500">*</span>
+                                </label>
                                 <input
                                     type="email"
                                     value={email}
-                                    readOnly
-                                    className="w-full border border-gray-200 bg-gray-50 rounded-md px-3 py-2 text-sm text-gray-500 cursor-not-allowed"
+                                    onChange={e => { setEmail(e.target.value); setErrorMsg(''); }}
+                                    placeholder="applicant@example.com"
+                                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
+                                <p className="text-xs text-slate-400 mt-1">案件通知與後續聯絡會寄至此信箱。</p>
                             </div>
                             <div className="md:col-span-2">
                                 <label className="block text-sm font-medium text-gray-700 mb-1">
@@ -792,10 +971,16 @@ export function ExternalIntake() {
                                 <label className="block text-sm font-medium text-gray-700 mb-1">
                                     出生年月日（西元）<span className="text-red-500">*</span>
                                 </label>
-                                <input
-                                    type="date"
+                                <DateInput
                                     value={applicantDob}
-                                    onChange={e => { setApplicantDob(e.target.value); setApplicantDobError(''); }}
+                                    onChange={value => {
+                                        setApplicantDob(value);
+                                        setApplicantDobError('');
+                                        const age = calculateAgeFromDob(value);
+                                        if (age !== null) {
+                                            setQualFormValues(prev => ({ ...prev, age }));
+                                        }
+                                    }}
                                     className={[
                                         'w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
                                         applicantDobError ? 'border-red-400 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500',
@@ -855,13 +1040,13 @@ export function ExternalIntake() {
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                                    治療階段 <span className="text-red-500">*</span>
+                                    欲申請治療項目 <span className="text-red-500">*</span>
                                 </label>
                                 <div className="flex gap-2">
                                     {([
-                                        { v: 'B', label: '治療前' },
-                                        { v: 'A', label: '治療後' },
-                                        { v: 'X', label: '治療前後' },
+                                        { v: 'A', label: '治療完成（三個月以內）' },
+                                        { v: 'B', label: '治療未開始' },
+                                        { v: 'X', label: '兩者皆有' },
                                     ] as const).map(opt => (
                                         <label key={opt.v} className={`inline-flex items-center gap-1 px-2 py-2 rounded-md border cursor-pointer text-sm flex-1 justify-center ${
                                             treatmentPhase === opt.v
@@ -890,11 +1075,7 @@ export function ExternalIntake() {
                                     disabled={step === 'submitting'}
                                     className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-gray-50 disabled:text-gray-500"
                                 >
-                                    <option value="">請選擇申請類別</option>
                                     <option value="A">A 類－自費醫療補助</option>
-                                    <option value="B">B 類－臨終安寧自費醫療補助</option>
-                                    <option value="C">C 類－預立醫療照護諮商補助</option>
-                                    <option value="D">D 類－醫事人員進修補助</option>
                                 </select>
                             </div>
                             {/* 申請方式 + 轉介窗口（user feedback #1 #6）
@@ -928,7 +1109,7 @@ export function ExternalIntake() {
                                                 <input type="radio" checked={isEcon || applicationWay === '2'}
                                                     onChange={() => setApplicationWay('2')}
                                                     className="accent-blue-600" />
-                                                轉介（社工/醫師等代為申請）
+                                                轉介（社工/個管師等代為申請)
                                             </label>
                                         </div>
                                     </div>
@@ -988,13 +1169,26 @@ export function ExternalIntake() {
                                                 </div>
                                                 <div className="md:col-span-2">
                                                     <label className="block text-xs font-medium text-gray-700 mb-1">
-                                                        轉介人 Email（選填）
+                                                        轉介人 Email <span className="text-red-500">*</span>
                                                     </label>
                                                     <input type="email" value={referralContactEmail}
-                                                        onChange={e => setReferralContactEmail(e.target.value)}
-                                                        placeholder="若填寫，後續通知會同時寄轉介人"
+                                                        onChange={e => {
+                                                            setReferralContactEmail(e.target.value);
+                                                            setReferralErrors(p => ({ ...p, email: undefined }));
+                                                        }}
+                                                        placeholder="請填寫轉介人 Email"
                                                         maxLength={100}
-                                                        className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+                                                        className={clsx('w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
+                                                            referralErrors.email ? 'border-red-400 focus:ring-red-200 bg-red-50' : 'border-gray-300 focus:ring-blue-500')} />
+                                                    <EmailVerificationControl
+                                                        email={referralContactEmail}
+                                                        purpose="referral_application"
+                                                        verifiedToken={referralEmailVerificationToken}
+                                                        onVerified={setReferralEmailVerificationToken}
+                                                        onReset={() => setReferralEmailVerificationToken('')}
+                                                        label="轉介人 Email"
+                                                    />
+                                                    {referralErrors.email && <p className="text-xs text-red-500 mt-0.5">{referralErrors.email}</p>}
                                                 </div>
                                             </div>
                                         </div>
@@ -1009,16 +1203,16 @@ export function ExternalIntake() {
                     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
                         <h3 className="text-base font-bold text-gray-800 mb-4">資格預審資料</h3>
                         {/* Quota display */}
-                        {quota && (
+                        {currentQuota && (
                             <div className="mb-4 bg-blue-50 border border-blue-200 rounded-lg px-4 py-3 text-sm space-y-1">
                                 <p className="text-slate-600">
                                     <span className="text-slate-500">累積已獲補助：</span>
-                                    <span className="font-semibold text-slate-800">NT${quota.cumulativeApproved.toLocaleString()} 元</span>
+                                    <span className="font-semibold text-slate-800">NT${currentQuota.cumulativeApproved.toLocaleString()} 元</span>
                                 </p>
                                 <p className="text-slate-600">
                                     <span className="text-slate-500">尚可申請額度：</span>
-                                    <span className={`font-semibold ${quota.remaining <= 0 ? 'text-red-600' : 'text-emerald-700'}`}>
-                                        NT${quota.remaining.toLocaleString()} 元
+                                    <span className={`font-semibold ${currentQuota.remaining <= 0 ? 'text-red-600' : 'text-emerald-700'}`}>
+                                        NT${currentQuota.remaining.toLocaleString()} 元
                                     </span>
                                 </p>
                             </div>
@@ -1108,34 +1302,51 @@ export function ExternalIntake() {
                                     <ul className="list-disc list-inside space-y-1 text-xs ml-1">
                                         {eligibilityCheck.reasons.map((r, i) => <li key={i}>{r}</li>)}
                                     </ul>
+                                    <div className="rounded border border-amber-200 bg-amber-100/50 px-3 py-2 text-[11px] text-amber-800 space-y-1">
+                                        <p>建議您可以在另一補助類型輸入資料，可能您符合另一補助。</p>
+                                        {qualFormValues.subsidyType === '2' && (
+                                            <p>因治療可能影響工作，若您最新年度收入未達最低標準，可由近三年綜所稅中任選一年有達標的年收入提出申請。</p>
+                                        )}
+                                    </div>
                                     <p className="text-[11px] text-amber-700">請調整上方資料後再次按「執行資格判定」。</p>
-                                    {(orgContact.lineId || orgContact.phone) && (
-                                        <div className="border-t border-amber-200 pt-2 mt-2 text-xs text-amber-800 space-y-1">
-                                            <p className="font-semibold">如有疑問或特殊狀況請聯繫萬美基金會：</p>
-                                            {orgContact.lineId && (
-                                                <p>
-                                                    ‧ 官方 LINE：
-                                                    <a
-                                                        href={`https://line.me/R/ti/p/${encodeURIComponent(orgContact.lineId)}`}
-                                                        target="_blank"
-                                                        rel="noopener noreferrer"
-                                                        className="ml-1 font-mono text-amber-900 underline hover:text-amber-950"
-                                                    >
-                                                        {orgContact.lineId}
-                                                    </a>
-                                                </p>
-                                            )}
-                                            {orgContact.phone && (
-                                                <p>
-                                                    ‧ 聯絡電話：
-                                                    <a
-                                                        href={`tel:${orgContact.phone.replace(/[^0-9+]/g, '')}`}
-                                                        className="ml-1 font-mono text-amber-900 underline hover:text-amber-950"
-                                                    >
-                                                        {orgContact.phone}
-                                                    </a>
-                                                </p>
-                                            )}
+                                    {(orgContact.lineId || orgContact.phone || orgContact.qrUrl) && (
+                                        <div className="border-t border-amber-200 pt-2 mt-2 text-xs text-amber-800">
+                                            <p className="font-semibold mb-2">如有疑問或特殊狀況請聯繫萬美基金會：</p>
+                                            <div className="flex flex-col sm:flex-row gap-3">
+                                                {orgContact.qrUrl && (
+                                                    <img
+                                                        src={orgContact.qrUrl}
+                                                        alt="萬美官方 LINE QR code"
+                                                        className="h-24 w-24 rounded-lg border border-amber-200 bg-white p-1 object-contain"
+                                                    />
+                                                )}
+                                                <div className="space-y-1 min-w-0">
+                                                    {orgContact.lineId && (
+                                                        <p>
+                                                            ‧ 官方 LINE：
+                                                            <a
+                                                                href={`https://line.me/R/ti/p/${encodeURIComponent(orgContact.lineId)}`}
+                                                                target="_blank"
+                                                                rel="noopener noreferrer"
+                                                                className="ml-1 font-mono text-amber-900 underline hover:text-amber-950 break-all"
+                                                            >
+                                                                {orgContact.lineId}
+                                                            </a>
+                                                        </p>
+                                                    )}
+                                                    {orgContact.phone && (
+                                                        <p>
+                                                            ‧ 聯絡電話：
+                                                            <a
+                                                                href={`tel:${orgContact.phone.replace(/[^0-9+]/g, '')}`}
+                                                                className="ml-1 font-mono text-amber-900 underline hover:text-amber-950"
+                                                            >
+                                                                {orgContact.phone}
+                                                            </a>
+                                                        </p>
+                                                    )}
+                                                </div>
+                                            </div>
                                         </div>
                                     )}
                                 </div>
@@ -1160,7 +1371,7 @@ export function ExternalIntake() {
                                 <DocUploadRow
                                     key={doc.field}
                                     doc={doc}
-                                    onChange={file => updateDoc(doc.field, file)}
+                                    onChange={files => updateDoc(doc.field, files)}
                                 />
                             ))}
                         </div>
@@ -1180,7 +1391,7 @@ export function ExternalIntake() {
                                 送出前必須上傳：{requiredDocsMissing.map(d => d.label).join('、')}
                             </p>
                         )}
-                        {canUpload && docs.some(d => d.required && d.allowSupplement && !d.file) && (
+                        {canUpload && docs.some(d => d.required && d.allowSupplement && !d.files.some(file => file.uploadStatus === 'done')) && (
                             <p className="text-xs text-amber-600 mt-1.5">
                                 標示「可補件」的文件可於送出後補交，建議盡早提供以利審核。
                             </p>
@@ -1239,6 +1450,17 @@ export function ExternalIntake() {
     }
 
     // ── Step: Success ─────────────────────────────────────────────────────────
+    const contactLineId = orgContact.lineId.trim();
+    const contactPhone = orgContact.phone.trim();
+    const contactQrUrl = orgContact.qrUrl.trim();
+    const lineHref = contactLineId
+        ? `https://line.me/R/ti/p/${encodeURIComponent(contactLineId)}`
+        : '';
+    const phoneHref = contactPhone
+        ? `tel:${contactPhone.replace(/[^0-9+]/g, '')}`
+        : '';
+    const hasContactInfo = Boolean(contactQrUrl || contactLineId || contactPhone);
+
     return (
         <div className="max-w-md mx-auto py-12 px-4 text-center">
             <StepIndicator current={2} />
@@ -1252,6 +1474,37 @@ export function ExternalIntake() {
                 <p className="text-xs text-blue-400 mb-0.5">案件編號</p>
                 <p className="text-2xl font-mono font-bold text-blue-700">{caseNumber}</p>
             </div>
+            {hasContactInfo && (
+                <div className="mb-8 rounded-xl border border-emerald-200 bg-emerald-50 p-4 text-left">
+                    <div className="flex items-center gap-4">
+                        {contactQrUrl && (
+                            <img
+                                src={contactQrUrl}
+                                alt="萬美官方 LINE QR code"
+                                className="h-24 w-24 rounded-lg border border-white bg-white p-1"
+                            />
+                        )}
+                        <div className="min-w-0 text-sm text-emerald-900">
+                            <p className="font-semibold">後續聯絡資訊</p>
+                            {contactLineId && (
+                                <a
+                                    href={lineHref}
+                                    target="_blank"
+                                    rel="noopener noreferrer"
+                                    className="mt-1 block break-all text-emerald-800 underline"
+                                >
+                                    加入萬美官方 LINE
+                                </a>
+                            )}
+                            {contactPhone && (
+                                <a href={phoneHref} className="mt-1 block font-mono text-emerald-800 underline">
+                                    {contactPhone}
+                                </a>
+                            )}
+                        </div>
+                    </div>
+                </div>
+            )}
             <div className="text-xs text-gray-400">
                 請記錄此案件編號，如有需要請聯繫萬美基金會承辦人員。
             </div>

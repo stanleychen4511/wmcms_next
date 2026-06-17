@@ -45,6 +45,13 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
         }
     }, [hasChildren, setValue]);
 
+    useEffect(() => {
+        setValue('age', initialValues.age ?? 0, {
+            shouldDirty: false,
+            shouldValidate: true,
+        });
+    }, [initialValues.age, setValue]);
+
     // 婚姻狀態變動 → 清空育兒相關欄位（不影響首次 mount）
     const prevMaritalRef = useRef<typeof maritalStatus | undefined>(undefined);
     useEffect(() => {

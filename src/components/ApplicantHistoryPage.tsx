@@ -230,7 +230,8 @@ function ApplicationsSection({ activeRecord, sortedRecords, isLoading, onSelectA
                             sortedRecords.map((rec, idx) => {
                                 const isActive = rec.status === 'active';
                                 const isCompleted = rec.status === 'closed' && rec.closedReason === '核銷完成';
-                                const isClickable = isActive || isCompleted;
+                                const isRejected = rec.status === 'closed' && !isCompleted;
+                                const isClickable = true;
                                 const isLast = idx === sortedRecords.length - 1;
                                 return (
                                     <tr
@@ -241,7 +242,7 @@ function ApplicationsSection({ activeRecord, sortedRecords, isLoading, onSelectA
                                             !isLast ? 'border-b border-gray-50' : '',
                                             isActive ? 'cursor-pointer hover:bg-blue-50 group' : '',
                                             isCompleted ? 'cursor-pointer hover:bg-gray-50 group opacity-80' : '',
-                                            !isClickable ? 'opacity-60' : '',
+                                            isRejected ? 'cursor-pointer hover:bg-rose-50 group opacity-80' : '',
                                         ].join(' ')}
                                     >
                                         <td className="py-3.5 px-4 text-gray-700 font-medium">{rec.appliedAt}</td>
@@ -277,9 +278,7 @@ function ApplicationsSection({ activeRecord, sortedRecords, isLoading, onSelectA
                                             )}
                                         </td>
                                         <td className="py-3.5 px-4 text-right">
-                                            {isClickable && (
-                                                <ChevronRight className={`w-4 h-4 transition-colors inline ${isActive ? 'text-gray-300 group-hover:text-blue-500' : 'text-gray-200 group-hover:text-gray-400'}`} />
-                                            )}
+                                            <ChevronRight className={`w-4 h-4 transition-colors inline ${isActive ? 'text-gray-300 group-hover:text-blue-500' : isRejected ? 'text-gray-200 group-hover:text-rose-400' : 'text-gray-200 group-hover:text-gray-400'}`} />
                                         </td>
                                     </tr>
                                 );

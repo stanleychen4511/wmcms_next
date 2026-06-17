@@ -26,7 +26,7 @@ export async function GET(req: NextRequest) {
     // ── 本地開發：相對路徑，從 public/ 讀取 ────────────────────────────────────
     // 允許子目錄（撥款上傳會放在 /uploads/{appId}/disb{disbId}/...）；
     // 嚴禁 .. 與絕對路徑跳脫，否則 400
-    if (!/^\/(uploads|intake)\//.test(filePath) || filePath.includes('..')) {
+    if (!/^\/(uploads|intake|board-reconsideration)\//.test(filePath) || filePath.includes('..')) {
         return new NextResponse('Invalid path', { status: 400 });
     }
 

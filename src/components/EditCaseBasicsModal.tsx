@@ -5,6 +5,7 @@ import { updateApplicationBasics, UpdateApplicationBasicsPatch } from '../app/ac
 import { fetchActiveReferralUnits, createReferralUnit } from '../app/actions/referralUnitActions';
 import { useToast } from './FloatingToast';
 import { useModalDismiss } from '../hooks/useModalDismiss';
+import { DateInput } from './DateInput';
 
 export interface EditCaseBasicsInitial {
     applicantName: string;
@@ -322,10 +323,9 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
                             <label className="block text-sm font-semibold text-slate-700 mb-1">
                                 出生年月日 <span className="text-red-500">*</span>
                             </label>
-                            <input
-                                type="date"
+                            <DateInput
                                 value={applicantDob}
-                                onChange={e => { setApplicantDob(e.target.value); setDobError(''); }}
+                                onChange={value => { setApplicantDob(value); setDobError(''); }}
                                 className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 transition ${
                                     dobError ? 'border-red-400 focus:ring-red-200' : 'border-slate-300 focus:ring-blue-200 focus:border-blue-400'
                                 }`}

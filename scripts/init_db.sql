@@ -67,6 +67,7 @@ CREATE TABLE IF NOT EXISTS document_type_config (
     is_active           BOOLEAN  NOT NULL DEFAULT TRUE,
     subsidy_subtype     CHAR(1),
     paper_requirement   VARCHAR(20) NOT NULL DEFAULT 'original',
+    tooltip_text        TEXT,
     CONSTRAINT document_type_config_subsidy_subtype_chk
         CHECK (subsidy_subtype IS NULL OR subsidy_subtype IN ('1', '2')),
     CONSTRAINT document_type_config_paper_requirement_chk
@@ -88,6 +89,9 @@ ALTER TABLE document_type_config
 
 ALTER TABLE document_type_config
     ADD COLUMN IF NOT EXISTS paper_requirement VARCHAR(20) NOT NULL DEFAULT 'original';
+
+ALTER TABLE document_type_config
+    ADD COLUMN IF NOT EXISTS tooltip_text TEXT;
 
 DO $$
 BEGIN
@@ -329,7 +333,8 @@ ALTER TABLE applications
     ADD COLUMN IF NOT EXISTS referral_unit_name TEXT,
     ADD COLUMN IF NOT EXISTS referral_contact_name TEXT,
     ADD COLUMN IF NOT EXISTS referral_contact_title TEXT,
-    ADD COLUMN IF NOT EXISTS referral_contact_phone TEXT;
+    ADD COLUMN IF NOT EXISTS referral_contact_phone TEXT,
+    ADD COLUMN IF NOT EXISTS referral_contact_email TEXT;
 
 -- 6b4. applications: 補助子類型（#2, added 2026-04，依 115 年辦法）
 ALTER TABLE applications
@@ -526,6 +531,101 @@ COMMENT ON COLUMN application_close_reasons.reason_code IS '01-10 不通過原�
 COMMENT ON COLUMN application_close_reasons.detail_value IS '金額／年齡／自由說明';
 COMMENT ON COLUMN application_close_reasons.closed_at_stage IS '結案發生的 workflow stage';
 
+-- 14b. rejected_application_archives: 紙本初判未通過、不建立正式案件的歸檔資料
+CREATE TABLE IF NOT EXISTS rejected_application_archives (
+    id                 BIGSERIAL PRIMARY KEY,
+    applicant_name_enc BYTEA NOT NULL,
+    applicant_name_iv  BYTEA NOT NULL,
+    apply_at           TIMESTAMPTZ NOT NULL,
+    application_form   CHAR(1),
+    reason_rows        JSONB NOT NULL DEFAULT '[]'::jsonb,
+    officer_id         BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    notes              TEXT,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT rejected_application_archives_application_form_chk
+        CHECK (application_form IS NULL OR application_form IN ('P', 'E'))
+);
+CREATE INDEX IF NOT EXISTS idx_rejected_archives_apply_at
+    ON rejected_application_archives (apply_at);
+CREATE INDEX IF NOT EXISTS idx_rejected_archives_officer
+    ON rejected_application_archives (officer_id);
+CREATE INDEX IF NOT EXISTS idx_rejected_archives_reasons
+    ON rejected_application_archives USING GIN (reason_rows);
+COMMENT ON TABLE rejected_application_archives IS '紙本申請初判未通過且不建立正式案件時的報表歸檔資料';
+COMMENT ON COLUMN rejected_application_archives.applicant_name_enc IS '申請人姓名 AES 加密內容';
+COMMENT ON COLUMN rejected_application_archives.applicant_name_iv IS '申請人姓名 AES IV';
+COMMENT ON COLUMN rejected_application_archives.apply_at IS '歸檔所屬申請日期';
+COMMENT ON COLUMN rejected_application_archives.application_form IS '申請形式：P=紙本、E=電子郵件';
+COMMENT ON COLUMN rejected_application_archives.reason_rows IS '不通過原因陣列：[{code, detail}]';
+COMMENT ON COLUMN rejected_application_archives.officer_id IS '建立此筆歸檔的人員';
+COMMENT ON COLUMN rejected_application_archives.notes IS '備註';
+
+-- 14c. board_reconsideration_requests（#50：核銷階段退回董事再次審核）
+CREATE TABLE IF NOT EXISTS board_reconsideration_requests (
+    id                         BIGSERIAL PRIMARY KEY,
+    application_id             BIGINT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    status                     TEXT NOT NULL DEFAULT 'pending_supervisor',
+    reason                     TEXT NOT NULL,
+    attachment_url             TEXT,
+    attachment_urls            JSONB NOT NULL DEFAULT '[]'::jsonb,
+    requested_by               BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    requested_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    supervisor_id              BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    supervisor_note            TEXT,
+    supervisor_reviewed_at     TIMESTAMPTZ,
+    final_board_review_comments TEXT,
+    final_approved_amount      NUMERIC(12,2),
+    CONSTRAINT board_reconsideration_requests_status_chk
+        CHECK (status IN ('pending_supervisor', 'approved', 'rejected'))
+);
+CREATE INDEX IF NOT EXISTS idx_board_reconsideration_requests_app
+    ON board_reconsideration_requests (application_id, requested_at DESC);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_board_reconsideration_requests_pending
+    ON board_reconsideration_requests (application_id)
+    WHERE status = 'pending_supervisor';
+COMMENT ON TABLE board_reconsideration_requests IS '核銷階段因治療變更等原因退回董事再次審核的申請與主管審核紀錄';
+COMMENT ON COLUMN board_reconsideration_requests.reason IS '承辦人填寫的退回董事再審原因';
+COMMENT ON COLUMN board_reconsideration_requests.attachment_url IS '退回訊息附件 URL（PDF/JPG/PNG）';
+COMMENT ON COLUMN board_reconsideration_requests.attachment_urls IS '退回訊息多附件 URL 陣列（PDF/JPG/PNG），保留 attachment_url 作為舊資料相容欄位';
+COMMENT ON COLUMN board_reconsideration_requests.final_board_review_comments IS '本次再次董事審核完成後彙整的意見，不覆蓋第一次審核內容';
+
+ALTER TABLE board_reconsideration_requests
+    ADD COLUMN IF NOT EXISTS attachment_urls JSONB NOT NULL DEFAULT '[]'::jsonb;
+
+UPDATE board_reconsideration_requests
+SET attachment_urls = jsonb_build_array(attachment_url)
+WHERE attachment_url IS NOT NULL
+  AND btrim(attachment_url) <> ''
+  AND attachment_urls = '[]'::jsonb;
+
+-- 14d. board_review_rounds：董事審核多輪歷史（最新輪才是實際審核依據）
+CREATE TABLE IF NOT EXISTS board_review_rounds (
+    id                         BIGSERIAL PRIMARY KEY,
+    application_id             BIGINT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    round_no                   INT NOT NULL,
+    source_reconsideration_id  BIGINT REFERENCES board_reconsideration_requests(id) ON DELETE SET NULL,
+    approved_amount            NUMERIC(12,2),
+    comments                   TEXT,
+    signatures                 JSONB NOT NULL DEFAULT '[]'::jsonb,
+    completed_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    is_latest                  BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at                 TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    UNIQUE (application_id, round_no)
+);
+CREATE INDEX IF NOT EXISTS idx_board_review_rounds_app
+    ON board_review_rounds (application_id, round_no DESC);
+CREATE INDEX IF NOT EXISTS idx_board_review_rounds_latest
+    ON board_review_rounds (application_id)
+    WHERE is_latest = TRUE;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_board_review_rounds_reconsideration
+    ON board_review_rounds (source_reconsideration_id)
+    WHERE source_reconsideration_id IS NOT NULL;
+COMMENT ON TABLE board_review_rounds IS '董事審核多輪歷史；核銷退回再審時保留前一輪，最新輪為實際審核依據';
+COMMENT ON COLUMN board_review_rounds.round_no IS '同一案件第幾次董事審核，正常流程為 1，核銷退回再審後為 2+';
+COMMENT ON COLUMN board_review_rounds.source_reconsideration_id IS '若本輪源自核銷階段退回董事再審，連結 board_reconsideration_requests.id';
+COMMENT ON COLUMN board_review_rounds.signatures IS '本輪完成時的董事簽章與個別審核意見快照';
+COMMENT ON COLUMN board_review_rounds.is_latest IS '是否為目前實際採用的最新董事審核結果';
+
 -- CHECK 約束（冪等）
 DO $$
 BEGIN
@@ -586,6 +686,8 @@ CREATE TABLE IF NOT EXISTS payment_disbursements (
     sent_at            DATE,
     received_at        DATE,
     receipt_file_path  TEXT,
+    remittance_slip_file_path TEXT,
+    medical_receipt_status TEXT,
     notes              TEXT,
     created_by         BIGINT       REFERENCES users(id) ON DELETE SET NULL,
     created_at         TIMESTAMPTZ  NOT NULL DEFAULT NOW(),
@@ -609,6 +711,29 @@ BEGIN
 END$$;
 COMMENT ON COLUMN payment_disbursements.receipt_number IS '內部收據編號（YYYY-MM-NNNN，每月歸零的流水號），UNIQUE';
 COMMENT ON COLUMN payment_disbursements.external_code  IS '外部隱碼（6 字元 base32 隨機），對外露出此碼；UNIQUE';
+
+-- 7f-1c. payment_disbursements 匯款單掃描檔（完成撥款後補上傳）
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS remittance_slip_file_path TEXT;
+COMMENT ON COLUMN payment_disbursements.remittance_slip_file_path IS '撥款完成後上傳的匯款單掃描檔 URL';
+
+-- 7f-1d. payment_disbursements 醫療收據狀態（#51）
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS medical_receipt_status TEXT;
+DO $$
+BEGIN
+    IF NOT EXISTS (
+        SELECT 1
+        FROM pg_constraint
+        WHERE conname = 'payment_disbursements_medical_receipt_status_chk'
+          AND conrelid = 'public.payment_disbursements'::regclass
+    ) THEN
+        ALTER TABLE payment_disbursements
+            ADD CONSTRAINT payment_disbursements_medical_receipt_status_chk
+            CHECK (medical_receipt_status IS NULL OR medical_receipt_status IN ('official', 'unpaid'));
+    END IF;
+END $$;
+COMMENT ON COLUMN payment_disbursements.medical_receipt_status IS '醫療收據狀態：official=正式收據；unpaid=未繳款領據';
 
 -- 7f-2. payment_disbursements 多層審核欄位（#12，added 2026-04）
 ALTER TABLE payment_disbursements
@@ -704,13 +829,15 @@ BEGIN
     END IF;
 END$$;
 
--- case-level 唯一性：disbursement_id IS NULL 時每案每 type 至多一筆
-CREATE UNIQUE INDEX IF NOT EXISTS uq_app_docs_case_level
+-- 多檔上傳：同案件同文件類型可有多筆檔案，移除舊唯一限制並保留查詢索引
+DROP INDEX IF EXISTS uq_app_docs_case_level;
+DROP INDEX IF EXISTS uq_app_docs_disb_level;
+
+CREATE INDEX IF NOT EXISTS idx_app_docs_case_level_lookup
     ON application_documents (application_id, id)
     WHERE disbursement_id IS NULL;
 
--- disbursement-level 唯一性：scope='D' 時每筆撥款每 type 至多一筆
-CREATE UNIQUE INDEX IF NOT EXISTS uq_app_docs_disb_level
+CREATE INDEX IF NOT EXISTS idx_app_docs_disb_level_lookup
     ON application_documents (application_id, id, disbursement_id)
     WHERE disbursement_id IS NOT NULL;
 
@@ -815,6 +942,51 @@ CREATE INDEX IF NOT EXISTS idx_contact_records_phone_digits
     ON contact_records (caller_phone_digits);
 -- 舊的 idx_contact_records_phone 已被取代（caller_phone 直接比對沒人用）
 DROP INDEX IF EXISTS idx_contact_records_phone;
+
+-- 2c-4. contact_record_followups（#34：追蹤摘要，append-only）
+CREATE TABLE IF NOT EXISTS contact_record_followups (
+    id                BIGSERIAL PRIMARY KEY,
+    contact_record_id BIGINT NOT NULL REFERENCES contact_records(id) ON DELETE CASCADE,
+    author_user_id    BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    summary           TEXT NOT NULL,
+    created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+ALTER TABLE contact_record_followups
+    ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+CREATE INDEX IF NOT EXISTS idx_contact_record_followups_record
+    ON contact_record_followups (contact_record_id, created_at DESC);
+COMMENT ON TABLE contact_record_followups IS '來電／關懷紀錄的追蹤摘要；每次新增一筆並保留新增者';
+COMMENT ON COLUMN contact_record_followups.contact_record_id IS '對應 contact_records.id';
+COMMENT ON COLUMN contact_record_followups.author_user_id IS '新增追蹤摘要的人員';
+COMMENT ON COLUMN contact_record_followups.summary IS '追蹤摘要內容';
+COMMENT ON COLUMN contact_record_followups.created_at IS '追蹤摘要新增時間';
+COMMENT ON COLUMN contact_record_followups.updated_at IS '追蹤摘要最後修改時間';
+
+-- 2c-5. email_verification_codes（#36：申請人／轉介人 Email 驗證）
+CREATE TABLE IF NOT EXISTS email_verification_codes (
+    id                 BIGSERIAL PRIMARY KEY,
+    email              TEXT NOT NULL,
+    purpose            TEXT NOT NULL,
+    code_hash          TEXT NOT NULL,
+    salt               TEXT NOT NULL,
+    verification_token TEXT,
+    attempts           INTEGER NOT NULL DEFAULT 0,
+    expires_at         TIMESTAMPTZ NOT NULL,
+    verified_at        TIMESTAMPTZ,
+    created_at         TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT email_verification_codes_purpose_chk
+        CHECK (purpose IN ('applicant_application', 'referral_application'))
+);
+CREATE INDEX IF NOT EXISTS idx_email_verification_codes_lookup
+    ON email_verification_codes (email, purpose, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_email_verification_codes_token
+    ON email_verification_codes (email, purpose, verification_token)
+    WHERE verification_token IS NOT NULL;
+COMMENT ON TABLE email_verification_codes IS '申請流程 Email 驗證碼；用於確認申請人與轉介人信箱可收信';
+COMMENT ON COLUMN email_verification_codes.purpose IS '驗證用途：applicant_application / referral_application';
+COMMENT ON COLUMN email_verification_codes.verification_token IS '驗證成功後交給表單送出的短期 token';
 
 -- 14a. notification_logs: pending-doc reminder flag (added 2026-04)
 ALTER TABLE notification_logs
@@ -1079,7 +1251,7 @@ COMMENT ON TABLE users                    IS '使用者帳號主檔：含加密�
 COMMENT ON TABLE user_roles               IS '使用者與角色多對多關聯表：一個使用者可同時擁有多個角色';
 COMMENT ON TABLE applications             IS '補助申請案件主檔。status：1=審核中 / 2=審核未通過結案 / 3=待核銷 / 4=核銷完成結案。case_number 為唯一案號';
 COMMENT ON TABLE application_workflow     IS '案件各階段審核紀錄：stage（admin_review/home_visit/board_review/reimbursement）、reviewer、審核結果、審核意見';
-COMMENT ON TABLE application_documents    IS '案件文件與審核狀態（複合主鍵 application_id + id）。status：0=待上傳/未符合, 1=符合, 2=逾期。懶建立：首次上傳才會建列';
+COMMENT ON TABLE application_documents    IS '案件文件與審核狀態；row_id 為主鍵，同案件同文件類型可有多筆上傳檔案。status：0=待上傳/未符合, 1=符合, 2=逾期。懶建立：首次上傳才會建列';
 COMMENT ON TABLE document_type_config     IS '文件類型設定：phase（apply/board/reimbursement）、subsidy_subtype（NULL=共用、1=經濟弱勢、2=小康家庭）、is_required（必備）、allow_supplement（可延後補件）、paper_requirement（紙本要求）';
 COMMENT ON TABLE file_storage_location    IS '檔案實體儲存位置樹狀結構（parent_id 自參考），用於記錄紙本或影印本的實體櫃位';
 COMMENT ON TABLE home_visit               IS '家訪紀錄：每個案件最多一筆，記錄家庭狀況、訪視心得、訪視人員';
@@ -1154,6 +1326,7 @@ COMMENT ON COLUMN document_type_config.sort_order          IS '顯示排序';
 COMMENT ON COLUMN document_type_config.is_active           IS '是否啟用：FALSE 時此文件類型不會出現在新案件中';
 COMMENT ON COLUMN document_type_config.subsidy_subtype     IS '適用補助子類型：NULL=共用、1=經濟弱勢、2=小康家庭';
 COMMENT ON COLUMN document_type_config.paper_requirement   IS '紙本要求：original=正本、copy=影本、original_or_copy=正本或影本、none=不須紙本';
+COMMENT ON COLUMN document_type_config.tooltip_text        IS '文件上傳時顯示的提示文字（滑鼠 hover 顯示）';
 
 -- applications
 COMMENT ON COLUMN applications.id                      IS '主鍵，自動遞增（BIGINT）';

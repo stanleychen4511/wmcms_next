@@ -50,6 +50,16 @@ export interface ContactRecord {
     updatedAt: string;
 }
 
+export interface ContactRecordFollowup {
+    id: string;
+    contactRecordId: string;
+    authorUserId: string | null;
+    authorName: string;
+    summary: string;
+    createdAt: string;
+    updatedAt: string;
+}
+
 export interface ContactRecordInput {
     recordType: '1' | '2';
     contactDate: string;       // yyyy-mm-dd
@@ -303,6 +313,7 @@ export async function createContactRecord(
 
     const client = await pool.connect();
     try {
+        await client.query('BEGIN');
         // 關懷紀錄專屬：聯絡對象 — 限 record_type='2' 才寫入；'9'(其他) 才有 contacted_party_other
         const contactedParty = input.recordType === '2' && input.contactedParty
             ? input.contactedParty : null;
@@ -337,6 +348,17 @@ export async function createContactRecord(
             ],
         );
         const id = insRes.rows[0].id as string;
+
+        if (input.recordType === '1' && summary) {
+            await client.query(
+                `INSERT INTO contact_record_followups
+                    (contact_record_id, author_user_id, summary)
+                 VALUES ($1::bigint, $2::bigint, $3)`,
+                [id, operatorUserId, `首次：${summary}`],
+            );
+        }
+
+        await client.query('COMMIT');
         void writeAuditLog({
             userId: operatorUserId,
             action: 'contact_record.created',
@@ -351,6 +373,7 @@ export async function createContactRecord(
         });
         return { success: true, data: { id } };
     } catch (err: any) {
+        await client.query('ROLLBACK').catch(() => {});
         console.error('createContactRecord error:', err);
         return { success: false, error: err.message ?? '建立失敗' };
     } finally {
@@ -612,6 +635,195 @@ export async function searchContactsByIdNumber(
     }
 }
 
+export async function fetchContactRecordFollowups(
+    operatorUserId: string,
+    contactRecordId: string,
+): Promise<ActionResult<ContactRecordFollowup[]>> {
+    if (!(await hasAnyRole(operatorUserId, ALLOWED_ROLES))) {
+        return { success: false, error: '權限不足' };
+    }
+    if (!/^\d+$/.test(contactRecordId)) {
+        return { success: false, error: '紀錄 ID 不正確' };
+    }
+
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT f.id::text,
+                    f.contact_record_id::text,
+                    f.author_user_id::text,
+                    f.summary,
+                    f.created_at,
+                    f.updated_at,
+                    u.name_enc AS author_name_enc,
+                    u.name_iv AS author_name_iv,
+                    u.account AS author_account
+             FROM contact_record_followups f
+             LEFT JOIN users u ON u.id = f.author_user_id
+             WHERE f.contact_record_id = $1::bigint
+             ORDER BY f.created_at ASC, f.id ASC`,
+            [contactRecordId],
+        );
+        const data: ContactRecordFollowup[] = res.rows.map(r => ({
+            id: r.id,
+            contactRecordId: r.contact_record_id,
+            authorUserId: r.author_user_id ?? null,
+            authorName: decryptName(r.author_name_enc, r.author_name_iv, r.author_account ?? '未知人員'),
+            summary: r.summary ?? '',
+            createdAt: r.created_at ? new Date(r.created_at).toISOString() : '',
+            updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : '',
+        }));
+        return { success: true, data };
+    } catch (err: any) {
+        console.error('fetchContactRecordFollowups error:', err);
+        return { success: false, error: err.message ?? '讀取追蹤摘要失敗' };
+    } finally {
+        client.release();
+    }
+}
+
+export async function createContactRecordFollowup(
+    operatorUserId: string,
+    contactRecordId: string,
+    summary: string,
+): Promise<ActionResult<ContactRecordFollowup>> {
+    if (!(await hasAnyRole(operatorUserId, ALLOWED_ROLES))) {
+        return { success: false, error: '權限不足' };
+    }
+    if (!/^\d+$/.test(contactRecordId)) {
+        return { success: false, error: '紀錄 ID 不正確' };
+    }
+    const trimmed = summary.trim();
+    if (!trimmed) {
+        return { success: false, error: '請填寫追蹤摘要' };
+    }
+
+    const client = await pool.connect();
+    try {
+        const exists = await client.query(
+            `SELECT 1 FROM contact_records WHERE id = $1::bigint LIMIT 1`,
+            [contactRecordId],
+        );
+        if (exists.rowCount === 0) {
+            return { success: false, error: '找不到此紀錄' };
+        }
+
+        const res = await client.query(
+            `WITH inserted AS (
+                 INSERT INTO contact_record_followups
+                     (contact_record_id, author_user_id, summary)
+                 VALUES ($1::bigint, $2::bigint, $3)
+                 RETURNING id::text, contact_record_id::text, author_user_id::text, summary, created_at, updated_at
+             )
+             SELECT inserted.*,
+                    u.name_enc AS author_name_enc,
+                    u.name_iv AS author_name_iv,
+                    u.account AS author_account
+             FROM inserted
+             LEFT JOIN users u ON u.id = inserted.author_user_id::bigint`,
+            [contactRecordId, operatorUserId, trimmed],
+        );
+        const r = res.rows[0];
+        const followup: ContactRecordFollowup = {
+            id: r.id,
+            contactRecordId: r.contact_record_id,
+            authorUserId: r.author_user_id ?? null,
+            authorName: decryptName(r.author_name_enc, r.author_name_iv, r.author_account ?? '未知人員'),
+            summary: r.summary ?? '',
+            createdAt: r.created_at ? new Date(r.created_at).toISOString() : '',
+            updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : '',
+        };
+
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'contact_record.updated',
+            targetType: 'contact_record',
+            targetId: contactRecordId,
+            detail: { field: 'followup_summary', followup_id: followup.id },
+        });
+        return { success: true, data: followup };
+    } catch (err: any) {
+        console.error('createContactRecordFollowup error:', err);
+        return { success: false, error: err.message ?? '新增追蹤摘要失敗' };
+    } finally {
+        client.release();
+    }
+}
+
+export async function updateContactRecordFollowup(
+    operatorUserId: string,
+    followupId: string,
+    summary: string,
+): Promise<ActionResult<ContactRecordFollowup>> {
+    if (!(await hasAnyRole(operatorUserId, ALLOWED_ROLES))) {
+        return { success: false, error: '權限不足' };
+    }
+    if (!/^\d+$/.test(followupId)) {
+        return { success: false, error: '追蹤摘要 ID 不合法' };
+    }
+    const trimmed = summary.trim();
+    if (!trimmed) {
+        return { success: false, error: '請填寫追蹤摘要' };
+    }
+
+    const client = await pool.connect();
+    try {
+        const cur = await client.query(
+            `SELECT author_user_id::text
+             FROM contact_record_followups
+             WHERE id = $1::bigint`,
+            [followupId],
+        );
+        if (cur.rowCount === 0) {
+            return { success: false, error: '找不到追蹤摘要' };
+        }
+        if (cur.rows[0].author_user_id !== operatorUserId) {
+            return { success: false, error: '只有本人可以修改此追蹤摘要' };
+        }
+
+        const res = await client.query(
+            `WITH updated AS (
+                 UPDATE contact_record_followups
+                 SET summary = $2,
+                     updated_at = NOW()
+                 WHERE id = $1::bigint
+                 RETURNING id::text, contact_record_id::text, author_user_id::text, summary, created_at, updated_at
+             )
+             SELECT updated.*,
+                    u.name_enc AS author_name_enc,
+                    u.name_iv AS author_name_iv,
+                    u.account AS author_account
+             FROM updated
+             LEFT JOIN users u ON u.id = updated.author_user_id::bigint`,
+            [followupId, trimmed],
+        );
+        const r = res.rows[0];
+        const followup: ContactRecordFollowup = {
+            id: r.id,
+            contactRecordId: r.contact_record_id,
+            authorUserId: r.author_user_id ?? null,
+            authorName: decryptName(r.author_name_enc, r.author_name_iv, r.author_account ?? '未知人員'),
+            summary: r.summary ?? '',
+            createdAt: r.created_at ? new Date(r.created_at).toISOString() : '',
+            updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : '',
+        };
+
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'contact_record.updated',
+            targetType: 'contact_record',
+            targetId: followup.contactRecordId,
+            detail: { field: 'followup_summary', followup_id: followup.id, operation: 'edit' },
+        });
+        return { success: true, data: followup };
+    } catch (err: any) {
+        console.error('updateContactRecordFollowup error:', err);
+        return { success: false, error: err.message ?? '修改追蹤摘要失敗' };
+    } finally {
+        client.release();
+    }
+}
+
 // ─── Update ───────────────────────────────────────────────────────────────
 
 export async function updateContactRecord(
@@ -641,7 +853,7 @@ export async function updateContactRecord(
     const client = await pool.connect();
     try {
         const cur = await client.query(
-            `SELECT handler_user_id::text FROM contact_records WHERE id = $1::bigint`,
+            `SELECT handler_user_id::text, summary FROM contact_records WHERE id = $1::bigint`,
             [recordId],
         );
         if (cur.rowCount === 0) return { success: false, error: '紀錄不存在' };
@@ -671,7 +883,7 @@ export async function updateContactRecord(
                 input.fromSource ?? null,
                 input.consultantType ?? null,
                 input.consultProgram ?? null,
-                cleanReasons, summary || null, cleanMedia,
+                cleanReasons, cur.rows[0].summary ?? null, cleanMedia,
                 contactedParty, contactedPartyOther,
                 recordId,
             ],

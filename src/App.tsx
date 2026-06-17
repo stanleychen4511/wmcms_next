@@ -8,7 +8,11 @@ import {
     CreditCard,
     ShieldCheck,
     AlertTriangle,
+    CheckCircle,
+    XCircle,
     Eye,
+    ChevronDown,
+    ChevronRight,
     Save,
     Send,
     Heart,
@@ -17,6 +21,7 @@ import {
 import { AppHeader } from './components/AppHeader';
 import { CaseStatisticsPage } from './components/CaseStatisticsPage';
 import { ReportsPage } from './components/ReportsPage';
+import { RejectedArchivePage } from './components/RejectedArchivePage';
 import { SecureFilePreviewModal } from './components/SecureFilePreviewModal';
 import { DisbursementPanel } from './components/DisbursementPanel';
 import { LoginPage } from './components/LoginPage';
@@ -65,6 +70,8 @@ import {
     reopenRejectedCase,
     requestSupervisorReviewForBoard,
     supervisorReviewForBoard,
+    requestBoardReconsideration,
+    reviewBoardReconsideration,
     ApplicationDetail,
 } from './app/actions/workflowActions';
 
@@ -82,6 +89,7 @@ import {
 import { fetchCaseOfficers, fetchCaseOfficersWithId } from './app/actions/userActions';
 import { fetchSetting } from './app/actions/settingsActions';
 import { fetchSettingFresh } from './lib/settingClient';
+import { uploadFileToBlob } from './lib/uploadClient';
 import { fetchActiveBanners, Banner } from './app/actions/bannerActions';
 import { fetchHomeAnnouncements, Announcement } from './app/actions/announcementActions';
 
@@ -112,14 +120,28 @@ const STAGE_ICON_MAP: Record<WorkflowStage, React.ReactNode> = {
 
 // ── App ───────────────────────────────────────────────────────────────────────
 
+function getAttachmentDisplayName(url: string, fallback: string): string {
+    const cleanUrl = url.split('?')[0]?.split('#')[0] ?? '';
+    const rawName = cleanUrl.split('/').filter(Boolean).pop() ?? fallback;
+    let decoded = rawName;
+    try {
+        decoded = decodeURIComponent(rawName);
+    } catch {
+        decoded = rawName;
+    }
+    const withoutExt = decoded.replace(/\.[^/.]+$/, '').trim();
+    return withoutExt || fallback;
+}
+
 function App() {
     const { push: pushToast } = useToast();
     const [role, setRole] = useState<Role>('case_officer');
     const [loggedInUser, setLoggedInUser] = useState<{ username: string; roles: Role[]; account: string; id: string } | null>(null);
 
-    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager' | 'announcements' | 'user_settings' | 'stats' | 'reports'>('home');
+    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager' | 'announcements' | 'user_settings' | 'stats' | 'reports' | 'rejected_archive'>('home');
     const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
     const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
+    const [detailReturnView, setDetailReturnView] = useState<'home' | 'list' | 'history'>('history');
     // Mirror selectedAppId into a ref for use inside stable callbacks (e.g. handleSignatureStatusChange)
     // Avoids stale closure problem without re-creating the callback on every state change.
 
@@ -138,6 +160,9 @@ function App() {
                 if (n.view)             setView(n.view);
                 if (n.selectedPersonId) setSelectedPersonId(n.selectedPersonId);
                 if (n.selectedAppId)    setSelectedAppId(n.selectedAppId);
+                if (n.detailReturnView === 'home' || n.detailReturnView === 'list' || n.detailReturnView === 'history') {
+                    setDetailReturnView(n.detailReturnView);
+                }
             }
         } catch { /* ignore */ }
     }, []);
@@ -145,9 +170,9 @@ function App() {
     // Persist navigation state whenever it changes
     useEffect(() => {
         try {
-            sessionStorage.setItem('navState', JSON.stringify({ view, selectedPersonId, selectedAppId }));
+            sessionStorage.setItem('navState', JSON.stringify({ view, selectedPersonId, selectedAppId, detailReturnView }));
         } catch { /* ignore */ }
-    }, [view, selectedPersonId, selectedAppId]);
+    }, [view, selectedPersonId, selectedAppId, detailReturnView]);
 
     // Viewed stage for read-only browsing (separate from true stage)
     const [viewedStage, setViewedStage] = useState<WorkflowStage | null>(null);
@@ -169,6 +194,13 @@ function App() {
     const [retreatModal, setRetreatModal] = useState<null | { toStage: WorkflowStage; label: string }>(null);
     const [retreatReason, setRetreatReason] = useState('');
     const [retreatBusy, setRetreatBusy] = useState(false);
+    const [reconsiderReason, setReconsiderReason] = useState('');
+    const [reconsiderFiles, setReconsiderFiles] = useState<File[]>([]);
+    const [reconsiderSupervisorNote, setReconsiderSupervisorNote] = useState('');
+    const [reconsiderBusy, setReconsiderBusy] = useState(false);
+    const [showOlderReconsiderations, setShowOlderReconsiderations] = useState(false);
+    const [showReconsiderRequestForm, setShowReconsiderRequestForm] = useState(false);
+    const [filePreview, setFilePreview] = useState<{ url: string; label: string } | null>(null);
     const [applyAmount, setApplyAmount] = useState<number>(0);
     /** 各子類型補助上限（依 subsidy_amount_limits 表）；'1'=經濟弱勢、'2'=小康家庭。 */
     const [subtypeMaxAmounts, setSubtypeMaxAmounts] = useState<Record<'1' | '2', number>>({ '1': 0, '2': 0 });
@@ -333,6 +365,7 @@ function App() {
     }, []);
     // 核銷階段：撥款是否已全部回收（DisbursementPanel callback 設定），決定能否結案
     const [canCloseCase, setCanCloseCase] = useState(false);
+    const [closeCaseBlockReason, setCloseCaseBlockReason] = useState<string | null>(null);
     // Bump this after reassign / save / anything that invalidates board card caches
     const [boardRefreshKey, setBoardRefreshKey] = useState(0);
     /** 董事審核：當前作用中的 member tab（signer_user_id 字串）；null = 尚未決定 */
@@ -673,7 +706,11 @@ function App() {
                 onPendingDocGoToList={() => { setPendingDocFilterActive(true); setView('list'); }}
                 myTurnItems={myTurnItems}
                 onMyTurnGoToList={() => { setMyTurnFilterActive(true); setView('list'); }}
-                onSelectCase={(appId) => { setSelectedAppId(appId); setView('detail'); }}
+                onSelectCase={(appId) => {
+                    setSelectedAppId(appId);
+                    setDetailReturnView('home');
+                    setView('detail');
+                }}
                 banners={banners}
                 announcements={announcements}
                 newDays={announcementNewDays}
@@ -687,6 +724,7 @@ function App() {
                 onGoUserSettings={() => setView('user_settings')}
                 onGoStats={() => setView('stats')}
                 onGoReports={() => setView('reports')}
+                onGoRejectedArchive={() => setView('rejected_archive')}
                 onLogout={handleLogout}
             />
         );
@@ -768,6 +806,18 @@ function App() {
         );
     }
 
+    if (view === 'rejected_archive') {
+        return (
+            <RejectedArchivePage
+                username={loggedInUser.username}
+                operatorUserId={loggedInUser.id}
+                onBack={() => setView('home')}
+                onGoHome={() => setView('home')}
+                onLogout={handleLogout}
+            />
+        );
+    }
+
     if (view === 'template_download') {
         return (
             <TemplateDownloadPage
@@ -820,6 +870,11 @@ function App() {
                     setSelectedPersonId(personId);
                     setView('history');
                 }}
+                onSelectApplication={(applicationId) => {
+                    setSelectedAppId(applicationId);
+                    setDetailReturnView('list');
+                    setView('detail');
+                }}
                 onLogout={handleLogout}
                 onGoHome={() => setView('home')}
             />
@@ -842,6 +897,7 @@ function App() {
                 loggedInUserId={loggedInUser.id}
                 onSelectApplication={(record: ApplicationRecord) => {
                     setSelectedAppId(record.id);
+                    setDetailReturnView('history');
                     // Reset viewed stage to the application's true stage
                     setViewedStage(record.stage);
                     setView('detail');
@@ -910,6 +966,14 @@ function App() {
     const isViewingPastStep = displayedStage !== stage;
     const isAssignedOfficer = !!loggedInUser && !!appDetail?.officerId
         && String(loggedInUser.id) === String(appDetail.officerId);
+    const isHomeVisitAssignedToMe = !!loggedInUser && !!appDetail?.homeVisitAssigneeId
+        && String(loggedInUser.id) === String(appDetail.homeVisitAssigneeId);
+    const hasFullCaseDetailAccess =
+        isAssignedOfficer ||
+        hasPermission('admin') ||
+        hasPermission('supervisor') ||
+        hasPermission('chairman' as Role);
+    const isHomeVisitAssigneeOnlyView = isHomeVisitAssignedToMe && !hasFullCaseDetailAccess;
 
 
     // Use DB applicant name if available
@@ -1009,7 +1073,11 @@ function App() {
         // approved_amount 由 server 端維護（chairman 第三審 / 派組多數決），
         // 不在 client 端傳值，避免操作者的個人金額（如 admin_01 自己董事意見）覆寫正確值。
         if (stage === 'reimbursement') {
-            await closeCase(selectedAppId, loggedInUser?.id ?? null, null);
+            const res = await closeCase(selectedAppId, loggedInUser?.id ?? null, null);
+            if (!res.success) {
+                pushToast({ type: 'error', msg: res.error ?? '結案失敗' });
+                return;
+            }
             await loadAppDetail(selectedAppId, false);
             return;
         }
@@ -1132,6 +1200,72 @@ function App() {
         } else {
             pushToast({ type: 'error', msg: res.error ?? '退件失敗' });
         }
+    };
+
+    const handleRequestBoardReconsideration = async () => {
+        if (!selectedAppId || !loggedInUser || !appDetail) return;
+        const trimmed = reconsiderReason.trim();
+        if (trimmed.length < 3) {
+            pushToast({ type: 'error', msg: '退回原因至少 3 字' });
+            return;
+        }
+        const allowedTypes = ['application/pdf', 'image/jpeg', 'image/png'];
+        const invalidFile = reconsiderFiles.find(file => !allowedTypes.includes(file.type));
+        if (invalidFile) {
+            pushToast({ type: 'error', msg: '附件僅接受 PDF、JPG、PNG' });
+            return;
+        }
+
+        setReconsiderBusy(true);
+        try {
+            const attachmentUrls: string[] = [];
+            for (const file of reconsiderFiles) {
+                const uploaded = await uploadFileToBlob(file, {
+                    pathPrefix: `board-reconsideration/${appDetail.caseNumber || selectedAppId}`,
+                });
+                attachmentUrls.push(uploaded.url);
+            }
+            const res = await requestBoardReconsideration(selectedAppId, loggedInUser.id, trimmed, attachmentUrls);
+            if (!res.success) {
+                pushToast({ type: 'error', msg: res.error ?? '送出失敗' });
+                return;
+            }
+            pushToast({ type: 'success', msg: '已送出退回董事再審申請' });
+            setReconsiderReason('');
+            setReconsiderFiles([]);
+            setShowReconsiderRequestForm(false);
+            await loadAppDetail(selectedAppId, true);
+        } catch (err: any) {
+            pushToast({ type: 'error', msg: err?.message ?? '附件上傳失敗' });
+        } finally {
+            setReconsiderBusy(false);
+        }
+    };
+
+    const handleReviewBoardReconsideration = async (approved: boolean) => {
+        if (!selectedAppId || !loggedInUser) return;
+        const requestId = appDetail?.boardReconsideration?.id;
+        if (!requestId) {
+            pushToast({ type: 'error', msg: '找不到待審核的退回申請' });
+            return;
+        }
+        const note = reconsiderSupervisorNote.trim();
+        if (!approved && note.length < 3) {
+            pushToast({ type: 'error', msg: '不核准原因至少 3 字' });
+            return;
+        }
+
+        setReconsiderBusy(true);
+        const res = await reviewBoardReconsideration(selectedAppId, requestId, loggedInUser.id, approved, note);
+        setReconsiderBusy(false);
+        if (!res.success) {
+            pushToast({ type: 'error', msg: res.error ?? '審核失敗' });
+            return;
+        }
+        pushToast({ type: 'success', msg: approved ? '已核准退回董事再次審核' : '已駁回退回申請' });
+        setReconsiderSupervisorNote('');
+        await loadAppDetail(selectedAppId, true);
+        if (approved) setViewedStage('board_review');
     };
 
     // Read-only when browsing a past step OR when case is closed
@@ -1687,8 +1821,218 @@ function App() {
                         </div>
                     );
                 }
+                const reconsideration = appDetail?.boardReconsideration ?? null;
+                const reconsiderationHistory = appDetail?.boardReconsiderationHistory ?? [];
+                const canRequestReconsideration = !contentReadOnly && !!loggedInUser && (
+                    hasPermission('admin') || String(loggedInUser.id) === String(appDetail?.officerId ?? '')
+                );
+                const canReviewReconsideration = !contentReadOnly && !!loggedInUser && (
+                    hasPermission('admin') || hasPermission('supervisor')
+                );
                 return (
                     <div className="space-y-6">
+                        {(canRequestReconsideration || reconsiderationHistory.length > 0) && (
+                            <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5 space-y-4">
+                                <div className="flex flex-wrap items-start justify-between gap-3">
+                                    <div>
+                                        <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
+                                            <Gavel className="w-5 h-5 text-purple-600" />
+                                            退回董事再次審核
+                                        </h3>
+                                        <p className="text-sm text-slate-500 mt-1">
+                                            治療內容變更或核銷資料需重新確認時，由承辦人送主管審核，主管核准後才退回董事。
+                                        </p>
+                                    </div>
+                                    {reconsideration?.status === 'pending_supervisor' && (
+                                        <span className="inline-flex items-center px-3 py-1 rounded-full bg-amber-100 text-amber-800 text-xs font-semibold">
+                                            待主管審核
+                                        </span>
+                                    )}
+                                </div>
+
+                                {reconsiderationHistory.length > 0 && (
+                                    <div className="space-y-3">
+                                        <p className="text-xs font-semibold text-slate-500">歷次退回紀錄</p>
+                                        {(() => {
+                                            const latest = reconsiderationHistory[0];
+                                            const older = reconsiderationHistory.slice(1);
+                                            if (!latest) return null;
+                                            const renderRecord = (item: typeof reconsiderationHistory[number], idx: number) => (
+                                                <div key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
+                                                    <div className="flex flex-wrap items-center gap-2 text-sm">
+                                                        <span className="font-semibold text-slate-800">
+                                                            第 {reconsiderationHistory.length - idx} 次退回
+                                                        </span>
+                                                        <span className="text-slate-500">
+                                                            送出日期：{item.requestedAt ? item.requestedAt.slice(0, 10) : '—'}
+                                                        </span>
+                                                        <span className={clsx(
+                                                            'px-2 py-0.5 rounded-full text-xs font-semibold',
+                                                            item.status === 'pending_supervisor' ? 'bg-amber-100 text-amber-800'
+                                                                : item.status === 'approved' ? 'bg-emerald-100 text-emerald-800'
+                                                                : 'bg-rose-100 text-rose-800'
+                                                        )}>
+                                                            {item.status === 'pending_supervisor' ? '待主管審核' : item.status === 'approved' ? '已核准' : '已駁回'}
+                                                        </span>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-xs font-semibold text-slate-500 mb-1">退回原因</p>
+                                                        <p className="whitespace-pre-wrap text-slate-800 leading-relaxed">{item.reason}</p>
+                                                    </div>
+                                                    {item.supervisorNote && (
+                                                        <div className="rounded-md bg-white border border-slate-200 p-3">
+                                                            <p className="text-xs font-semibold text-slate-500 mb-1">主管審核備註</p>
+                                                            <p className="whitespace-pre-wrap text-slate-700 leading-relaxed">{item.supervisorNote}</p>
+                                                        </div>
+                                                    )}
+                                                    {item.attachmentUrls.length > 0 && (
+                                                        <div className="flex flex-wrap gap-2">
+                                                            {item.attachmentUrls.map((url, fileIdx) => {
+                                                                const fileLabel = getAttachmentDisplayName(url, `附件 ${fileIdx + 1}`);
+                                                                return (
+                                                                    <button
+                                                                        key={`${item.id}-${url}`}
+                                                                        type="button"
+                                                                        onClick={() => setFilePreview({ url, label: fileLabel })}
+                                                                        className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 text-xs font-semibold"
+                                                                    >
+                                                                        <Eye className="w-3.5 h-3.5" />
+                                                                        {fileLabel}
+                                                                    </button>
+                                                                );
+                                                            })}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                            return (
+                                                <>
+                                                    {renderRecord(latest, 0)}
+                                                    {older.length > 0 && (
+                                                        <div className="rounded-lg border border-slate-200 bg-white">
+                                                            <button
+                                                                type="button"
+                                                                onClick={() => setShowOlderReconsiderations(v => !v)}
+                                                                className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50 rounded-lg"
+                                                            >
+                                                                <span>歷史退回紀錄（{older.length} 筆）</span>
+                                                                {showOlderReconsiderations ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                                                            </button>
+                                                            {showOlderReconsiderations && (
+                                                                <div className="border-t border-slate-200 p-3 space-y-3">
+                                                                    {older.map((item, olderIdx) => renderRecord(item, olderIdx + 1))}
+                                                                </div>
+                                                            )}
+                                                        </div>
+                                                    )}
+                                                </>
+                                            );
+                                        })()}
+                                    </div>
+                                )}
+
+                                {canReviewReconsideration && reconsideration?.status === 'pending_supervisor' && (
+                                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-4 space-y-3">
+                                        <label className="block">
+                                            <span className="block text-sm font-semibold text-amber-900 mb-1">主管審核備註</span>
+                                            <textarea
+                                                value={reconsiderSupervisorNote}
+                                                onChange={e => setReconsiderSupervisorNote(e.target.value)}
+                                                rows={3}
+                                                maxLength={500}
+                                                className="w-full resize-none rounded-lg border border-amber-200 bg-white px-3 py-2 text-sm outline-none focus:border-amber-400 focus:ring-2 focus:ring-amber-100"
+                                                placeholder="核准可留空；駁回時請填寫原因"
+                                            />
+                                        </label>
+                                        <div className="flex flex-wrap gap-2">
+                                            <button
+                                                type="button"
+                                                disabled={reconsiderBusy}
+                                                onClick={() => handleReviewBoardReconsideration(true)}
+                                                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-emerald-700 text-white text-sm font-semibold hover:bg-emerald-800 disabled:opacity-50"
+                                            >
+                                                <CheckCircle className="w-4 h-4" />
+                                                核准退回董事
+                                            </button>
+                                            <button
+                                                type="button"
+                                                disabled={reconsiderBusy || reconsiderSupervisorNote.trim().length < 3}
+                                                onClick={() => handleReviewBoardReconsideration(false)}
+                                                className="inline-flex items-center gap-1.5 px-4 py-2 rounded-lg bg-rose-700 text-white text-sm font-semibold hover:bg-rose-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                                            >
+                                                <XCircle className="w-4 h-4" />
+                                                駁回申請
+                                            </button>
+                                        </div>
+                                    </div>
+                                )}
+
+                                {canRequestReconsideration && reconsideration?.status !== 'pending_supervisor' && (
+                                    showReconsiderRequestForm ? (
+                                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
+                                            <h4 className="text-sm font-bold text-slate-800">退回董事審核</h4>
+                                            <label className="block">
+                                                <span className="block text-sm font-semibold text-slate-700 mb-1">退回原因</span>
+                                                <textarea
+                                                    value={reconsiderReason}
+                                                    onChange={e => setReconsiderReason(e.target.value)}
+                                                    rows={4}
+                                                    maxLength={500}
+                                                    className="w-full resize-none rounded-lg border border-slate-300 bg-white px-3 py-2 text-sm outline-none focus:border-purple-400 focus:ring-2 focus:ring-purple-100"
+                                                    placeholder="請說明需要再次董事審核的原因"
+                                                />
+                                            </label>
+                                            <label className="block">
+                                                <span className="block text-sm font-semibold text-slate-700 mb-1">附件（可多選）</span>
+                                                <input
+                                                    type="file"
+                                                    multiple
+                                                    accept="application/pdf,image/jpeg,image/png"
+                                                    onChange={e => setReconsiderFiles(Array.from(e.target.files ?? []))}
+                                                    className="block text-sm text-slate-600 file:mr-3 file:rounded-md file:border-0 file:bg-slate-100 file:px-3 file:py-1.5 file:text-sm file:font-semibold file:text-slate-700 hover:file:bg-slate-200"
+                                                />
+                                            </label>
+                                            {reconsiderFiles.length > 0 && (
+                                                <p className="text-xs text-slate-500">
+                                                    已選擇附件：{reconsiderFiles.map(file => file.name).join('、')}
+                                                </p>
+                                            )}
+                                            <div className="flex items-center gap-2">
+                                                <button
+                                                    type="button"
+                                                    disabled={reconsiderBusy || reconsiderReason.trim().length < 3}
+                                                    onClick={handleRequestBoardReconsideration}
+                                                    className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-purple-700 text-white text-sm font-semibold hover:bg-purple-800 disabled:opacity-50 disabled:cursor-not-allowed"
+                                                >
+                                                    <Send className="w-4 h-4" />
+                                                    送主管審核
+                                                </button>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => {
+                                                        setShowReconsiderRequestForm(false);
+                                                        setReconsiderReason('');
+                                                        setReconsiderFiles([]);
+                                                    }}
+                                                    className="ml-auto px-4 py-2 rounded-lg border border-rose-300 bg-white text-rose-700 text-sm font-semibold hover:bg-rose-50"
+                                                >
+                                                    取消
+                                                </button>
+                                            </div>
+                                        </div>
+                                    ) : (
+                                        <button
+                                            type="button"
+                                            onClick={() => setShowReconsiderRequestForm(true)}
+                                            className="inline-flex items-center justify-center gap-1.5 px-4 py-2 rounded-lg bg-purple-700 text-white text-sm font-semibold hover:bg-purple-800"
+                                        >
+                                            <Gavel className="w-4 h-4" />
+                                            退回董事審核
+                                        </button>
+                                    )
+                                )}
+                            </div>
+                        )}
                         {/* 多層審核撥款 — admin / case_officer / supervisor / accountant / executive / chairman 皆可見
                             （結案後仍顯示供查閱簽核歷程；唯讀控制由 DisbursementPanel 內部依角色與 stage 自管） */}
                         {loggedInUser && selectedAppId && (
@@ -1703,7 +2047,10 @@ function App() {
                                 applicantPhone={appDetail?.applicantPhone ?? null}
                                 applicantAddress={appDetail?.applicantAddress ?? null}
                                 onCaseDataChanged={() => { if (selectedAppId) loadAppDetail(selectedAppId, true); }}
-                                onCanCloseChange={setCanCloseCase}
+                                onCanCloseChange={(canClose, blockReason) => {
+                                    setCanCloseCase(canClose);
+                                    setCloseCaseBlockReason(blockReason ?? null);
+                                }}
                             />
                         )}
                         {/* 應備文件（核銷階段）— 移到撥款流程下方 */}
@@ -1754,6 +2101,62 @@ function App() {
 
     const retreatLabel = currentStageIndex > 0 ? STAGE_LABEL_MAP[STAGES[currentStageIndex - 1]] : null;
     const advanceLabel = currentStageIndex < STAGES.length - 1 ? STAGE_LABEL_MAP[STAGES[currentStageIndex + 1]] : null;
+
+    if (isHomeVisitAssigneeOnlyView && appDetail && selectedAppId) {
+        const returnLabel =
+            detailReturnView === 'list' ? '返回列表' :
+            detailReturnView === 'home' ? '返回首頁' :
+            '返回歷史紀錄';
+        return (
+            <div className="min-h-screen bg-gray-100 flex flex-col font-sans text-slate-800">
+                <AppHeader
+                    username={loggedInUser.username}
+                    onGoHome={() => setView('home')}
+                    onLogout={handleLogout}
+                />
+                <main className="flex-1 container mx-auto px-4 sm:px-6 py-6 sm:py-8 overflow-x-hidden">
+                    <div className="max-w-5xl mx-auto space-y-5">
+                        <button
+                            onClick={() => setView(detailReturnView)}
+                            className="flex items-center gap-1.5 text-sm text-slate-500 hover:text-blue-600 transition font-medium"
+                        >
+                            <span className="text-base leading-none">←</span>
+                            {returnLabel}
+                        </button>
+
+                        <div className="bg-blue-50 border border-blue-200 rounded-xl p-4 text-sm text-blue-800">
+                            <p className="font-semibold">您被指派處理此案家庭訪視。</p>
+                            <p className="mt-1 text-blue-700">
+                                目前僅開放家庭訪視內容，其餘申請、文件、董事審核與核銷資料不顯示。
+                            </p>
+                        </div>
+
+                        <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-4">
+                            <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-sm">
+                                <span className="font-semibold text-slate-800">
+                                    案號：{appDetail.caseNumber}
+                                </span>
+                                <span className="text-slate-500">
+                                    階段：{STAGE_LABEL_MAP[stage]}
+                                </span>
+                                {appDetail.homeVisitAssigneeName && (
+                                    <span className="text-slate-500">
+                                        家訪指派人員：{appDetail.homeVisitAssigneeName}
+                                    </span>
+                                )}
+                            </div>
+                        </div>
+
+                        <HomeVisitForm
+                            applicationId={selectedAppId}
+                            visitorUserId={loggedInUser.id}
+                            readOnly={contentReadOnly}
+                        />
+                    </div>
+                </main>
+            </div>
+        );
+    }
 
     return (
         <div className="min-h-screen bg-gray-100 flex flex-col font-sans text-slate-800">
@@ -2124,6 +2527,64 @@ function App() {
                                 onSaved={() => loadAppDetail(selectedAppId, true)}
                             />
                             <BoardVoteCard applicationId={selectedAppId} refreshKey={boardRefreshKey} />
+                            {appDetail.boardReviewRounds && appDetail.boardReviewRounds.length > 0 && (
+                                <div className="bg-white rounded-lg border border-purple-100 shadow-sm p-4 space-y-3">
+                                    <div>
+                                        <h4 className="text-sm font-bold text-slate-800">董事審核歷程</h4>
+                                        <p className="text-xs text-slate-500 mt-0.5">
+                                            若因核銷階段退回重新審核，最新輪次為實際審核依據，前次結果僅供參考。
+                                        </p>
+                                    </div>
+                                    <div className="space-y-2">
+                                        {[...appDetail.boardReviewRounds]
+                                            .sort((a, b) => b.roundNo - a.roundNo)
+                                            .map(round => (
+                                                <div
+                                                    key={round.id}
+                                                    className={`rounded-lg border p-3 ${
+                                                        round.isLatest
+                                                            ? 'border-purple-200 bg-purple-50'
+                                                            : 'border-slate-200 bg-slate-50'
+                                                    }`}
+                                                >
+                                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                                        <div className="flex items-center gap-2">
+                                                            <span className="text-sm font-bold text-slate-800">
+                                                                第 {round.roundNo} 次董事審核
+                                                            </span>
+                                                        </div>
+                                                        {round.completedAt && (
+                                                            <span className="text-xs text-slate-500">
+                                                                {new Date(round.completedAt).toLocaleString('zh-TW')}
+                                                            </span>
+                                                        )}
+                                                    </div>
+                                                    <div className="mt-2 text-sm text-slate-700 space-y-1">
+                                                        <p>
+                                                            核定金額：
+                                                            <span className="font-semibold text-slate-900">
+                                                                {round.approvedAmount != null ? `NT$ ${round.approvedAmount.toLocaleString()}` : '未填寫'}
+                                                            </span>
+                                                        </p>
+                                                        {round.signatures.map((s, idx) => (
+                                                            <div key={`${round.id}-${s.signerUserId ?? idx}`} className="rounded-md bg-white/70 border border-slate-200 p-2">
+                                                                <p className="text-sm font-semibold text-slate-800">{s.signerName}</p>
+                                                                <p className="text-xs font-semibold text-slate-500 mt-1">通過金額</p>
+                                                                <p className="text-sm text-slate-900 font-semibold mt-0.5">
+                                                                    {s.memberAmount != null ? `NT$ ${s.memberAmount.toLocaleString()}` : '未填寫'}
+                                                                </p>
+                                                                <p className="text-xs font-semibold text-slate-500 mt-1">審核意見</p>
+                                                                <p className="text-sm text-slate-700 whitespace-pre-wrap mt-0.5">
+                                                                    {s.memberComments?.trim() || '未填寫'}
+                                                                </p>
+                                                            </div>
+                                                        ))}
+                                                    </div>
+                                                </div>
+                                            ))}
+                                    </div>
+                                </div>
+                            )}
                             {isAdminOrChairman && (
                                 <div className="flex items-center gap-2 flex-wrap">
                                     <button
@@ -2305,7 +2766,7 @@ function App() {
                                         boardIncomplete ? (boardOpinionMinChars > 0
                                             ? `請選擇審核結果並填寫至少 ${boardOpinionMinChars} 字審核意見`
                                             : '請選擇審核結果') :
-                                        reimbursementBlocked ? '尚有撥款未完成回收紙本；累積回收金額需達核定金額才能結案' :
+                                        reimbursementBlocked ? (closeCaseBlockReason ?? '尚有撥款未完成回收紙本；累積回收金額需達核定金額才能結案') :
                                         isReimbursement ? '確認核銷完成並結案' :
                                         isBoardReview && boardApproved === false ? '確認董事審核未通過並結案' :
                                         `前進至「${advanceLabel}」`;
@@ -2599,6 +3060,14 @@ function App() {
                         loadNotifLogs(selectedAppId);
                         loadReminderStatus(selectedAppId);
                     }}
+                />
+            )}
+
+            {filePreview && (
+                <SecureFilePreviewModal
+                    url={filePreview.url}
+                    label={filePreview.label}
+                    onClose={() => setFilePreview(null)}
                 />
             )}
 

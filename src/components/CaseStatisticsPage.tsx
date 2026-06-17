@@ -2,7 +2,7 @@
 
 import { useState, useCallback, useEffect } from 'react';
 import {
-    BarChart3, ArrowLeft, Calendar, Download, Loader2, AlertTriangle, RefreshCw,
+    BarChart3, ArrowLeft, Download, Loader2, AlertTriangle, RefreshCw,
 } from 'lucide-react';
 import { AppHeader } from './AppHeader';
 import {
@@ -12,6 +12,7 @@ import {
     type StatsOutcome,
 } from '../app/actions/caseStatisticsActions';
 import { CaseStatisticsDrillDownModal } from './CaseStatisticsDrillDownModal';
+import { DateInput } from './DateInput';
 
 interface Props {
     operatorUserId: string;
@@ -96,27 +97,19 @@ export function CaseStatisticsPage({ operatorUserId, username, onGoHome, onLogou
                 <div className="bg-white rounded-xl border border-slate-200 p-5 flex flex-wrap items-end gap-4">
                     <div>
                         <label className="block text-xs font-medium text-slate-500 mb-1">開始日期</label>
-                        <div className="flex items-center gap-2 border border-slate-300 rounded-lg px-3 py-2">
-                            <Calendar className="w-4 h-4 text-slate-400" />
-                            <input
-                                type="date"
-                                value={fromDate}
-                                onChange={e => setFromDate(e.target.value)}
-                                className="text-sm outline-none"
-                            />
-                        </div>
+                        <DateInput
+                            value={fromDate}
+                            onChange={setFromDate}
+                            className="border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none"
+                        />
                     </div>
                     <div>
                         <label className="block text-xs font-medium text-slate-500 mb-1">結束日期</label>
-                        <div className="flex items-center gap-2 border border-slate-300 rounded-lg px-3 py-2">
-                            <Calendar className="w-4 h-4 text-slate-400" />
-                            <input
-                                type="date"
-                                value={toDate}
-                                onChange={e => setToDate(e.target.value)}
-                                className="text-sm outline-none"
-                            />
-                        </div>
+                        <DateInput
+                            value={toDate}
+                            onChange={setToDate}
+                            className="border border-slate-300 rounded-lg px-3 py-2 text-sm outline-none"
+                        />
                     </div>
                     <button
                         onClick={() => void loadStats()}

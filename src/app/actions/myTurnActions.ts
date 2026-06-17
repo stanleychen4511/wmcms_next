@@ -57,6 +57,32 @@ export async function fetchMyTurnCases(operatorUserId: string): Promise<MyTurnRe
 
     const client = await pool.connect();
     try {
+        // Home-visit assignee: when a user is assigned to perform the visit,
+        // show the case in "my turn" even if they are not the case officer.
+        const hvAssigned = await client.query(
+            `SELECT a.id::text AS app_id, a.case_number,
+                    u.name_enc, u.name_iv
+             FROM applications a
+             JOIN users u ON u.id = a.applicant_id
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
+             WHERE a.home_visit_assignee_id = $1::bigint
+               AND a.status = '1'
+               AND w.stage IN ('home_visit','visit')`,
+            [operatorUserId]
+        );
+        for (const row of hvAssigned.rows) {
+            items.push({
+                applicationId: row.app_id,
+                caseNumber: row.case_number,
+                applicantName: decryptName(row.name_enc, row.name_iv),
+                reasonText: '家庭訪視待處理',
+            });
+        }
+
         // case_officer
         if (roles.includes('case_officer')) {
             // (a) 主管雙閘門 — 只取「officer 還沒送」與「主管已退件」兩種狀態
@@ -357,6 +383,9 @@ export async function fetchMyTurnCases(operatorUserId: string): Promise<MyTurnRe
         client.release();
     }
 
-    const idSet = new Set(items.map(i => i.applicationId));
-    return { items, applicationIds: Array.from(idSet) };
+    const byId = new Map<string, MyTurnItem>();
+    for (const item of items) {
+        if (!byId.has(item.applicationId)) byId.set(item.applicationId, item);
+    }
+    return { items: Array.from(byId.values()), applicationIds: Array.from(byId.keys()) };
 }

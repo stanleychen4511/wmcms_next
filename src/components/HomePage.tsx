@@ -19,6 +19,7 @@ import {
     FileSpreadsheet,
     ListChecks,
     DollarSign,
+    ArchiveX,
 } from 'lucide-react';
 import { PendingDocAlert, PendingDocThresholdAlert } from '../app/actions/pendingDocAlertActions';
 import { fetchActiveBanners, Banner } from '../app/actions/bannerActions';
@@ -62,6 +63,7 @@ interface HomePageProps {
     onGoUserSettings?: () => void;
     onGoStats?: () => void;
     onGoReports?: () => void;
+    onGoRejectedArchive?: () => void;
     onLogout: () => void;
 }
 
@@ -137,6 +139,13 @@ const QUICK_LINKS = [
         desc: '匯出三張顧客報表（自費醫療系列）',
         color: 'bg-emerald-50 text-emerald-600 border-emerald-100',
         action: 'reports',
+    },
+    {
+        icon: <ArchiveX className="w-4 h-4" />,
+        label: '新增不通過歸檔',
+        desc: '紙本申請初判未通過，直接建立報表歸檔',
+        color: 'bg-rose-50 text-rose-600 border-rose-100',
+        action: 'rejected_archive',
     },
 ];
 
@@ -251,7 +260,7 @@ function BannerCarousel({ banners }: { banners: Banner[] }) {
 
 const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
 
-export function HomePage({ username, userId, userRoles, activeRole, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, unassignedCases = [], disbursableCases = [], onUnassignedGoToList, onPendingDocGoToList, myTurnItems = [], onMyTurnGoToList, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onGoReports, onLogout, onSelectCase }: HomePageProps) {
+export function HomePage({ username, userId, userRoles, activeRole, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, unassignedCases = [], disbursableCases = [], onUnassignedGoToList, onPendingDocGoToList, myTurnItems = [], onMyTurnGoToList, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onGoReports, onGoRejectedArchive, onLogout, onSelectCase }: HomePageProps) {
     const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
     const canViewStats = userRoles.some(r => STATS_ROLES.includes(r));
     const [selectedAnn, setSelectedAnn] = useState<Announcement | null>(null);
@@ -411,6 +420,14 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                                     link.action === 'notifications' ? !isActingAsVolunteer :
                                     link.action === 'external_intake' ? !isActingAsVolunteer :
                                     link.action === 'contact_records' ? canUseContactRecords :
+                                    link.action === 'rejected_archive' ? (
+                                        userRoles.includes('case_officer')
+                                        || userRoles.includes('admin')
+                                        || userRoles.includes('supervisor')
+                                        || userRoles.includes('board_member' as Role)
+                                        || userRoles.includes('executive' as Role)
+                                        || userRoles.includes('chairman' as Role)
+                                    ) :
                                     link.action === 'reports' ? (
                                         userRoles.includes('admin')
                                         || userRoles.includes('supervisor')
@@ -434,6 +451,7 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                                     link.action === 'stats' ? onGoStats :
                                     link.action === 'contact_records' ? () => setContactSearchOpen(true) :
                                     link.action === 'reports' ? onGoReports :
+                                    link.action === 'rejected_archive' ? onGoRejectedArchive :
                                     undefined;
 
                                 return (

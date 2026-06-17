@@ -101,6 +101,8 @@ async function buildSelfPay(wb: ExcelJS.Workbook, operatorUserId: string, filter
         { header: '董事收到時間', width: 22 },
         { header: '董事通過時間', width: 22 },
         { header: '董事審核', width: 12 },
+        { header: '同意公開受補助', width: 14 },
+        { header: '最後補助款核發日', width: 16 },
         { header: '待收到的資料', width: 24 },
         { header: '案件狀態', width: 10 },
     ];
@@ -126,6 +128,8 @@ async function buildSelfPay(wb: ExcelJS.Workbook, operatorUserId: string, filter
             toRocDateTime(r.boardReceivedAt),
             toRocDateTime(r.boardReviewedAt),
             r.boardReviewText ?? '',
+            r.beneficiaryDisclosureConsent == null ? '' : (r.beneficiaryDisclosureConsent ? '同意' : '不同意'),
+            toRoc(r.lastDisbursementPaidAt),
             r.pendingDocuments.length > 0 ? r.pendingDocuments.join('\n') : '已收齊',
             STATUS_LABEL[r.status] ?? r.status,
         ]);

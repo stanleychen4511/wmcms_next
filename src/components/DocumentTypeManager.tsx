@@ -38,6 +38,7 @@ type DraftByPhase = Record<DocumentPhase, {
     allow_supplement: boolean;
     paper_requirement: DocumentPaperRequirement;
     storage_location_id: number | null;
+    tooltip_text: string;
 }>;
 
 const EMPTY_DRAFT: DraftByPhase = {
@@ -48,6 +49,7 @@ const EMPTY_DRAFT: DraftByPhase = {
         allow_supplement: false,
         paper_requirement: 'original',
         storage_location_id: null,
+        tooltip_text: '',
     },
     reimbursement: {
         label: '',
@@ -56,6 +58,7 @@ const EMPTY_DRAFT: DraftByPhase = {
         allow_supplement: false,
         paper_requirement: 'original',
         storage_location_id: null,
+        tooltip_text: '',
     },
 };
 
@@ -95,6 +98,7 @@ export function DocumentTypeManager() {
             is_active: cfg.is_active,
             subsidy_subtype: cfg.subsidy_subtype,
             paper_requirement: cfg.paper_requirement,
+            tooltip_text: cfg.tooltip_text ?? '',
         });
     }
 
@@ -132,6 +136,7 @@ export function DocumentTypeManager() {
             storage_location_id: draft.storage_location_id,
             subsidy_subtype: draft.subsidy_subtype || null,
             paper_requirement: draft.paper_requirement,
+            tooltip_text: draft.tooltip_text,
         });
         setSaving(false);
         if (!res.success) {
@@ -256,12 +261,13 @@ export function DocumentTypeManager() {
                                 {isCreating ? '取消新增' : '新增文件'}
                             </button>
                         </div>
-                        <div className="bg-white rounded-xl border border-slate-200 overflow-hidden">
-                            <table className="w-full text-sm">
+                        <div className="bg-white rounded-xl border border-slate-200 overflow-x-auto">
+                            <table className="w-full min-w-[1180px] text-sm">
                                 <thead className="bg-slate-50 border-b border-slate-200">
                                     <tr>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-8">#</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600">文件名稱</th>
+                                        <th className="px-4 py-3 text-left font-semibold text-slate-600">提示文字</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-32">適用類別</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-28">必填</th>
                                         <th className="px-4 py-3 text-left font-semibold text-slate-600 w-28">可補件</th>
@@ -286,6 +292,18 @@ export function DocumentTypeManager() {
                                                     [phase]: { ...prev[phase], label: e.target.value },
                                                 }))}
                                                 placeholder={`新增${PHASE_LABEL[phase]}文件`}
+                                                className="w-full border border-slate-300 rounded px-2 py-1 text-sm bg-white"
+                                            />
+                                        </td>
+                                        <td className="px-4 py-3">
+                                            <input
+                                                type="text"
+                                                value={draft.tooltip_text}
+                                                onChange={e => setDrafts(prev => ({
+                                                    ...prev,
+                                                    [phase]: { ...prev[phase], tooltip_text: e.target.value },
+                                                }))}
+                                                placeholder="滑鼠停留時顯示"
                                                 className="w-full border border-slate-300 rounded px-2 py-1 text-sm bg-white"
                                             />
                                         </td>
@@ -466,7 +484,23 @@ export function DocumentTypeManager() {
                                                             className="w-full border border-slate-300 rounded px-2 py-1 text-sm"
                                                         />
                                                     ) : (
-                                                        <span className="font-medium text-slate-800">{cfg.label}</span>
+                                                <span className="font-medium text-slate-800">{cfg.label}</span>
+                                                    )}
+                                                </td>
+                                                {/* Tooltip */}
+                                                <td className="px-4 py-3">
+                                                    {isEditing ? (
+                                                        <input
+                                                            type="text"
+                                                            value={editData.tooltip_text ?? ''}
+                                                            onChange={e => setEditData(p => ({ ...p, tooltip_text: e.target.value }))}
+                                                            className="w-full border border-slate-300 rounded px-2 py-1 text-sm"
+                                                            placeholder="滑鼠停留時顯示"
+                                                        />
+                                                    ) : (
+                                                        cfg.tooltip_text
+                                                            ? <span className="block max-w-56 truncate text-xs text-slate-500" title={cfg.tooltip_text}>{cfg.tooltip_text}</span>
+                                                            : <span className="text-xs text-slate-300">—</span>
                                                     )}
                                                 </td>
                                                 {/* Subsidy subtype */}

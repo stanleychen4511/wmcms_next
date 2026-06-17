@@ -15,12 +15,17 @@
 import { useEffect, useState } from 'react';
 import { X, Plus, Trash2, Save, Loader2, Phone, History, User, Search } from 'lucide-react';
 import { useToast } from './FloatingToast';
+import { DateInput } from './DateInput';
 import {
     createContactRecord,
     updateContactRecord,
     fetchPhoneHistory,
+    fetchContactRecordFollowups,
+    createContactRecordFollowup,
+    updateContactRecordFollowup,
     type ContactRecord,
     type ContactRecordInput,
+    type ContactRecordFollowup,
     type ApplicantSearchResult,
 } from '../app/actions/contactRecordActions';
 import { ApplicantPickerModal } from './ApplicantPickerModal';
@@ -65,6 +70,13 @@ function todayIsoDate(): string {
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
 }
 
+function formatDateTime(value: string): string {
+    if (!value) return '';
+    const d = new Date(value);
+    if (Number.isNaN(d.getTime())) return value;
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')} ${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}`;
+}
+
 export function ContactRecordModal({
     mode, operatorUserId, defaultRecordType,
     applicantUserId, applicantName, existingRecord, applications, onSaved, onClose,
@@ -105,6 +117,13 @@ export function ContactRecordModal({
     const [pickerOpen, setPickerOpen] = useState(false);
 
     const [saving, setSaving] = useState(false);
+    const [followups, setFollowups] = useState<ContactRecordFollowup[]>([]);
+    const [followupsLoading, setFollowupsLoading] = useState(false);
+    const [newFollowup, setNewFollowup] = useState('');
+    const [addingFollowup, setAddingFollowup] = useState(false);
+    const [editingFollowupId, setEditingFollowupId] = useState<string | null>(null);
+    const [editingFollowupText, setEditingFollowupText] = useState('');
+    const [savingFollowupEdit, setSavingFollowupEdit] = useState(false);
 
     // 媒體預覽 lightbox — 點縮圖開啟；以 imageUrls（過濾掉「不是直接圖片連結」的 URL）為基底
     const [lightboxIdx, setLightboxIdx] = useState<number | null>(null);
@@ -166,6 +185,23 @@ export function ContactRecordModal({
         }
     }, [mode, existingRecord]);
 
+    useEffect(() => {
+        if (mode !== 'edit' || !existingRecord?.id) {
+            setFollowups([]);
+            return;
+        }
+        let cancelled = false;
+        setFollowupsLoading(true);
+        fetchContactRecordFollowups(operatorUserId, existingRecord.id)
+            .then(res => {
+                if (!cancelled) setFollowups(res.success ? res.data : []);
+            })
+            .finally(() => {
+                if (!cancelled) setFollowupsLoading(false);
+            });
+        return () => { cancelled = true; };
+    }, [mode, existingRecord?.id, operatorUserId]);
+
     // ─── handlers ────────────────────────────────────────────────────────
     const toggleRejectReason = (code: string) => {
         setRejectReasons(prev => prev.includes(code) ? prev.filter(c => c !== code) : [...prev, code]);
@@ -175,6 +211,60 @@ export function ContactRecordModal({
     const removeMediaUrl = (idx: number) => setMediaUrls(prev => prev.filter((_, i) => i !== idx));
     const setMediaUrl = (idx: number, val: string) =>
         setMediaUrls(prev => prev.map((u, i) => i === idx ? val : u));
+
+    const handleAddFollowup = async () => {
+        if (mode !== 'edit' || !existingRecord?.id) return;
+        const text = newFollowup.trim();
+        if (!text) {
+            pushToast({ type: 'error', msg: '請填寫追蹤摘要' });
+            return;
+        }
+        setAddingFollowup(true);
+        try {
+            const res = await createContactRecordFollowup(operatorUserId, existingRecord.id, text);
+            if (res.success) {
+                setFollowups(prev => [...prev, res.data]);
+                setNewFollowup('');
+                pushToast({ type: 'success', msg: '已新增追蹤摘要' });
+            } else {
+                pushToast({ type: 'error', msg: res.error ?? '新增追蹤摘要失敗' });
+            }
+        } finally {
+            setAddingFollowup(false);
+        }
+    };
+
+    const handleStartEditFollowup = (item: ContactRecordFollowup) => {
+        setEditingFollowupId(item.id);
+        setEditingFollowupText(item.summary);
+    };
+
+    const handleCancelEditFollowup = () => {
+        setEditingFollowupId(null);
+        setEditingFollowupText('');
+    };
+
+    const handleSaveFollowupEdit = async () => {
+        if (!editingFollowupId) return;
+        const text = editingFollowupText.trim();
+        if (!text) {
+            pushToast({ type: 'error', msg: '請填寫追蹤摘要' });
+            return;
+        }
+        setSavingFollowupEdit(true);
+        try {
+            const res = await updateContactRecordFollowup(operatorUserId, editingFollowupId, text);
+            if (res.success) {
+                setFollowups(prev => prev.map(item => item.id === editingFollowupId ? res.data : item));
+                handleCancelEditFollowup();
+                pushToast({ type: 'success', msg: '追蹤摘要已更新' });
+            } else {
+                pushToast({ type: 'error', msg: res.error ?? '修改追蹤摘要失敗' });
+            }
+        } finally {
+            setSavingFollowupEdit(false);
+        }
+    };
 
     const handleSave = async () => {
         // 關懷模式必填驗證
@@ -187,7 +277,7 @@ export function ContactRecordModal({
                 pushToast({ type: 'error', msg: '請選擇聯絡對象' });
                 return;
             }
-            if (!summary.trim()) {
+            if (mode === 'create' && !summary.trim()) {
                 pushToast({ type: 'error', msg: '請填寫關懷摘要' });
                 return;
             }
@@ -259,10 +349,9 @@ export function ContactRecordModal({
                     {/* 共同：日期 */}
                     <div>
                         <label className="text-xs font-medium text-slate-600">日期 <span className="text-red-500">*</span></label>
-                        <input
-                            type="date"
+                        <DateInput
                             value={contactDate}
-                            onChange={e => setContactDate(e.target.value)}
+                            onChange={setContactDate}
                             className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
                         />
                     </div>
@@ -505,17 +594,119 @@ export function ContactRecordModal({
                     {/* 共同：備註 */}
                     <div>
                         <label className="text-xs font-medium text-slate-600">
-                            {isPhone ? '備註 / 追蹤摘要' : '關懷摘要'}
+                            {isPhone ? '初始摘要' : '關懷摘要'}
                             {!isPhone && <span className="text-red-500 ml-1">*</span>}
                         </label>
                         <textarea
                             value={summary}
                             onChange={e => setSummary(e.target.value)}
+                            readOnly={mode === 'edit'}
                             rows={4}
-                            className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm resize-y"
+                            className={`mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm resize-y ${mode === 'edit' ? 'bg-slate-50 text-slate-500 cursor-not-allowed' : ''}`}
                             placeholder={isPhone ? '需追蹤的摘要、特殊狀況等…' : '紀錄關懷對話內容…'}
                         />
+                        {mode === 'edit' && (
+                            <p className="mt-1 text-[11px] text-slate-400">初始摘要首次登打後不可修改，請使用下方追蹤摘要補充後續內容。</p>
+                        )}
                     </div>
+
+                    {mode === 'edit' && existingRecord?.id && (
+                        <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
+                            <div className="flex items-center justify-between">
+                                <label className="text-xs font-semibold text-slate-600">追蹤摘要</label>
+                                {followupsLoading && (
+                                    <span className="inline-flex items-center gap-1 text-xs text-slate-400">
+                                        <Loader2 className="w-3 h-3 animate-spin" />
+                                        載入中
+                                    </span>
+                                )}
+                            </div>
+
+                            {followups.length > 0 ? (
+                                <div className="space-y-2 max-h-40 overflow-y-auto">
+                                    {followups.map(item => {
+                                        const isMine = item.authorUserId === operatorUserId;
+                                        const isEditing = editingFollowupId === item.id;
+                                        const wasUpdated = item.updatedAt && item.updatedAt !== item.createdAt;
+                                        return (
+                                            <div key={item.id} className="rounded-md border border-slate-200 bg-white px-3 py-2">
+                                                {isEditing ? (
+                                                    <div className="space-y-2">
+                                                        <textarea
+                                                            value={editingFollowupText}
+                                                            onChange={e => setEditingFollowupText(e.target.value)}
+                                                            rows={3}
+                                                            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm resize-y"
+                                                        />
+                                                        <div className="flex items-center gap-2">
+                                                            <button
+                                                                type="button"
+                                                                onClick={handleSaveFollowupEdit}
+                                                                disabled={savingFollowupEdit || !editingFollowupText.trim()}
+                                                                className="inline-flex items-center gap-1 rounded-md bg-slate-800 px-2 py-1 text-[11px] font-medium text-white hover:bg-slate-700 disabled:opacity-50"
+                                                            >
+                                                                {savingFollowupEdit ? <Loader2 className="w-3 h-3 animate-spin" /> : <Save className="w-3 h-3" />}
+                                                                儲存
+                                                            </button>
+                                                            <button
+                                                                type="button"
+                                                                onClick={handleCancelEditFollowup}
+                                                                disabled={savingFollowupEdit}
+                                                                className="inline-flex items-center gap-1 rounded-md border border-slate-200 px-2 py-1 text-[11px] text-slate-500 hover:bg-slate-50 disabled:opacity-50"
+                                                            >
+                                                                <X className="w-3 h-3" />
+                                                                取消
+                                                            </button>
+                                                        </div>
+                                                    </div>
+                                                ) : (
+                                                    <>
+                                                        <div className="flex items-start gap-2">
+                                                            <p className="whitespace-pre-wrap text-sm text-slate-700 flex-1">{item.summary}</p>
+                                                            {isMine && (
+                                                                <button
+                                                                    type="button"
+                                                                    onClick={() => handleStartEditFollowup(item)}
+                                                                    className="text-[11px] text-indigo-600 hover:text-indigo-800 shrink-0"
+                                                                >
+                                                                    編輯
+                                                                </button>
+                                                            )}
+                                                        </div>
+                                                        <p className="mt-1 text-[11px] text-slate-400">
+                                                            {item.authorName} 新增於 {formatDateTime(item.createdAt)}
+                                                            {wasUpdated && `，修改於 ${formatDateTime(item.updatedAt)}`}
+                                                        </p>
+                                                    </>
+                                                )}
+                                            </div>
+                                        );
+                                    })}
+                                </div>
+                            ) : (
+                                <p className="text-xs text-slate-400">尚無追蹤摘要</p>
+                            )}
+
+                            <div className="space-y-2">
+                                <textarea
+                                    value={newFollowup}
+                                    onChange={e => setNewFollowup(e.target.value)}
+                                    rows={3}
+                                    className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm resize-y bg-white"
+                                    placeholder="輸入新的追蹤摘要"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={handleAddFollowup}
+                                    disabled={addingFollowup || !newFollowup.trim()}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-slate-800 text-white text-xs font-medium hover:bg-slate-700 disabled:opacity-50 disabled:cursor-not-allowed"
+                                >
+                                    {addingFollowup ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Plus className="w-3.5 h-3.5" />}
+                                    新增追蹤摘要
+                                </button>
+                            </div>
+                        </div>
+                    )}
 
                     {/* 關懷專屬：媒體 URL */}
                     {!isPhone && (

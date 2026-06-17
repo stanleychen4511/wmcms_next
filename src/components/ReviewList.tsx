@@ -282,33 +282,37 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
     };
 
     const handleFileSelected = async (e: React.ChangeEvent<HTMLInputElement>) => {
-        const file = e.target.files?.[0];
-        if (!file || !activeUploadId) return;
+        const files = Array.from(e.target.files ?? []);
+        const docId = activeUploadId;
+        if (files.length === 0 || !docId) return;
         e.target.value = '';
 
-        setUploading(prev => ({ ...prev, [activeUploadId]: true }));
+        setUploading(prev => ({ ...prev, [docId]: true }));
         try {
-            const docLabel = docs.find(d => d.id === activeUploadId)?.label ?? activeUploadId;
-            // 1. Browser 直接上傳到 Vercel Blob（避開 Vercel function 4.5 MB payload 上限）
-            const uploaded = await uploadFileToBlob(file, {
-                pathPrefix: `uploads/${applicationId}`,
-            });
-            // 2. Server 收到 URL → scope/role 守門 → 寫 application_documents
-            await linkApplicationDocumentByUrl(
-                applicationId,
-                activeUploadId,
-                docLabel,
-                uploaded.url,
-                uploaded.originalName,
-                uploaded.mimeType,
-            );
+            const docLabel = docs.find(d => d.id === docId)?.label ?? docId;
+            for (const [index, file] of files.entries()) {
+                // 1. Browser 直接上傳到 Vercel Blob（避開 Vercel function 4.5 MB payload 上限）
+                const uploaded = await uploadFileToBlob(file, {
+                    pathPrefix: `uploads/${applicationId}`,
+                });
+                // 2. Server 收到 URL → scope/role 守門 → 寫 application_documents
+                await linkApplicationDocumentByUrl(
+                    applicationId,
+                    docId,
+                    docLabel,
+                    uploaded.url,
+                    uploaded.originalName,
+                    uploaded.mimeType,
+                    { replaceExisting: index === 0 },
+                );
+            }
             void caseNumber; // caseNumber 已不需要傳給 server（檔名由 client 上傳路徑決定）
             await loadDocs(true);
             onRefresh?.();
         } catch (err) {
             console.error('upload failed', err);
         } finally {
-            setUploading(prev => ({ ...prev, [activeUploadId]: false }));
+            setUploading(prev => ({ ...prev, [docId]: false }));
             setActiveUploadId(null);
         }
     };
@@ -351,6 +355,7 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
             <input
                 ref={fileInputRef}
                 type="file"
+                multiple
                 className="hidden"
                 accept=".pdf,.doc,.docx,.jpg,.jpeg,.png,application/pdf,application/msword,application/vnd.openxmlformats-officedocument.wordprocessingml.document,image/jpeg,image/png"
                 onChange={handleFileSelected}
@@ -384,6 +389,15 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                         const isUpdating = updating[doc.id];
                         const busy = isUploading || isUpdating;
                         const paperRequirement = PAPER_REQUIREMENT_BADGE[doc.paperRequirement ?? 'original'];
+                        const docFiles = doc.files?.length
+                            ? doc.files
+                            : (doc.fileUrl ? [{
+                                rowId: `${doc.id}-latest`,
+                                fileUrl: doc.fileUrl,
+                                uploadedAt: doc.uploadedAt,
+                                status: doc.status,
+                                rejectReason: doc.rejectReason,
+                            }] : []);
                         return (
                             <li key={doc.id} className="px-6 py-4 flex items-center gap-4 hover:bg-slate-50 transition-colors">
                                 <StatusIcon status={doc.status} />
@@ -391,6 +405,14 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                                 <div className="flex-1 min-w-0">
                                     <p className="text-sm font-semibold text-gray-900 truncate">
                                         {doc.label}
+                                        {doc.tooltipText && (
+                                            <span
+                                                className="ml-1 inline-flex align-middle text-slate-400"
+                                                title={doc.tooltipText}
+                                            >
+                                                <AlertCircle className="w-3.5 h-3.5" />
+                                            </span>
+                                        )}
                                         {!doc.isRequired && (
                                             <span className="ml-2 text-[10px] font-normal text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">非必填</span>
                                         )}
@@ -431,24 +453,33 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                                     </div>
                                 </div>
 
-                                {/* File preview button */}
-                                {doc.fileUrl && (
-                                    <button
-                                        onClick={() => {
-                                            setPreview({ url: doc.fileUrl!, label: doc.label });
-                                            void writeAuditLog({
-                                                userId: userId ?? null,
-                                                action: 'document.preview',
-                                                targetType: 'document',
-                                                targetId: doc.id,
-                                                detail: { applicationId, documentLabel: doc.label },
-                                            });
-                                        }}
-                                        className="p-1.5 text-slate-400 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
-                                        title="預覽檔案"
-                                    >
-                                        <Eye className="w-4 h-4" />
-                                    </button>
+                                {/* File preview buttons */}
+                                {docFiles.length > 0 && (
+                                    <div className="flex items-center justify-end gap-1.5 shrink-0 flex-wrap max-w-56">
+                                        {docFiles.map((file, fileIndex) => (
+                                            <button
+                                                key={file.rowId}
+                                                onClick={() => {
+                                                    setPreview({
+                                                        url: file.fileUrl,
+                                                        label: docFiles.length > 1 ? `${doc.label} ${fileIndex + 1}` : doc.label,
+                                                    });
+                                                    void writeAuditLog({
+                                                        userId: userId ?? null,
+                                                        action: 'document.preview',
+                                                        targetType: 'document',
+                                                        targetId: doc.id,
+                                                        detail: { applicationId, documentLabel: doc.label, rowId: file.rowId },
+                                                    });
+                                                }}
+                                                className="inline-flex items-center gap-1 px-2 py-1 text-xs text-slate-500 hover:text-blue-600 hover:bg-blue-50 rounded-lg transition"
+                                                title={docFiles.length > 1 ? `檢視第 ${fileIndex + 1} 個檔案` : '預覽檔案'}
+                                            >
+                                                <Eye className="w-3.5 h-3.5" />
+                                                {docFiles.length > 1 ? fileIndex + 1 : ''}
+                                            </button>
+                                        ))}
+                                    </div>
                                 )}
 
                                 {busy ? (
@@ -483,7 +514,7 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                                         {/* ── Review actions: role permission + case not closed, independent of step view ── */}
                                         {canReview && (
                                             <>
-                                                {doc.status === '0' && doc.fileUrl && (
+                                                {doc.status === '0' && docFiles.length > 0 && (
                                                     <>
                                                         <button
                                                             onClick={() => handleStatusChange(doc.id, '1')}

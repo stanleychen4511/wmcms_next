@@ -2,6 +2,7 @@
 
 import { pool } from '../../lib/db';
 import { writeAuditLog } from './auditActions';
+import { formatDateOnly } from '../../lib/dateOnly';
 
 const VIEW_ROLES_FOR_HISTORY = ['case_officer', 'supervisor', 'accountant', 'executive', 'admin', 'volunteer'];
 
@@ -93,7 +94,7 @@ export async function fetchApplicantHomeVisits(
             applicationId: String(row.application_id),
             caseNumber: row.case_number,
             caseStatus: row.case_status,
-            visitDate: row.visit_date ? new Date(row.visit_date).toISOString().split('T')[0] : null,
+            visitDate: formatDateOnly(row.visit_date),
             visitorName: row.visitor_name ?? null,
             visitorTitle: row.visitor_title ?? null,
             selfReportedCondition: row.self_reported_condition ?? null,
@@ -159,7 +160,7 @@ export async function fetchHomeVisit(applicationId: string): Promise<HomeVisitDa
         if (res.rows.length === 0) return null;
         const row = res.rows[0];
         return {
-            visit_date: row.visit_date ? new Date(row.visit_date).toISOString().split('T')[0] : undefined,
+            visit_date: formatDateOnly(row.visit_date) ?? undefined,
             visitor_title: row.visitor_title ?? undefined,
             visitor_name: row.visitor_name ?? undefined,
             visit_photo_urls: Array.isArray(row.visit_photo_urls) ? row.visit_photo_urls : [],

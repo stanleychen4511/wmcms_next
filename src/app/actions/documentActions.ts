@@ -43,6 +43,7 @@ export interface DocumentEntry {
     label: string; // Display name
     status: '0' | '1' | '2'; // 0=待上傳/未符合, 1=符合, 2=逾期
     fileUrl?: string; // the database file_path
+    files?: { rowId: string; fileUrl: string; uploadedAt?: string; status: '0' | '1' | '2'; rejectReason?: string }[];
     rejectReason?: string;
     uploadedAt?: string;
     isRequired: boolean;
@@ -52,6 +53,7 @@ export interface DocumentEntry {
     subsidySubtype?: '1' | '2' | null;
     storageLocationPath?: string | null;
     paperRequirement?: DocumentPaperRequirement;
+    tooltipText?: string | null;
 }
 
 export interface DocumentTypeConfig {
@@ -67,6 +69,7 @@ export interface DocumentTypeConfig {
     scope: 'C' | 'D';
     subsidy_subtype: '1' | '2' | null;
     paper_requirement: DocumentPaperRequirement;
+    tooltip_text: string | null;
 }
 
 export type DocumentPhase = 'apply' | 'reimbursement';
@@ -89,6 +92,7 @@ export async function fetchDocumentTypeConfigs(): Promise<DocumentTypeConfig[]> 
             SELECT d.id, d.label, d.phase, d.is_required, d.allow_supplement,
                    d.storage_location_id, d.sort_order, d.is_active, d.scope,
                    d.subsidy_subtype, COALESCE(d.paper_requirement, 'original') AS paper_requirement,
+                   d.tooltip_text,
                    lp.full_path AS storage_location_path
             FROM document_type_config d
             LEFT JOIN loc_path lp ON lp.id = d.storage_location_id
@@ -109,6 +113,7 @@ export async function createDocumentTypeConfig(
         storage_location_id?: number | null;
         subsidy_subtype?: DocumentSubsidySubtype;
         paper_requirement?: DocumentPaperRequirement;
+        tooltip_text?: string | null;
     }
 ): Promise<{ success: boolean; id?: number; error?: string }> {
     const label = data.label.trim();
@@ -136,8 +141,8 @@ export async function createDocumentTypeConfig(
              )
              INSERT INTO document_type_config
                  (label, phase, is_required, allow_supplement, storage_location_id,
-                  sort_order, is_active, scope, subsidy_subtype, paper_requirement)
-             SELECT $1, $2, $3, $4, $5, next_sort.sort_order, true, 'C', $6, $7
+                  sort_order, is_active, scope, subsidy_subtype, paper_requirement, tooltip_text)
+             SELECT $1, $2, $3, $4, $5, next_sort.sort_order, true, 'C', $6, $7, $8
              FROM next_sort
              RETURNING id`,
             [
@@ -148,6 +153,7 @@ export async function createDocumentTypeConfig(
                 data.storage_location_id ?? null,
                 subsidySubtype,
                 paperRequirement,
+                data.tooltip_text?.trim() || null,
             ]
         );
         return { success: true, id: res.rows[0]?.id };
@@ -209,6 +215,7 @@ export async function updateDocumentTypeConfig(
         is_active?: boolean;
         subsidy_subtype?: '1' | '2' | null;
         paper_requirement?: DocumentPaperRequirement;
+        tooltip_text?: string | null;
     }
 ): Promise<{ success: boolean; error?: string }> {
     const fields: string[] = [];
@@ -223,6 +230,7 @@ export async function updateDocumentTypeConfig(
     if (data.is_active !== undefined)           { fields.push(`is_active = $${i++}`);           values.push(data.is_active); }
     if (data.subsidy_subtype !== undefined)     { fields.push(`subsidy_subtype = $${i++}`);     values.push(data.subsidy_subtype); }
     if (data.paper_requirement !== undefined)   { fields.push(`paper_requirement = $${i++}`);   values.push(data.paper_requirement); }
+    if (data.tooltip_text !== undefined)        { fields.push(`tooltip_text = $${i++}`);        values.push(data.tooltip_text?.trim() || null); }
     if (fields.length === 0) return { success: true };
     values.push(id);
     const client = await pool.connect();
@@ -264,7 +272,7 @@ function sanitizeForFilename(str: string): string {
  *   scope='C' → disbursementId 必須為 null/undefined（case-level）
  *   scope='D' → disbursementId 必須非 null（disbursement-level），且依文件類型強制角色 + review_stage：
  *     id=18 領款收據：case_officer + review_stage='1'
- *     id=17 醫療收據：accountant + review_stage='3'
+ *     id=17 醫療收據：case_officer + review_stage='1'
  *
  * 若 disbursementId 提供 → 需傳入 operatorUserId 以做角色檢查。
  */
@@ -315,10 +323,10 @@ async function checkDocumentScopeAndRole(
         if (!roles.has('case_officer')) return { ok: false, error: '只有個管師可上傳領款收據' };
         if (stage !== '1') return { ok: false, error: '僅個管階段（review_stage=1）可上傳領款收據' };
     }
-    // 醫療收據（id=17）：會計階段
+    // 醫療收據（id=17）：個管階段
     if (Number(documentId) === 17) {
-        if (!roles.has('accountant')) return { ok: false, error: '只有會計可上傳醫療收據' };
-        if (stage !== '3') return { ok: false, error: '僅會計階段（review_stage=3）可上傳醫療收據' };
+        if (!roles.has('case_officer')) return { ok: false, error: '只有個管師可上傳醫療收據' };
+        if (stage !== '1') return { ok: false, error: '僅個管階段（review_stage=1）可上傳醫療收據' };
     }
     return { ok: true };
 }
@@ -356,6 +364,11 @@ export async function uploadApplicationDocument(
     const ext = path.extname(file.name).toLowerCase();
     if (!ALLOWED_EXTS.includes(ext) || !ALLOWED_MIME.includes(file.type)) {
         return { success: false, error: '僅接受 PDF、Word 或圖片檔案（.pdf、.doc、.docx、.jpg、.png）' };
+    }
+
+    // 醫療收據（#51）限定 PDF；領款收據仍允許 PDF 或圖片，方便紙本掃描。
+    if (Number(documentId) === 17 && ext !== '.pdf') {
+        return { success: false, error: '醫療收據僅接受 PDF 檔' };
     }
 
     // 撥款相關文件（醫療收據 / 領款收據）必須是 PDF 或圖片，否則合併列印無法處理
@@ -400,21 +413,15 @@ export async function uploadApplicationDocument(
             const client = await pool.connect();
             try {
                 if (disbursementId) {
-                    // disbursement-level：upsert by (application_id, id, disbursement_id) 部分唯一索引
                     await client.query(
                         `INSERT INTO application_documents (application_id, id, disbursement_id, file_path, status, uploaded_at, pages)
-                         VALUES ($1, $2, $3, $4, '0', NOW(), $5)
-                         ON CONFLICT (application_id, id, disbursement_id) WHERE disbursement_id IS NOT NULL
-                         DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW(), pages = EXCLUDED.pages`,
+                         VALUES ($1, $2, $3, $4, '0', NOW(), $5)`,
                         [applicationId, documentId, disbursementId, publicUrl, pages]
                     );
                 } else {
-                    // case-level：原行為，但 ON CONFLICT 針對 partial unique index
                     await client.query(
                         `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at, pages)
-                         VALUES ($1, $2, $3, '0', NOW(), $4)
-                         ON CONFLICT (application_id, id) WHERE disbursement_id IS NULL
-                         DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW(), pages = EXCLUDED.pages`,
+                         VALUES ($1, $2, $3, '0', NOW(), $4)`,
                         [applicationId, documentId, publicUrl, pages]
                     );
                 }
@@ -462,6 +469,7 @@ export async function linkApplicationDocumentByUrl(
     options?: {
         disbursementId?: string | null;
         operatorUserId?: string | null;
+        replaceExisting?: boolean;
     }
 ): Promise<{ success: boolean; filePath?: string; error?: string }> {
     // URL 防偽：
@@ -496,12 +504,16 @@ export async function linkApplicationDocumentByUrl(
     if (!ALLOWED_EXTS.includes(ext) || !ALLOWED_MIME.includes(mimeType)) {
         return { success: false, error: '僅接受 PDF、Word 或圖片檔案（.pdf、.doc、.docx、.jpg、.png）' };
     }
+    if (Number(documentId) === 17 && ext !== '.pdf') {
+        return { success: false, error: '醫療收據僅接受 PDF 檔' };
+    }
     if (isDisbursementReceiptType(documentId) && !DISBURSEMENT_DOC_EXTS.includes(ext)) {
         return { success: false, error: '醫療收據／領款收據僅接受 PDF 或圖片（不支援 .doc / .docx，請先轉檔）' };
     }
 
     const disbursementId = options?.disbursementId ?? null;
     const operatorUserId = options?.operatorUserId ?? null;
+    const replaceExisting = options?.replaceExisting === true;
 
     try {
         // scope + 角色 + review_stage 守門
@@ -519,23 +531,39 @@ export async function linkApplicationDocumentByUrl(
             // 寫入 application_documents（pages 設 NULL；client 上傳路徑不算頁數）
             const writeClient = await pool.connect();
             try {
+                await writeClient.query('BEGIN');
+                if (replaceExisting) {
+                    if (disbursementId) {
+                        await writeClient.query(
+                            `DELETE FROM application_documents
+                             WHERE application_id = $1 AND id = $2 AND disbursement_id = $3`,
+                            [applicationId, documentId, disbursementId]
+                        );
+                    } else {
+                        await writeClient.query(
+                            `DELETE FROM application_documents
+                             WHERE application_id = $1 AND id = $2 AND disbursement_id IS NULL`,
+                            [applicationId, documentId]
+                        );
+                    }
+                }
                 if (disbursementId) {
                     await writeClient.query(
                         `INSERT INTO application_documents (application_id, id, disbursement_id, file_path, status, uploaded_at, pages)
-                         VALUES ($1, $2, $3, $4, '0', NOW(), NULL)
-                         ON CONFLICT (application_id, id, disbursement_id) WHERE disbursement_id IS NOT NULL
-                         DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW(), pages = NULL`,
+                         VALUES ($1, $2, $3, $4, '0', NOW(), NULL)`,
                         [applicationId, documentId, disbursementId, blobUrl]
                     );
                 } else {
                     await writeClient.query(
                         `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at, pages)
-                         VALUES ($1, $2, $3, '0', NOW(), NULL)
-                         ON CONFLICT (application_id, id) WHERE disbursement_id IS NULL
-                         DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW(), pages = NULL`,
+                         VALUES ($1, $2, $3, '0', NOW(), NULL)`,
                         [applicationId, documentId, blobUrl]
                     );
                 }
+                await writeClient.query('COMMIT');
+            } catch (err) {
+                await writeClient.query('ROLLBACK');
+                throw err;
             } finally {
                 writeClient.release();
             }
@@ -546,7 +574,7 @@ export async function linkApplicationDocumentByUrl(
             action: 'document.upload',
             targetType: 'document',
             targetId: documentId,
-            detail: { applicationId, documentLabel, filePath: blobUrl, disbursementId: disbursementId ?? undefined, viaClientUpload: true },
+            detail: { applicationId, documentLabel, filePath: blobUrl, disbursementId: disbursementId ?? undefined, viaClientUpload: true, replaceExisting },
         });
         return { success: true, filePath: blobUrl };
     } catch (err: any) {
@@ -618,6 +646,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
             )
             SELECT d.id::text, d.label, d.phase, d.is_required, d.allow_supplement, d.sort_order,
                    d.subsidy_subtype, COALESCE(d.paper_requirement, 'original') AS paper_requirement,
+                   d.tooltip_text,
                    lp.full_path AS storage_location_path
             FROM document_type_config d
             LEFT JOIN loc_path lp ON lp.id = d.storage_location_id
@@ -638,28 +667,49 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
             is_required: boolean; allow_supplement: boolean;
             subsidy_subtype: '1' | '2' | null;
             paper_requirement: DocumentPaperRequirement;
+            tooltip_text: string | null;
             storage_location_path: string | null;
         }[];
 
         // 僅取 case-level 文件（scope='C'，即 disbursement_id IS NULL）
         // disbursement-level 文件（醫療收據、領款收據）由 DisbursementPanel 顯示
         const uploadRes = await client.query(
-            `SELECT id::text, file_path, status, reject_reason, uploaded_at
+            `SELECT row_id::text, id::text, file_path, status, reject_reason, uploaded_at
              FROM application_documents
-             WHERE application_id = $1 AND disbursement_id IS NULL`,
+             WHERE application_id = $1 AND disbursement_id IS NULL
+             ORDER BY uploaded_at DESC NULLS LAST, row_id DESC`,
             [applicationId]
         );
 
-        const dbRecords = new Map(uploadRes.rows.map((r: any) => [String(r.id), r]));
+        const dbRecords = new Map<string, any[]>();
+        for (const row of uploadRes.rows) {
+            const key = String(row.id);
+            const rows = dbRecords.get(key) ?? [];
+            rows.push(row);
+            dbRecords.set(key, rows);
+        }
 
         return docTypes.map(doc => {
-            const row = dbRecords.get(doc.id);
-            if (row) {
+            const rows = dbRecords.get(doc.id) ?? [];
+            if (rows.length > 0) {
+                const pending = rows.find(row => row.status === '0' && row.file_path);
+                const approved = rows.find(row => row.status === '1');
+                const row = pending ?? approved ?? rows[0];
+                const files = rows
+                    .filter(fileRow => !!fileRow.file_path)
+                    .map(fileRow => ({
+                        rowId: String(fileRow.row_id),
+                        fileUrl: fileRow.file_path,
+                        status: (fileRow.status ?? '0') as '0' | '1' | '2',
+                        rejectReason: fileRow.reject_reason ?? undefined,
+                        uploadedAt: fileRow.uploaded_at ? fileRow.uploaded_at.toISOString() : undefined,
+                    }));
                 return {
                     id: doc.id,
                     label: doc.label,
                     status: (row.status ?? '0') as '0' | '1' | '2',
                     fileUrl: row.file_path,
+                    files,
                     rejectReason: row.reject_reason,
                     uploadedAt: row.uploaded_at ? row.uploaded_at.toISOString() : undefined,
                     isRequired: doc.is_required,
@@ -668,6 +718,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                     subsidySubtype: doc.subsidy_subtype,
                     storageLocationPath: doc.storage_location_path,
                     paperRequirement: doc.paper_requirement,
+                    tooltipText: doc.tooltip_text,
                 };
             }
             return {
@@ -680,6 +731,7 @@ export async function fetchApplicationDocuments(applicationId: string): Promise<
                 subsidySubtype: doc.subsidy_subtype,
                 storageLocationPath: doc.storage_location_path,
                 paperRequirement: doc.paper_requirement,
+                tooltipText: doc.tooltip_text,
             };
         });
 
@@ -777,9 +829,7 @@ export async function copyDocumentToApplication(
     try {
         await client.query(
             `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at)
-             VALUES ($1, $2, $3, '0', NOW())
-             ON CONFLICT (application_id, id) WHERE disbursement_id IS NULL
-             DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW()`,
+             VALUES ($1, $2, $3, '0', NOW())`,
             [targetApplicationId, docId, fileUrl]
         );
         void writeAuditLog({

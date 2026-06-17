@@ -3,6 +3,7 @@
 import { pool } from '../../lib/db';
 import { generateBlindIndex, encryptAES, generateSalt, hashPassword } from '../../lib/crypto';
 import { writeAuditLog } from './auditActions';
+import { verifyEmailVerificationToken } from './emailVerificationActions';
 // 註：檔案不再經 server function 上傳；client 直接 PUT 到 Vercel Blob，
 //     submitExternalApplication 只接收 documents JSON（URL list）。
 //     uploadFile / sanitizeForFilename / formatTimestamp 在新流程下已不需要。
@@ -14,36 +15,59 @@ export interface EligibilityResult {
     remaining?: number;
     cumulativeApproved?: number;
     maxAmount?: number;
+    activeApplication?: {
+        caseNumber: string;
+        progress: string;
+    };
 }
 
-export async function queryApplicantEligibility(idNumber: string): Promise<EligibilityResult> {
+function getApplicantFacingProgress(status: string | null, stage: string | null): string {
+    if (status === '4') return '已結案';
+    if (status === '2') return '已結案';
+    if (status === '3' || stage === 'reimbursement') return '撥款中';
+    if (stage === 'board_review' || stage === 'home_visit' || stage === 'visit') return '案件審核中';
+    if (stage === 'admin_review') return '文件審核中';
+    return '受理中';
+}
+
+async function findApplicantUserIdByIdNumber(client: any, idNumber: string): Promise<string | null> {
+    const normalizedId = idNumber.trim().toUpperCase();
+    const usersRes = await client.query(
+        'SELECT id, search_salt, id_number_bidx FROM users WHERE is_active = true'
+    );
+
+    for (const row of usersRes.rows) {
+        if (!row.search_salt) continue;
+        const salt = Buffer.isBuffer(row.search_salt)
+            ? row.search_salt.toString('hex')
+            : String(row.search_salt);
+        const storedBidx = Buffer.isBuffer(row.id_number_bidx)
+            ? row.id_number_bidx.toString('hex')
+            : String(row.id_number_bidx ?? '');
+        if (generateBlindIndex(normalizedId, salt) === storedBidx) {
+            return row.id;
+        }
+    }
+
+    const accountRes = await client.query(
+        `SELECT id FROM users WHERE is_active = true AND account = $1 LIMIT 1`,
+        [`app_${normalizedId}`]
+    );
+    return accountRes.rows[0]?.id ?? null;
+}
+
+export async function queryApplicantEligibility(
+    idNumber: string,
+    subsidySubtype?: '1' | '2',
+): Promise<EligibilityResult> {
     if (!idNumber || idNumber.trim() === '') {
         return { eligible: false, reason: '請提供身分證字號' };
     }
 
     const client = await pool.connect();
     try {
-        const usersRes = await client.query(
-            'SELECT id, search_salt, id_number_bidx FROM users WHERE is_active = true'
-        );
-
         const normalizedId = idNumber.trim().toUpperCase();
-        let matchedUserId: string | null = null;
-        for (const row of usersRes.rows) {
-            if (!row.search_salt) continue;
-            // Coerce to string in case pg returns bytea as Buffer
-            const salt = Buffer.isBuffer(row.search_salt)
-                ? row.search_salt.toString('hex')
-                : String(row.search_salt);
-            const storedBidx = Buffer.isBuffer(row.id_number_bidx)
-                ? row.id_number_bidx.toString('hex')
-                : String(row.id_number_bidx ?? '');
-            const computed = generateBlindIndex(normalizedId, salt);
-            if (computed === storedBidx) {
-                matchedUserId = row.id;
-                break;
-            }
-        }
+        const matchedUserId = await findApplicantUserIdByIdNumber(client, normalizedId);
 
         if (!matchedUserId) {
             // First-time applicant — 沒有比中任何已存在的 user，視為新申請人，可繼續填表
@@ -52,23 +76,53 @@ export async function queryApplicantEligibility(idNumber: string): Promise<Eligi
 
         // Check for active (non-terminal) applications
         const activeRes = await client.query(
-            `SELECT id FROM applications WHERE applicant_id = $1 AND status NOT IN ('2', '4') LIMIT 1`,
+            `SELECT a.id, a.case_number, a.status, wf.stage
+             FROM applications a
+             LEFT JOIN LATERAL (
+                 SELECT stage
+                 FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY COALESCE(reviewed_at, created_at) DESC, id DESC
+                 LIMIT 1
+             ) wf ON true
+             WHERE a.applicant_id = $1
+               AND (
+                   a.status NOT IN ('2', '4')
+                   OR EXISTS (
+                       SELECT 1
+                       FROM payment_disbursements pd
+                       WHERE pd.application_id = a.id
+                         AND pd.review_stage IN ('1', '2', '3', '4')
+                   )
+               )
+             ORDER BY a.created_at DESC, a.id DESC
+             LIMIT 1`,
             [matchedUserId]
         );
 
         if (activeRes.rows.length > 0) {
+            const active = activeRes.rows[0];
             return {
                 eligible: false,
-                reason: '您目前已有進行中的申請案件，不可重複申請。如有疑問，請聯繫承辦人員。',
+                reason: '您已正在申請中，請勿重複送出申請。如有疑問，請聯繫承辦人員。',
+                activeApplication: {
+                    caseNumber: active.case_number ?? '',
+                    progress: getApplicantFacingProgress(active.status, active.stage),
+                },
             };
         }
 
-        // 跨年度累計核准金額；依子類型分開
+        // 跨年度累計核准金額；依子類型分開。
+        // status='3' 已通過進入核銷、status='4' 已結案，兩者都算已核定額度。
         const sumRes = await client.query(
             `SELECT
                 COALESCE(SUM(CASE WHEN subsidy_subtype = '1' THEN approved_amount END), 0) AS econ_total,
                 COALESCE(SUM(CASE WHEN subsidy_subtype = '2' THEN approved_amount END), 0) AS mid_total
-             FROM applications WHERE applicant_id = $1 AND status = '4'`,
+             FROM applications
+             WHERE applicant_id = $1
+               AND status IN ('3', '4')
+               AND approved_amount IS NOT NULL
+               AND approved_amount > 0`,
             [matchedUserId]
         );
         const econUsed = Number(sumRes.rows[0].econ_total || 0);
@@ -81,15 +135,45 @@ export async function queryApplicantEligibility(idNumber: string): Promise<Eligi
         const econRemaining = Math.max(0, econMax - econUsed);
         const midRemaining  = Math.max(0, midMax  - midUsed);
 
-        // 只要兩種額度任一還有餘額 → 可繼續資格判定（實際選定子類型後守門依該子類型額度）
-        if (econRemaining <= 0 && midRemaining <= 0) {
+        if (subsidySubtype === '1' && econRemaining <= 0) {
             return {
                 eligible: false,
-                reason: `您的歷史累計獲補助金額已達上限（經濟弱勢 ${econUsed.toLocaleString()} 元、小康家庭 ${midUsed.toLocaleString()} 元），不符合申請資格。`,
+                reason: `經濟弱勢累積補助已達上限 ${econMax.toLocaleString()} 元，目前無法再申請經濟弱勢補助。`,
+            };
+        }
+        if (subsidySubtype === '2' && midRemaining <= 0) {
+            return {
+                eligible: false,
+                reason: `小康家庭累積補助已達上限 ${midMax.toLocaleString()} 元，目前無法再申請小康家庭補助。`,
             };
         }
 
-        // 向後相容：保留 cumulativeApproved/maxAmount/remaining 三個舊欄位（取較大者）
+        // 未指定子類型時，保留舊行為：只要兩種額度任一還有餘額 → 可繼續資格判定。
+        if (!subsidySubtype && econRemaining <= 0 && midRemaining <= 0) {
+            return {
+                eligible: false,
+                reason: `您申請額度已滿（經濟弱勢已使用 ${econUsed.toLocaleString()} 元、小康家庭已使用 ${midUsed.toLocaleString()} 元），目前無法送出新申請。`,
+            };
+        }
+
+        if (subsidySubtype === '1') {
+            return {
+                eligible: true,
+                remaining: econRemaining,
+                cumulativeApproved: econUsed,
+                maxAmount: econMax,
+            };
+        }
+        if (subsidySubtype === '2') {
+            return {
+                eligible: true,
+                remaining: midRemaining,
+                cumulativeApproved: midUsed,
+                maxAmount: midMax,
+            };
+        }
+
+        // 向後相容：未指定子類型時，保留 cumulativeApproved/maxAmount/remaining 三個舊欄位（取較大者）
         return {
             eligible: true,
             remaining: Math.max(econRemaining, midRemaining),
@@ -124,6 +208,7 @@ export async function submitExternalApplication(
     const adultCount     = formData.get('adult_children_count') ? Number(formData.get('adult_children_count')) : null;
     const applyAmount    = formData.get('apply_amount') ? Number(formData.get('apply_amount')) : null;
     const email          = ((formData.get('email') as string | null) ?? '').trim();
+    const emailVerificationToken = ((formData.get('email_verification_token') as string | null) ?? '').trim();
     const applicantPhone = ((formData.get('applicant_phone') as string | null) ?? '').trim();
     const applicantDob   = ((formData.get('applicant_dob') as string | null) ?? '').trim();
     const cancerTypeIn   = ((formData.get('cancer_type') as string | null) ?? '').trim();
@@ -140,6 +225,8 @@ export async function submitExternalApplication(
     const referralContactNameIn   = ((formData.get('referral_contact_name')  as string | null) ?? '').trim();
     const referralContactTitleIn  = ((formData.get('referral_contact_title') as string | null) ?? '').trim();
     const referralContactPhoneIn  = ((formData.get('referral_contact_phone') as string | null) ?? '').trim();
+    const referralContactEmailIn  = ((formData.get('referral_contact_email') as string | null) ?? '').trim();
+    const referralEmailVerificationToken = ((formData.get('referral_email_verification_token') as string | null) ?? '').trim();
     // 補助子類型（115 年辦法）
     const subsidySubtypeRaw = (formData.get('subsidy_subtype') as string | null) ?? null;
     const subsidySubtype: '1' | '2' | null =
@@ -168,7 +255,7 @@ export async function submitExternalApplication(
     }
     if (!cancerTypeIn) return { success: false, error: '請填寫癌別' };
     if (!cancerStageIn) return { success: false, error: '請填寫癌症期數' };
-    if (!treatmentPhase) return { success: false, error: '請選擇治療階段（治療前／治療後／治療前後）' };
+    if (!treatmentPhase) return { success: false, error: '請選擇欲申請治療項目（治療完成三個月以內／治療未開始／兩者皆有）' };
 
     // 申請方式：經濟弱勢強制 way='2'；小康看送來的；其他預設 '1'
     const subsidySubtypeForWay = ((formData.get('subsidy_subtype') as string | null) ?? '').trim();
@@ -179,12 +266,22 @@ export async function submitExternalApplication(
         if (!referralUnitNameIn || !referralContactNameIn || !referralContactTitleIn || !referralContactPhoneIn) {
             return { success: false, error: '轉介申請須填寫轉介單位 / 轉介人姓名 / 職稱 / 聯絡電話' };
         }
+        if (!referralContactEmailIn || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(referralContactEmailIn)) {
+            return { success: false, error: '轉介申請須填寫有效的轉介人 Email' };
+        }
     }
 
     // 子類型 + 申請金額上限驗證（依 115 辦法子類型不同上限）
     if (!subsidySubtype) {
         return { success: false, error: '請選擇補助子類型（經濟弱勢／小康家庭）' };
     }
+    if (!(await verifyEmailVerificationToken(email, 'applicant_application', emailVerificationToken))) {
+        return { success: false, error: '請先完成申請人 Email 驗證' };
+    }
+    if (applicationWay === '2' && !(await verifyEmailVerificationToken(referralContactEmailIn, 'referral_application', referralEmailVerificationToken))) {
+        return { success: false, error: '請先完成轉介人 Email 驗證' };
+    }
+
     const limitRow = await pool.query<{ amount_max: string }>(
         `SELECT amount_max FROM subsidy_amount_limits WHERE subsidy_subtype = $1`,
         [subsidySubtype]
@@ -221,23 +318,13 @@ export async function submitExternalApplication(
         // ── 1. Find or create applicant ──────────────────────────────────────
         let applicantId: string | null = null;
 
-        const usersRes = await client.query(
-            'SELECT id, search_salt, name_bidx, id_number_bidx FROM users WHERE is_active = true'
-        );
-
-        for (const row of usersRes.rows) {
-            if (!row.search_salt) continue;
-            const computedNameBidx = generateBlindIndex(name, row.search_salt);
-            const computedIdBidx = generateBlindIndex(idNumber, row.search_salt);
-            if (computedNameBidx === row.name_bidx && computedIdBidx === row.id_number_bidx) {
-                applicantId = row.id;
-                // Refresh email for existing applicant (they may be reapplying with new contact)
-                await client.query(
-                    `UPDATE users SET email = $1 WHERE id = $2::bigint`,
-                    [email, applicantId]
-                );
-                break;
-            }
+        applicantId = await findApplicantUserIdByIdNumber(client, idNumber);
+        if (applicantId) {
+            // Refresh email for existing applicant (they may be reapplying with new contact)
+            await client.query(
+                `UPDATE users SET email = $1 WHERE id = $2::bigint`,
+                [email, applicantId]
+            );
         }
 
         if (!applicantId) {
@@ -287,6 +374,39 @@ export async function submitExternalApplication(
             }
         }
 
+        const activeRes = await client.query(
+            `SELECT a.case_number, a.status, wf.stage
+             FROM applications a
+             LEFT JOIN LATERAL (
+                 SELECT stage
+                 FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY COALESCE(reviewed_at, created_at) DESC, id DESC
+                 LIMIT 1
+             ) wf ON true
+             WHERE a.applicant_id = $1::bigint
+               AND (
+                   a.status NOT IN ('2', '4')
+                   OR EXISTS (
+                       SELECT 1
+                       FROM payment_disbursements pd
+                       WHERE pd.application_id = a.id
+                         AND pd.review_stage IN ('1', '2', '3', '4')
+                   )
+               )
+             ORDER BY a.created_at DESC, a.id DESC
+             LIMIT 1`,
+            [applicantId]
+        );
+        if (activeRes.rows.length > 0) {
+            const active = activeRes.rows[0];
+            await client.query('ROLLBACK');
+            return {
+                success: false,
+                error: `您已有進行中案件（${active.case_number ?? '未編號'}，${getApplicantFacingProgress(active.status, active.stage)}），請勿重複送出申請。`,
+            };
+        }
+
         // ── 2. Generate sequential case number ───────────────────────────────
         const now = new Date();
         const rocYear = String(now.getFullYear() - 1911).padStart(3, '0');
@@ -310,8 +430,8 @@ export async function submitExternalApplication(
                 applicant_dob, cancer_type, cancer_stage,
                 application_form, treatment_phase,
                 application_way, referral_unit_name,
-                referral_contact_name, referral_contact_title, referral_contact_phone
-             ) VALUES ($1, $2, NULL, '1', NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::date, $18, $19, $20, $21, $22, $23, $24, $25, $26)
+                referral_contact_name, referral_contact_title, referral_contact_phone, referral_contact_email
+             ) VALUES ($1, $2, NULL, '1', NOW(), $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17::date, $18, $19, $20, $21, $22, $23, $24, $25, $26, $27)
              RETURNING id`,
             [caseNumber, applicantId,
              applicationType,
@@ -325,7 +445,8 @@ export async function submitExternalApplication(
              applicationWay, applicationWay === '2' ? (referralUnitNameIn || null) : null,
              applicationWay === '2' ? (referralContactNameIn || null) : null,
              applicationWay === '2' ? (referralContactTitleIn || null) : null,
-             applicationWay === '2' ? (referralContactPhoneIn || null) : null]
+             applicationWay === '2' ? (referralContactPhoneIn || null) : null,
+             applicationWay === '2' ? (referralContactEmailIn || null) : null]
         );
         applicationId = appRes.rows[0].id;
 
@@ -394,9 +515,7 @@ export async function submitExternalApplication(
         try {
             await pool.query(
                 `INSERT INTO application_documents (application_id, id, file_path, status, uploaded_at)
-                 VALUES ($1, $2, $3, '0', NOW())
-                 ON CONFLICT (application_id, id) WHERE disbursement_id IS NULL
-                 DO UPDATE SET file_path = EXCLUDED.file_path, status = '0', uploaded_at = NOW()`,
+                 VALUES ($1, $2, $3, '0', NOW())`,
                 [applicationId, docId, url]
             );
         } catch (err) {
@@ -459,34 +578,22 @@ export async function fetchApplicantQuota(idNumber: string): Promise<ApplicantQu
 
     const client = await pool.connect();
     try {
-        const usersRes = await client.query(
-            'SELECT id, search_salt, id_number_bidx FROM users WHERE is_active = true'
-        );
-        let matchedUserId: string | null = null;
         const normalizedIdQ = idNumber.trim().toUpperCase();
-        for (const row of usersRes.rows) {
-            if (!row.search_salt) continue;
-            const salt = Buffer.isBuffer(row.search_salt)
-                ? row.search_salt.toString('hex')
-                : String(row.search_salt);
-            const storedBidx = Buffer.isBuffer(row.id_number_bidx)
-                ? row.id_number_bidx.toString('hex')
-                : String(row.id_number_bidx ?? '');
-            const computed = generateBlindIndex(normalizedIdQ, salt);
-            if (computed === storedBidx) {
-                matchedUserId = row.id;
-                break;
-            }
-        }
+        const matchedUserId = await findApplicantUserIdByIdNumber(client, normalizedIdQ);
         if (!matchedUserId) return blank;
 
-        // 跨年度合計：依 subsidy_subtype 分開 SUM
+        // 跨年度合計：依 subsidy_subtype 分開 SUM。
+        // status='3' 已通過進入核銷、status='4' 已結案，兩者都算已核定額度。
         const sumRes = await client.query(
             `SELECT
                 COALESCE(SUM(CASE WHEN subsidy_subtype = '1' THEN approved_amount END), 0) AS econ_total,
                 COALESCE(SUM(CASE WHEN subsidy_subtype = '2' THEN approved_amount END), 0) AS mid_total,
                 COALESCE(SUM(approved_amount), 0) AS overall_total
-             FROM applications WHERE applicant_id = $1 AND status = '4'`,
+             FROM applications
+             WHERE applicant_id = $1
+               AND status IN ('3', '4')
+               AND approved_amount IS NOT NULL
+               AND approved_amount > 0`,
             [matchedUserId]
         );
         const econUsed = Number(sumRes.rows[0].econ_total || 0);

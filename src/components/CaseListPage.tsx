@@ -1,7 +1,8 @@
 import { useState, useMemo, useEffect } from 'react';
-import { Search, ChevronRight, FileText, UserCheck, AlertTriangle, ArrowUp, ArrowDown, Plus, X, RefreshCw } from 'lucide-react';
+import { Search, ChevronRight, FileText, UserCheck, AlertTriangle, ArrowUp, ArrowDown, Plus, X, RefreshCw, Lock } from 'lucide-react';
 import { CaseSummary, Role, WorkflowStage } from '../types';
 import { AppHeader } from './AppHeader';
+import { DateInput } from './DateInput';
 
 interface OfficerOption { id: string; name: string; }
 
@@ -32,6 +33,7 @@ interface CaseListPageProps {
     onMount?: () => void;
     onAssign: (applicationIds: string[], officerUserId: string) => Promise<void>;
     onSelectCase: (caseId: string) => void;
+    onSelectApplication?: (applicationId: string) => void;
     onLogout: () => void;
     onGoHome: () => void;
 }
@@ -64,8 +66,6 @@ function getMonthRange(): { first: string; last: string } {
     };
 }
 
-const FILTER_STORAGE_KEY = 'caseListFilters';
-
 type SortKey = 'appliedAt' | 'pending' | 'totalAmount' | 'applicantName' | 'applicationCount' | 'remaining' | 'stage' | 'officer';
 type SortDir = 'asc' | 'desc';
 interface SortEntry { key: SortKey; dir: SortDir; }
@@ -87,14 +87,6 @@ const DEFAULT_SORT: SortEntry[] = [
     { key: 'totalAmount', dir: 'asc' },
 ];
 
-function loadSavedFilters() {
-    try {
-        const raw = localStorage.getItem(FILTER_STORAGE_KEY);
-        if (raw) return JSON.parse(raw);
-    } catch { /* ignore */ }
-    return null;
-}
-
 export function CaseListPage({
     username, userId, userRoles, cases, allOfficers, officersWithId,
     isLoading, pendingAlertIds = new Set(), thresholdReminderCounts = new Map(),
@@ -102,17 +94,16 @@ export function CaseListPage({
     pendingOnlyActive, onTogglePendingOnly,
     unassignedFilterActive, onToggleUnassignedFilter,
     subtypeMaxAmounts = { '1': 30000, '2': 350000 },
-    onMount, onAssign, onSelectCase, onLogout, onGoHome,
+    onMount, onAssign, onSelectCase, onSelectApplication, onLogout, onGoHome,
 }: CaseListPageProps) {
     const { first, last } = getMonthRange();
-    const saved = loadSavedFilters();
 
     const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
 
     // Role-based filter restrictions
     const isOfficer   = userRoles.includes('case_officer') && !canAssign;
-    const lockAssign  = isOfficer || userRoles.includes('accountant') || userRoles.includes('volunteer');
-    const lockOfficer = isOfficer;
+    const lockAssign  = userRoles.includes('accountant') || userRoles.includes('volunteer');
+    const lockOfficer = false;
 
     // 🐛 DEBUG
     console.log('[CaseListPage roles debug]', {
@@ -121,7 +112,7 @@ export function CaseListPage({
 
     useEffect(() => { onMount?.(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, []);
 
-    const [nameQuery,      setNameQuery]      = useState<string>(saved?.nameQuery      ?? '');
+    const [nameQuery,      setNameQuery]      = useState<string>('');
     /** #24: 當 nameQuery 為身分證格式時，server-side 查到的 applicant id（null = 未查或查無此人） */
     const [idMatchApplicantId, setIdMatchApplicantId] = useState<string | null>(null);
     useEffect(() => {
@@ -134,11 +125,11 @@ export function CaseListPage({
         });
         return () => { cancelled = true; };
     }, [nameQuery]);
-    const [dateFrom,       setDateFrom]       = useState<string>(saved?.dateFrom       ?? first);
-    const [dateTo,         setDateTo]         = useState<string>(saved?.dateTo         ?? last);
-    const [stageFilter,    setStageFilter]    = useState<WorkflowStage | ''>(saved?.stageFilter    ?? '');
-    const [officerFilter,  setOfficerFilter]  = useState<string>(saved?.officerFilter  ?? '');
-    const [assignFilter,   setAssignFilter]   = useState<'all' | 'unassigned' | 'assigned'>(saved?.assignFilter ?? 'all');
+    const [dateFrom,       setDateFrom]       = useState<string>(first);
+    const [dateTo,         setDateTo]         = useState<string>(last);
+    const [stageFilter,    setStageFilter]    = useState<WorkflowStage | ''>('');
+    const [officerFilter,  setOfficerFilter]  = useState<string>('');
+    const [assignFilter,   setAssignFilter]   = useState<'all' | 'unassigned' | 'assigned'>('all');
     const [pendingOnly,    setPendingOnly]    = useState<boolean>(false);
     // 從外部（首頁 modal）打開時自動勾起未補件 filter
     useEffect(() => {
@@ -194,14 +185,6 @@ export function CaseListPage({
     const [assignOfficerId, setAssignOfficerId] = useState<string>('');
     const [assigning, setAssigning] = useState(false);
     const [assignError, setAssignError] = useState('');
-
-    useEffect(() => {
-        try {
-            localStorage.setItem(FILTER_STORAGE_KEY, JSON.stringify({
-                nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter,
-            }));
-        } catch { /* ignore */ }
-    }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter]);
 
     // Clear selection when filter changes
     useEffect(() => { setSelectedIds(new Set()); }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter, pendingOnly, thresholdOnly]);
@@ -310,7 +293,7 @@ export function CaseListPage({
                 <div className="flex items-center justify-between">
                     <h2 className="text-2xl font-bold text-slate-800 flex items-center gap-2">
                         <FileText className="w-6 h-6 text-blue-600" />
-                        申請人資料查詢
+                        申請案件管理
                     </h2>
                     <button
                         onClick={handleRefresh}
@@ -345,10 +328,10 @@ export function CaseListPage({
                         <div className="sm:col-span-2">
                             <label className="block text-xs font-semibold text-gray-500 mb-1.5 uppercase tracking-wider">申請時間</label>
                             <div className="flex flex-col sm:flex-row items-start sm:items-center gap-2">
-                                <input type="date" value={dateFrom} onChange={(e) => setDateFrom(e.target.value)}
+                                <DateInput value={dateFrom} onChange={setDateFrom}
                                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
                                 <span className="text-gray-400 text-sm shrink-0 hidden sm:inline">至</span>
-                                <input type="date" value={dateTo} onChange={(e) => setDateTo(e.target.value)}
+                                <DateInput value={dateTo} onChange={setDateTo}
                                     className="w-full border border-gray-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent" />
                             </div>
                         </div>
@@ -594,21 +577,34 @@ export function CaseListPage({
                                     </td>
                                 </tr>
                             ) : (
-                                filteredCases.map((c, idx) => (
-                                    <CaseRow
-                                        key={c.id}
-                                        case={c}
-                                        isLast={idx === filteredCases.length - 1}
-                                        canAssign={canAssign}
-                                        selected={selectedIds.has(c.applicationId)}
-                                        isPending={pendingAlertIds.has(c.applicationId)}
-                                        thresholdReminderCount={thresholdReminderCounts.get(c.applicationId) ?? 0}
-                                        maxApplyAmount={subtypeMaxAmounts[c.subsidySubtype as '1' | '2']
-                                            ?? Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2'])}
-                                        onToggle={() => toggleOne(c.applicationId)}
-                                        onClick={() => onSelectCase(c.id)}
-                                    />
-                                ))
+                                filteredCases.map((c, idx) => {
+                                    const isMyTurnCase = myTurnAppIds.has(c.applicationId);
+                                    const isOwnOfficerCase = String(c.officerId ?? '') === String(userId);
+                                    const canOpenCase = !isOfficer || isOwnOfficerCase || isMyTurnCase;
+                                    return (
+                                        <CaseRow
+                                            key={c.applicationId}
+                                            case={c}
+                                            isLast={idx === filteredCases.length - 1}
+                                            canAssign={canAssign}
+                                            canOpen={canOpenCase}
+                                            lockReason="非此案承辦人，僅可查看列表基礎資料"
+                                            selected={selectedIds.has(c.applicationId)}
+                                            isPending={pendingAlertIds.has(c.applicationId)}
+                                            thresholdReminderCount={thresholdReminderCounts.get(c.applicationId) ?? 0}
+                                            maxApplyAmount={subtypeMaxAmounts[c.subsidySubtype as '1' | '2']
+                                                ?? Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2'])}
+                                            onToggle={() => toggleOne(c.applicationId)}
+                                            onClick={() => {
+                                                if (isMyTurnCase && !isOwnOfficerCase && onSelectApplication) {
+                                                    onSelectApplication(c.applicationId);
+                                                    return;
+                                                }
+                                                onSelectCase(c.id);
+                                            }}
+                                        />
+                                    );
+                                })
                             )}
                         </tbody>
                     </table>
@@ -716,17 +712,26 @@ function ThCenter({ children }: { children: React.ReactNode }) {
 }
 
 function CaseRow({
-    case: c, isLast, canAssign, selected, isPending, thresholdReminderCount, maxApplyAmount, onToggle, onClick,
+    case: c, isLast, canAssign, canOpen, lockReason, selected, isPending, thresholdReminderCount, maxApplyAmount, onToggle, onClick,
 }: {
     case: CaseSummary; isLast: boolean;
-    canAssign: boolean; selected: boolean; isPending: boolean;
+    canAssign: boolean; canOpen: boolean; lockReason: string; selected: boolean; isPending: boolean;
     thresholdReminderCount: number;
     maxApplyAmount: number;
     onToggle: () => void; onClick: () => void;
 }) {
     const remaining = maxApplyAmount - (c.totalAmount ?? 0);
+    const handleClick = () => {
+        if (canOpen) onClick();
+    };
+    const cellCursor = canOpen ? 'cursor-pointer' : 'cursor-not-allowed';
+    const rowTone = selected
+        ? 'bg-blue-50'
+        : isPending
+            ? (canOpen ? 'bg-orange-50 hover:bg-orange-100' : 'bg-orange-50/60')
+            : (canOpen ? 'hover:bg-blue-50' : 'bg-slate-50/70');
     return (
-        <tr className={`transition-colors group ${!isLast ? 'border-b border-gray-100' : ''} ${selected ? 'bg-blue-50' : isPending ? 'bg-orange-50 hover:bg-orange-100' : 'hover:bg-blue-50'}`}>
+        <tr className={`transition-colors group ${!isLast ? 'border-b border-gray-100' : ''} ${rowTone}`} title={canOpen ? undefined : lockReason}>
             {canAssign && (
                 <td className="py-3.5 px-4" onClick={e => e.stopPropagation()}>
                     <input
@@ -737,10 +742,10 @@ function CaseRow({
                     />
                 </td>
             )}
-            <td className="py-3.5 px-4 font-mono text-xs text-slate-500 cursor-pointer whitespace-nowrap" onClick={onClick}>
+            <td className={`py-3.5 px-4 font-mono text-xs text-slate-500 ${cellCursor} whitespace-nowrap`} onClick={handleClick}>
                 {c.caseNumber || <span className="text-slate-300">—</span>}
             </td>
-            <td className="py-3.5 px-4 font-medium text-slate-800 group-hover:text-blue-700 transition-colors cursor-pointer" onClick={onClick}>
+            <td className={`py-3.5 px-4 font-medium text-slate-800 transition-colors ${canOpen ? 'group-hover:text-blue-700 cursor-pointer' : 'cursor-not-allowed'}`} onClick={handleClick}>
                 <span className="flex items-center gap-2">
                     {c.applicantName}
                     {isPending && (
@@ -755,32 +760,36 @@ function CaseRow({
                     )}
                 </span>
             </td>
-            <td className="py-3.5 px-4 text-center cursor-pointer" onClick={onClick}>
+            <td className={`py-3.5 px-4 text-center ${cellCursor}`} onClick={handleClick}>
                 <span className="inline-flex items-center justify-center w-7 h-7 rounded-full bg-slate-100 text-slate-600 text-xs font-bold">
                     {c.applicationCount}
                 </span>
             </td>
-            <td className="py-3.5 px-4 text-center text-sm font-medium text-emerald-700 cursor-pointer" onClick={onClick}>
+            <td className={`py-3.5 px-4 text-center text-sm font-medium text-emerald-700 ${cellCursor}`} onClick={handleClick}>
                 {c.totalAmount > 0 ? `$${c.totalAmount.toLocaleString()}` : <span className="text-slate-400">—</span>}
             </td>
-            <td className="py-3.5 px-4 text-center text-sm font-medium cursor-pointer" onClick={onClick}>
+            <td className={`py-3.5 px-4 text-center text-sm font-medium ${cellCursor}`} onClick={handleClick}>
                 {remaining > 0
                     ? <span className="text-blue-700">${remaining.toLocaleString()}</span>
                     : <span className="text-red-500">${remaining.toLocaleString()}</span>}
             </td>
-            <td className="py-3.5 px-4 text-gray-500 cursor-pointer" onClick={onClick}>{c.appliedAt}</td>
-            <td className="py-3.5 px-4 cursor-pointer" onClick={onClick}>
+            <td className={`py-3.5 px-4 text-gray-500 ${cellCursor}`} onClick={handleClick}>{c.appliedAt}</td>
+            <td className={`py-3.5 px-4 ${cellCursor}`} onClick={handleClick}>
                 <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STAGE_COLORS[c.stage]}`}>
                     {STAGE_LABELS[c.stage]}
                 </span>
             </td>
-            <td className="py-3.5 px-4 cursor-pointer" onClick={onClick}>
+            <td className={`py-3.5 px-4 ${cellCursor}`} onClick={handleClick}>
                 {c.officerId
                     ? <span className="text-gray-600">{c.officer}</span>
                     : <span className="text-orange-500 font-medium">未派案</span>}
             </td>
-            <td className="py-3.5 px-4 text-right cursor-pointer" onClick={onClick}>
-                <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-blue-500 transition-colors inline" />
+            <td className={`py-3.5 px-4 text-right ${cellCursor}`} onClick={handleClick}>
+                {canOpen ? (
+                    <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-blue-500 transition-colors inline" />
+                ) : (
+                    <Lock className="w-4 h-4 text-slate-300 inline" />
+                )}
             </td>
         </tr>
     );

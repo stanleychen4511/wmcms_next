@@ -41,6 +41,7 @@ export interface NotificationRecipient {
     email: string;
     roles?: string[];          // present when fetched from staff list
     is_applicant?: boolean;    // true when fetched as the case applicant
+    is_bcc?: boolean;          // manual notification: send this recipient as Bcc
 }
 
 export interface NotificationLog {
@@ -374,6 +375,17 @@ export async function sendNotificationEmail(
 
     // 2. Send via Nodemailer
     let sendError: string | null = null;
+    const hasExplicitBccSetting = recipients.some(r => typeof r.is_bcc === 'boolean');
+    const applicantRecipients = recipients.filter(r => r.is_applicant);
+    const staffRecipients = recipients.filter(r => !r.is_applicant);
+    const visibleRecipients = hasExplicitBccSetting
+        ? recipients.filter(r => !r.is_bcc)
+        : (applicantRecipients.length > 0 ? applicantRecipients : recipients);
+    const bccRecipients = hasExplicitBccSetting
+        ? recipients.filter(r => r.is_bcc)
+        : (applicantRecipients.length > 0 ? staffRecipients : []);
+    const formatAddresses = (items: NotificationRecipient[]) =>
+        items.map(r => `"${r.name}" <${r.email}>`).join(', ');
     try {
         const nodemailer = await import('nodemailer');
         const transporter = nodemailer.default.createTransport({
@@ -383,10 +395,12 @@ export async function sendNotificationEmail(
             auth: { user: cfg.user, pass: cfg.password },
         });
 
-        const toAddresses = recipients.map(r => `"${r.name}" <${r.email}>`).join(', ');
         await transporter.sendMail({
             from: `"${cfg.from_name}" <${cfg.from_email}>`,
-            to: toAddresses,
+            to: visibleRecipients.length > 0
+                ? formatAddresses(visibleRecipients)
+                : `"${cfg.from_name}" <${cfg.from_email}>`,
+            ...(bccRecipients.length > 0 ? { bcc: formatAddresses(bccRecipients) } : {}),
             subject,
             text: body,
             html: body.replace(/\n/g, '<br>'),
@@ -429,6 +443,8 @@ export async function sendNotificationEmail(
                 application_id: applicationId,
                 channel: 'email',
                 recipients: recipients.map(r => r.email),
+                visible_recipients: visibleRecipients.map(r => r.email),
+                bcc_recipients: bccRecipients.map(r => r.email),
                 subject,
                 status: sendError ? 'failed' : 'sent',
                 pending_doc_reminder: isPendingDocReminder,

@@ -1,6 +1,7 @@
 'use server';
 
 import { pool } from '../../lib/db';
+import { formatDateOnly } from '../../lib/dateOnly';
 import {
     DB_STAGE_TO_FRONTEND,
     FRONTEND_TO_DB_STAGE,
@@ -10,6 +11,41 @@ import {
 } from '../../lib/stageMaps';
 import { writeAuditLog } from './auditActions';
 import { fetchSetting } from './settingsActions';
+
+export interface BoardReconsiderationRequest {
+    id: string;
+    status: 'pending_supervisor' | 'approved' | 'rejected';
+    reason: string;
+    attachmentUrl: string | null;
+    attachmentUrls: string[];
+    requestedBy: string | null;
+    requestedAt: string;
+    supervisorId: string | null;
+    supervisorNote: string | null;
+    supervisorReviewedAt: string | null;
+    finalBoardReviewComments: string | null;
+    finalApprovedAmount: number | null;
+}
+
+export interface BoardReviewRound {
+    id: string;
+    roundNo: number;
+    isLatest: boolean;
+    sourceReconsiderationId: string | null;
+    approvedAmount: number | null;
+    comments: string | null;
+    completedAt: string | null;
+    signatures: Array<{
+        signerUserId: string | null;
+        signerName: string;
+        signedAt: string | null;
+        memberApproved: boolean | null;
+        memberAmount: number | null;
+        memberComments: string | null;
+        isChairman: boolean;
+        isGroupMember: boolean;
+    }>;
+}
 
 export interface ApplicationDetail {
     id: string;
@@ -58,6 +94,10 @@ export interface ApplicationDetail {
     // Board review fields
     applyAmount?: number | null;
     approvedAmount?: number | null;
+    boardReviewComments?: string | null;
+    boardReviewRounds?: BoardReviewRound[];
+    boardReconsideration?: BoardReconsiderationRequest | null;
+    boardReconsiderationHistory?: BoardReconsiderationRequest[];
     // Workflow fields
     wfIsApproved?: boolean | null;
     wfComments?: string | null;
@@ -96,10 +136,165 @@ export interface ApplicationDetail {
     homeVisitSkipped?: boolean;
 }
 
+function normalizeAttachmentUrls(legacyUrl: unknown, rawUrls: unknown): string[] {
+    const urls: string[] = [];
+    if (Array.isArray(rawUrls)) {
+        for (const item of rawUrls) {
+            const url = typeof item === 'string' ? item.trim() : '';
+            if (url) urls.push(url);
+        }
+    } else if (typeof rawUrls === 'string') {
+        try {
+            const parsed = JSON.parse(rawUrls);
+            if (Array.isArray(parsed)) {
+                for (const item of parsed) {
+                    const url = typeof item === 'string' ? item.trim() : '';
+                    if (url) urls.push(url);
+                }
+            }
+        } catch { /* ignore */ }
+    }
+    const legacy = typeof legacyUrl === 'string' ? legacyUrl.trim() : '';
+    if (legacy && !urls.includes(legacy)) urls.unshift(legacy);
+    return urls;
+}
+
 // Guard: mock store IDs look like 'app-001-a', real DB IDs are numeric UUIDs or bigints.
 // The applications table uses BIGSERIAL (bigint PK), so valid IDs are all-digit strings.
 function isValidDbId(id: string): boolean {
     return /^\d+$/.test(id);
+}
+
+async function persistBoardReviewRoundSnapshot(
+    client: any,
+    applicationId: string,
+    sourceReconsiderationId: string | null,
+    approvedAmount: number,
+    comments: string | null,
+    signatureRows: any[],
+): Promise<string | null> {
+    const { decryptAES } = await import('../../lib/crypto');
+    const signatures = signatureRows.map((r: any) => {
+        const signerName = r.name_enc && r.name_iv
+            ? (decryptAES(r.name_enc, r.name_iv) || r.account || '未知')
+            : (r.account || '未知');
+        return {
+            signerUserId: r.uid != null ? String(r.uid) : null,
+            signerName,
+            signedAt: r.signed_at ? new Date(r.signed_at).toISOString() : null,
+            memberApproved: r.member_approved ?? null,
+            memberAmount: r.member_amount != null ? Number(r.member_amount) : null,
+            memberComments: r.member_comments ?? null,
+            isChairman: !!r.is_chairman,
+            isGroupMember: !!r.is_group_member,
+        };
+    });
+
+    if (sourceReconsiderationId) {
+        const existing = await client.query(
+            `SELECT id::text
+             FROM board_review_rounds
+             WHERE application_id = $1::bigint
+               AND source_reconsideration_id = $2::bigint
+             LIMIT 1`,
+            [applicationId, sourceReconsiderationId],
+        );
+        if ((existing.rowCount ?? 0) > 0) {
+            await client.query(
+                `UPDATE board_review_rounds
+                 SET approved_amount = $1,
+                     comments = $2,
+                     signatures = $3::jsonb,
+                     completed_at = NOW(),
+                     is_latest = TRUE
+                 WHERE id = $4::bigint`,
+                [approvedAmount, comments, JSON.stringify(signatures), existing.rows[0].id],
+            );
+            await client.query(
+                `UPDATE board_review_rounds
+                 SET is_latest = FALSE
+                 WHERE application_id = $1::bigint AND id <> $2::bigint`,
+                [applicationId, existing.rows[0].id],
+            );
+            return existing.rows[0].id;
+        }
+    }
+
+    const roundRes = await client.query(
+        `SELECT COALESCE(MAX(round_no), 0) + 1 AS next_round
+         FROM board_review_rounds
+         WHERE application_id = $1::bigint`,
+        [applicationId],
+    );
+    const nextRound = Number(roundRes.rows[0]?.next_round ?? 1);
+    await client.query(
+        `UPDATE board_review_rounds
+         SET is_latest = FALSE
+         WHERE application_id = $1::bigint`,
+        [applicationId],
+    );
+    const inserted = await client.query(
+        `INSERT INTO board_review_rounds
+            (application_id, round_no, source_reconsideration_id, approved_amount, comments, signatures, completed_at, is_latest)
+         VALUES ($1::bigint, $2, $3::bigint, $4, $5, $6::jsonb, NOW(), TRUE)
+         RETURNING id::text`,
+        [
+            applicationId,
+            nextRound,
+            sourceReconsiderationId,
+            approvedAmount,
+            comments,
+            JSON.stringify(signatures),
+        ],
+    );
+    return inserted.rows[0]?.id ?? null;
+}
+
+async function snapshotCurrentBoardReviewIfMissing(client: any, applicationId: string): Promise<void> {
+    const existing = await client.query(
+        `SELECT 1 FROM board_review_rounds WHERE application_id = $1::bigint LIMIT 1`,
+        [applicationId],
+    );
+    if ((existing.rowCount ?? 0) > 0) return;
+
+    const appRes = await client.query(
+        `SELECT approved_amount, board_review_comments
+         FROM applications
+         WHERE id = $1::bigint
+         LIMIT 1`,
+        [applicationId],
+    );
+    const sigRes = await client.query(
+        `SELECT s.signer_user_id::text AS uid,
+                s.member_approved, s.member_amount, s.member_comments, s.signed_at,
+                u.name_enc, u.name_iv, u.account,
+                EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                        WHERE ur.user_id = s.signer_user_id AND r.code = 'chairman') AS is_chairman,
+                EXISTS (SELECT 1 FROM board_review_assignments bra
+                        JOIN board_group_members bgm
+                             ON bgm.group_id = bra.group_id
+                            AND bgm.user_id = s.signer_user_id
+                        WHERE bra.application_id = s.application_id) AS is_group_member
+         FROM board_review_signatures s
+         JOIN users u ON u.id = s.signer_user_id
+         WHERE s.application_id = $1::bigint
+           AND s.signature_data_url IS NOT NULL
+           AND s.signature_data_url <> ''`,
+        [applicationId],
+    );
+    const approvedAmount = appRes.rows[0]?.approved_amount != null
+        ? Number(appRes.rows[0].approved_amount)
+        : 0;
+    const comments = appRes.rows[0]?.board_review_comments ?? null;
+    if ((sigRes.rowCount ?? 0) === 0 && !comments && approvedAmount === 0) return;
+    await persistBoardReviewRoundSnapshot(
+        client,
+        applicationId,
+        null,
+        approvedAmount,
+        comments,
+        sigRes.rows,
+    );
 }
 
 /**
@@ -250,7 +445,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                    AND a2.subsidy_subtype = '2') AS total_approved_subtype2,
                 a.age, a.moveable_property, a.immoveable_property,
                 a.annual_income, a.marital_status, a.has_children, a.underage_children_count, a.adult_children_count,
-                a.apply_amount, a.approved_amount,
+                a.apply_amount, a.approved_amount, a.board_review_comments,
                 a.application_way, a.referral_unit_id,
                 ru.name AS referral_unit_name_legacy,
                 a.referral_unit_name      AS referral_unit_name_text,
@@ -269,6 +464,20 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 w.stage as wf_stage,
                 w.is_approved as wf_is_approved,
                 w.comments as wf_comments,
+                bw.comments as latest_board_workflow_comments,
+                bsig.member_comments as board_signature_comments,
+                br.id::text AS br_id,
+                br.status AS br_status,
+                br.reason AS br_reason,
+                br.attachment_url AS br_attachment_url,
+                br.attachment_urls AS br_attachment_urls,
+                br.requested_by::text AS br_requested_by,
+                br.requested_at AS br_requested_at,
+                br.supervisor_id::text AS br_supervisor_id,
+                br.supervisor_note AS br_supervisor_note,
+                br.supervisor_reviewed_at AS br_supervisor_reviewed_at,
+                br.final_board_review_comments AS br_final_board_review_comments,
+                br.final_approved_amount AS br_final_approved_amount,
                 u_app.name_enc as app_name_enc, u_app.name_iv  as app_name_iv,
                 u_app.id_number_enc as app_id_number_enc, u_app.id_number_iv as app_id_number_iv,
                 u_off.name_enc as off_name_enc, u_off.name_iv  as off_name_iv
@@ -279,6 +488,49 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 WHERE application_id = a.id
                 ORDER BY id DESC LIMIT 1
             ) w ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT comments
+                FROM application_workflow
+                WHERE application_id = a.id
+                  AND stage = 'board_review'
+                  AND comments IS NOT NULL
+                  AND btrim(comments) <> ''
+                ORDER BY id DESC LIMIT 1
+            ) bw ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT string_agg(
+                    concat(
+                        COALESCE(NULLIF(u.account, ''), '董事'),
+                        '：',
+                        CASE
+                            WHEN s.member_approved IS TRUE THEN '通過'
+                            WHEN s.member_approved IS FALSE THEN '不通過'
+                            ELSE '未填寫決議'
+                        END,
+                        CASE
+                            WHEN s.member_amount IS NOT NULL THEN '，核定金額 NT$' || trim(to_char(s.member_amount, 'FM999,999,999,999'))
+                            ELSE ''
+                        END,
+                        E'\n',
+                        s.member_comments
+                    ),
+                    E'\n\n' ORDER BY s.signed_at NULLS LAST, s.signer_user_id
+                ) AS member_comments
+                FROM board_review_signatures s
+                LEFT JOIN users u ON u.id = s.signer_user_id
+                WHERE s.application_id = a.id
+                  AND s.member_comments IS NOT NULL
+                  AND btrim(s.member_comments) <> ''
+            ) bsig ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT id, status, reason, attachment_url, attachment_urls, requested_by, requested_at,
+                       supervisor_id, supervisor_note, supervisor_reviewed_at,
+                       final_board_review_comments, final_approved_amount
+                FROM board_reconsideration_requests
+                WHERE application_id = a.id
+                ORDER BY requested_at DESC, id DESC
+                LIMIT 1
+            ) br ON TRUE
             LEFT JOIN users u_app ON u_app.id = a.applicant_id
             LEFT JOIN users u_off ON u_off.id = a.officer_id
             LEFT JOIN users u_hva ON u_hva.id = a.home_visit_assignee_id
@@ -289,6 +541,35 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
 
         if (res.rows.length === 0) return null;
         const row = res.rows[0];
+
+        const sigRes = await client.query(`
+            SELECT u.account, u.name_enc, u.name_iv,
+                   s.member_approved, s.member_amount, s.member_comments
+            FROM board_review_signatures s
+            LEFT JOIN users u ON u.id = s.signer_user_id
+            WHERE s.application_id = $1::bigint
+              AND s.member_comments IS NOT NULL
+              AND btrim(s.member_comments) <> ''
+            ORDER BY s.signed_at NULLS LAST, s.signer_user_id
+        `, [applicationId]);
+
+        const reconsiderHistoryRes = await client.query(`
+            SELECT id::text, status, reason, attachment_url, attachment_urls,
+                   requested_by::text, requested_at,
+                   supervisor_id::text, supervisor_note, supervisor_reviewed_at,
+                   final_board_review_comments, final_approved_amount
+            FROM board_reconsideration_requests
+            WHERE application_id = $1::bigint
+            ORDER BY requested_at DESC, id DESC
+        `, [applicationId]);
+
+        const boardRoundRes = await client.query(`
+            SELECT id::text, round_no, source_reconsideration_id::text,
+                   approved_amount, comments, signatures, completed_at, is_latest
+            FROM board_review_rounds
+            WHERE application_id = $1::bigint
+            ORDER BY round_no DESC
+        `, [applicationId]);
 
         const { decryptAES } = await import('../../lib/crypto');
         const applicantName = row.app_name_enc && row.app_name_iv
@@ -308,6 +589,76 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
         // Falls back to 'application' if no workflow row yet.
         const dbWfStage = row.wf_stage ?? 'apply';
         const stage = DB_STAGE_TO_FRONTEND[dbWfStage] ?? 'application';
+        const boardSignatureComments = sigRes.rows.length > 0
+            ? sigRes.rows.map(sig => {
+                const signerName = sig.name_enc && sig.name_iv
+                    ? (decryptAES(sig.name_enc, sig.name_iv) || sig.account || '董事')
+                    : (sig.account || '董事');
+                const decision = sig.member_approved === true
+                    ? '通過'
+                    : sig.member_approved === false
+                        ? '不通過'
+                        : '未填寫決議';
+                const amount = sig.member_amount != null
+                    ? `，核定金額 NT$${Number(sig.member_amount).toLocaleString()}`
+                    : '';
+                return `${signerName}：${decision}${amount}\n${sig.member_comments}`;
+            }).join('\n\n')
+            : null;
+        const boardReviewComments =
+            [row.board_review_comments, boardSignatureComments, row.latest_board_workflow_comments]
+                .map(v => (v == null ? '' : String(v).trim()))
+                .find(v => v.length > 0) || null;
+        const normalizeAttachmentUrls = (legacyUrl: unknown, rawUrls: unknown): string[] => {
+            const urls: string[] = [];
+            if (Array.isArray(rawUrls)) {
+                for (const item of rawUrls) {
+                    const url = typeof item === 'string' ? item.trim() : '';
+                    if (url) urls.push(url);
+                }
+            } else if (typeof rawUrls === 'string') {
+                try {
+                    const parsed = JSON.parse(rawUrls);
+                    if (Array.isArray(parsed)) {
+                        for (const item of parsed) {
+                            const url = typeof item === 'string' ? item.trim() : '';
+                            if (url) urls.push(url);
+                        }
+                    }
+                } catch { /* ignore */ }
+            }
+            const legacy = typeof legacyUrl === 'string' ? legacyUrl.trim() : '';
+            if (legacy && !urls.includes(legacy)) urls.unshift(legacy);
+            return urls;
+        };
+        const mapReconsideration = (r: any): BoardReconsiderationRequest => {
+            const attachmentUrls = normalizeAttachmentUrls(r.attachment_url, r.attachment_urls);
+            return {
+                id: String(r.id),
+                status: r.status,
+                reason: r.reason ?? '',
+                attachmentUrl: attachmentUrls[0] ?? null,
+                attachmentUrls,
+                requestedBy: r.requested_by != null ? String(r.requested_by) : null,
+                requestedAt: r.requested_at ? new Date(r.requested_at).toISOString() : '',
+                supervisorId: r.supervisor_id != null ? String(r.supervisor_id) : null,
+                supervisorNote: r.supervisor_note ?? null,
+                supervisorReviewedAt: r.supervisor_reviewed_at ? new Date(r.supervisor_reviewed_at).toISOString() : null,
+                finalBoardReviewComments: r.final_board_review_comments ?? null,
+                finalApprovedAmount: r.final_approved_amount != null ? Number(r.final_approved_amount) : null,
+            };
+        };
+        const boardReconsiderationHistory = reconsiderHistoryRes.rows.map(mapReconsideration);
+        const boardReviewRounds: BoardReviewRound[] = boardRoundRes.rows.map((r: any) => ({
+            id: String(r.id),
+            roundNo: Number(r.round_no),
+            isLatest: !!r.is_latest,
+            sourceReconsiderationId: r.source_reconsideration_id != null ? String(r.source_reconsideration_id) : null,
+            approvedAmount: r.approved_amount != null ? Number(r.approved_amount) : null,
+            comments: r.comments ?? null,
+            completedAt: r.completed_at ? new Date(r.completed_at).toISOString() : null,
+            signatures: Array.isArray(r.signatures) ? r.signatures : [],
+        }));
 
         return {
             id: row.id,
@@ -334,7 +685,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             supervisorReviewNote: row.supervisor_review_note ?? null,
             supervisorReviewPending: !!row.supervisor_review_pending,
             officerName,
-            applyAt: row.apply_at ? new Date(row.apply_at).toISOString().split('T')[0] : undefined,
+            applyAt: formatDateOnly(row.apply_at) ?? undefined,
             createdAt: row.created_at ? row.created_at.toISOString() : undefined,
             age: row.age != null ? Number(row.age) : null,
             moveableProperty: row.moveable_property != null ? Number(row.moveable_property) : null,
@@ -346,6 +697,10 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             adultChildrenCount: row.adult_children_count != null ? Number(row.adult_children_count) : null,
             applyAmount: row.apply_amount != null ? Number(row.apply_amount) : null,
             approvedAmount: row.approved_amount != null ? Number(row.approved_amount) : null,
+            boardReviewComments,
+            boardReviewRounds,
+            boardReconsideration: boardReconsiderationHistory[0] ?? null,
+            boardReconsiderationHistory,
             wfIsApproved: row.wf_is_approved ?? null,
             wfComments: row.wf_comments ?? null,
             applicationType: row.application_type ?? null,
@@ -540,7 +895,7 @@ export async function advanceWorkflowStage(
                     // 取得所有有簽章的 signatures + 該員角色（用來識別 chairman）+ 派組身分
                     const aggRes = await aggClient.query(
                         `SELECT s.signer_user_id::text AS uid,
-                                s.member_approved, s.member_amount, s.member_comments,
+                                s.member_approved, s.member_amount, s.member_comments, s.signed_at,
                                 u.name_enc, u.name_iv, u.account,
                                 EXISTS (SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
                                         WHERE ur.user_id = s.signer_user_id AND r.code = 'chairman') AS is_chairman,
@@ -597,12 +952,80 @@ export async function advanceWorkflowStage(
                         }
                     }
 
-                    await aggClient.query(
-                        `UPDATE applications
-                         SET approved_amount = $1, board_review_comments = $2, updated_at = NOW()
-                         WHERE id = $3::bigint`,
-                        [newAmount, consolidatedComments || null, applicationId]
+                    const reconsiderRes = await aggClient.query(
+                        `SELECT id, reason, attachment_url, requested_at
+                         FROM board_reconsideration_requests
+                         WHERE application_id = $1::bigint
+                           AND status = 'approved'
+                           AND final_board_review_comments IS NULL
+                         ORDER BY requested_at DESC, id DESC
+                         LIMIT 1`,
+                        [applicationId]
                     );
+
+                    if ((reconsiderRes.rowCount ?? 0) > 0) {
+                        const reconsider = reconsiderRes.rows[0];
+                        const existingRes = await aggClient.query(
+                            `SELECT board_review_comments
+                             FROM applications
+                             WHERE id = $1::bigint
+                             LIMIT 1`,
+                            [applicationId]
+                        );
+                        const existingComments = String(existingRes.rows[0]?.board_review_comments ?? '').trim();
+                        const requestedDate = reconsider.requested_at
+                            ? formatDateOnly(reconsider.requested_at)
+                            : formatDateOnly(new Date());
+                        const reconsiderHeader = [
+                            `【再次董事審核 ${requestedDate}】`,
+                            `退回原因：${reconsider.reason ?? ''}`,
+                            reconsider.attachment_url ? `附件：${reconsider.attachment_url}` : null,
+                        ].filter(Boolean).join('\n');
+                        const reconsiderComments = [reconsiderHeader, consolidatedComments]
+                            .filter(part => part && String(part).trim())
+                            .join('\n\n');
+                        const nextComments = [reconsiderComments]
+                            .filter(part => part && String(part).trim())
+                            .join('\n\n');
+
+                        await persistBoardReviewRoundSnapshot(
+                            aggClient,
+                            applicationId,
+                            String(reconsider.id),
+                            newAmount,
+                            consolidatedComments || null,
+                            aggRes.rows,
+                        );
+
+                        await aggClient.query(
+                            `UPDATE applications
+                             SET approved_amount = $1, board_review_comments = $2, updated_at = NOW()
+                             WHERE id = $3::bigint`,
+                            [newAmount, consolidatedComments || null, applicationId]
+                        );
+                        await aggClient.query(
+                            `UPDATE board_reconsideration_requests
+                             SET final_board_review_comments = $1,
+                                 final_approved_amount = $2
+                             WHERE id = $3`,
+                            [consolidatedComments || null, newAmount, reconsider.id]
+                        );
+                    } else {
+                        await persistBoardReviewRoundSnapshot(
+                            aggClient,
+                            applicationId,
+                            null,
+                            newAmount,
+                            consolidatedComments || null,
+                            aggRes.rows,
+                        );
+                        await aggClient.query(
+                            `UPDATE applications
+                             SET approved_amount = $1, board_review_comments = $2, updated_at = NOW()
+                             WHERE id = $3::bigint`,
+                            [newAmount, consolidatedComments || null, applicationId]
+                        );
+                    }
                 } finally {
                     aggClient.release();
                 }
@@ -995,6 +1418,248 @@ export async function supervisorReviewForBoard(
     }
 }
 
+export async function requestBoardReconsideration(
+    applicationId: string,
+    operatorUserId: string,
+    reason: string,
+    attachmentUrls?: string[] | string | null,
+): Promise<{ success: boolean; error?: string }> {
+    if (!isValidDbId(applicationId)) return { success: false, error: '無效的案件 ID' };
+    if (!operatorUserId || !/^\d+$/.test(operatorUserId)) return { success: false, error: '缺少操作者身分' };
+    const trimmedReason = (reason ?? '').trim();
+    if (trimmedReason.length < 3) return { success: false, error: '退回原因至少 3 字' };
+    const cleanAttachments = (Array.isArray(attachmentUrls) ? attachmentUrls : [attachmentUrls])
+        .map(url => (url ?? '').trim())
+        .filter((url): url is string => url.length > 0);
+    const cleanAttachment = cleanAttachments[0] ?? null;
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const appRes = await client.query(
+            `SELECT a.officer_id::text AS officer_id, a.status, w.stage,
+                    EXISTS (
+                        SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+                        WHERE ur.user_id = $2::bigint AND r.code = 'admin'
+                    ) AS is_admin
+             FROM applications a
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
+             WHERE a.id = $1::bigint
+             LIMIT 1`,
+            [applicationId, operatorUserId]
+        );
+        if ((appRes.rowCount ?? 0) === 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件不存在' };
+        }
+        const app = appRes.rows[0];
+        if (app.status !== '3') {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件已結案，無法退回董事審核' };
+        }
+        if (app.stage !== 'reimbursement') {
+            await client.query('ROLLBACK');
+            return { success: false, error: '僅核銷撥款階段可申請退回董事再次審核' };
+        }
+        if (String(app.officer_id ?? '') !== String(operatorUserId) && app.is_admin !== true) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '僅本案承辦人或系統管理員可送出退回董事再審申請' };
+        }
+
+        const pendingRes = await client.query(
+            `SELECT 1
+             FROM board_reconsideration_requests
+             WHERE application_id = $1::bigint
+               AND status = 'pending_supervisor'
+             LIMIT 1`,
+            [applicationId]
+        );
+        if ((pendingRes.rowCount ?? 0) > 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '已有待主管審核的退回董事再審申請' };
+        }
+
+        await client.query(
+            `INSERT INTO board_reconsideration_requests
+                (application_id, reason, attachment_url, attachment_urls, requested_by)
+             VALUES ($1::bigint, $2, $3, $4::jsonb, $5::bigint)`,
+            [applicationId, trimmedReason, cleanAttachment, JSON.stringify(cleanAttachments), operatorUserId]
+        );
+        await client.query('COMMIT');
+
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'application.board_reconsideration_request',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { reason: trimmedReason, attachmentUrls: cleanAttachments },
+        });
+        return { success: true };
+    } catch (err: any) {
+        try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+        console.error('requestBoardReconsideration error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function reviewBoardReconsideration(
+    applicationId: string,
+    requestId: string,
+    operatorUserId: string,
+    approved: boolean,
+    note?: string,
+): Promise<{ success: boolean; error?: string }> {
+    if (!isValidDbId(applicationId) || !isValidDbId(requestId)) return { success: false, error: '無效的申請 ID' };
+    if (!operatorUserId || !/^\d+$/.test(operatorUserId)) return { success: false, error: '缺少操作者身分' };
+    const trimmedNote = (note ?? '').trim();
+    if (!approved && trimmedNote.length < 3) {
+        return { success: false, error: '退回原因至少 3 字' };
+    }
+
+    const roleCheck = await pool.query(
+        `SELECT 1 FROM user_roles ur JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1::bigint AND r.code IN ('admin','supervisor') LIMIT 1`,
+        [operatorUserId]
+    );
+    if ((roleCheck.rowCount ?? 0) === 0) {
+        return { success: false, error: '僅主管或系統管理員可審核退回董事再審申請' };
+    }
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const reqRes = await client.query(
+            `SELECT id, reason, attachment_url, attachment_urls
+             FROM board_reconsideration_requests
+             WHERE id = $1::bigint
+               AND application_id = $2::bigint
+             FOR UPDATE`,
+            [requestId, applicationId]
+        );
+        if ((reqRes.rowCount ?? 0) === 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '找不到退回董事再審申請' };
+        }
+        const req = reqRes.rows[0];
+        const reqAttachmentUrls = normalizeAttachmentUrls(req.attachment_url, req.attachment_urls);
+
+        const appRes = await client.query(
+            `SELECT a.status, w.stage
+             FROM applications a
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
+             WHERE a.id = $1::bigint
+             LIMIT 1`,
+            [applicationId]
+        );
+        if ((appRes.rowCount ?? 0) === 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件不存在' };
+        }
+        if (appRes.rows[0].status !== '3') {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件已結案，無法退回董事審核' };
+        }
+        if (appRes.rows[0].stage !== 'reimbursement') {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件目前不在核銷撥款階段，無法審核此申請' };
+        }
+
+        if (!approved) {
+            await client.query(
+                `UPDATE board_reconsideration_requests
+                 SET status = 'rejected',
+                     supervisor_id = $1::bigint,
+                     supervisor_note = $2,
+                     supervisor_reviewed_at = NOW()
+                 WHERE id = $3::bigint`,
+                [operatorUserId, trimmedNote, requestId]
+            );
+            await client.query('COMMIT');
+            void writeAuditLog({
+                userId: operatorUserId,
+                action: 'application.board_reconsideration_reject',
+                targetType: 'application',
+                targetId: applicationId,
+                detail: { requestId, note: trimmedNote },
+            });
+            return { success: true };
+        }
+
+        await client.query(
+            `UPDATE board_reconsideration_requests
+             SET status = 'approved',
+                 supervisor_id = $1::bigint,
+                 supervisor_note = $2,
+                 supervisor_reviewed_at = NOW()
+             WHERE id = $3::bigint`,
+            [operatorUserId, trimmedNote || null, requestId]
+        );
+        await client.query(
+            `UPDATE applications
+             SET status = '1',
+                 updated_at = NOW()
+             WHERE id = $1::bigint`,
+            [applicationId]
+        );
+        await client.query(
+            `INSERT INTO application_workflow
+                (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
+             VALUES ($1::bigint, 'board_review', $2::bigint, true, $3, NOW())`,
+            [
+                applicationId,
+                operatorUserId,
+                [
+                    '主管核准退回董事再次審核',
+                    `退回原因：${req.reason ?? ''}`,
+                    trimmedNote ? `主管備註：${trimmedNote}` : null,
+                    reqAttachmentUrls.length > 0 ? `附件：${reqAttachmentUrls.join('、')}` : null,
+                ].filter(Boolean).join('\n'),
+            ]
+        );
+        await snapshotCurrentBoardReviewIfMissing(client, applicationId);
+        await client.query(
+            `DELETE FROM board_review_assignments WHERE application_id = $1::bigint`,
+            [applicationId]
+        );
+        const { clearStaleSignatures } = await import('./boardSignatureActions');
+        await clearStaleSignatures(client, applicationId, 'reassigned');
+        await client.query('COMMIT');
+
+        const { maybeAutoAssignOnBoardReviewEntry } = await import('./boardGroupActions');
+        void maybeAutoAssignOnBoardReviewEntry(applicationId);
+        const autoAssign = await fetchSetting('board_auto_assign', 'false');
+        if (autoAssign !== 'true') {
+            const { notifyEvent } = await import('./notificationDispatcher');
+            void notifyEvent('case_entered_board_review', { applicationId })
+                .catch(err => console.error('[notify] case_entered_board_review failed:', err));
+        }
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'application.board_reconsideration_approve',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { requestId, note: trimmedNote },
+        });
+        return { success: true };
+    } catch (err: any) {
+        try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+        console.error('reviewBoardReconsideration error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
 /**
  * 取消「不通過結案」(`status='2'`) → 將案件還原為審核中 (`status='1'`)，
  * 並依當前 workflow stage 保留所在階段（通常是 board_review）。
@@ -1103,8 +1768,13 @@ export async function closeCaseRejected(
         }
 
         await client.query(
-            `UPDATE applications SET status = '2', approved_amount = 0, updated_at = NOW() WHERE id = $1`,
-            [applicationId]
+            `UPDATE applications
+             SET status = '2',
+                 approved_amount = 0,
+                 board_review_comments = $2,
+                 updated_at = NOW()
+             WHERE id = $1`,
+            [applicationId, comments]
         );
         // Append-only：結案以董事審核 stage 寫入一列 is_approved=false 紀錄
         await client.query(`
@@ -1423,6 +2093,23 @@ export async function closeCase(
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        const missingRemittance = await client.query<{ receipt_number: string }>(
+            `SELECT receipt_number
+             FROM payment_disbursements
+             WHERE application_id = $1::bigint
+               AND review_stage = '9'
+               AND NULLIF(TRIM(COALESCE(remittance_slip_file_path, '')), '') IS NULL
+             ORDER BY created_at ASC
+             LIMIT 1`,
+            [applicationId],
+        );
+        if ((missingRemittance.rowCount ?? 0) > 0) {
+            await client.query('ROLLBACK');
+            return {
+                success: false,
+                error: `撥款單號${missingRemittance.rows[0].receipt_number}未上傳匯款單掃描檔`,
+            };
+        }
         await client.query(
             `UPDATE applications
              SET status = '4',

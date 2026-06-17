@@ -1,6 +1,7 @@
 'use server';
 
 import { pool } from '../../lib/db';
+import { formatDateOnly } from '../../lib/dateOnly';
 import { fetchSetting } from './settingsActions';
 import { decryptAES } from '../../lib/crypto';
 
@@ -151,7 +152,7 @@ export async function fetchPendingDocAlerts(
                 applicationId: row.application_id,
                 caseNumber: row.case_number,
                 applicantName,
-                applyAt: row.apply_at ? new Date(row.apply_at).toISOString().split('T')[0] : '',
+                applyAt: formatDateOnly(row.apply_at) ?? '',
                 daysOverdue: row.days_since ?? 0,
                 missingCount,
             });
