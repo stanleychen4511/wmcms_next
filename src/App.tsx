@@ -2661,7 +2661,7 @@ function App() {
                                 <p className="text-xs text-amber-500">請先返回目前步驟再操作流程</p>
                             )}
                             <div className="flex gap-2 items-center">
-                                {(() => {
+                                {stage !== 'reimbursement' && (() => {
                                     const canRetreatBoardToVisit =
                                         stage !== 'board_review'
                                         || hasPermission('board_member')

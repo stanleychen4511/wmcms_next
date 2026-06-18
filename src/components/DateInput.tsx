@@ -2,7 +2,7 @@
 
 import { Calendar } from 'lucide-react';
 import { clsx } from 'clsx';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 
 export function formatDateDigits(value: string): string {
     const digits = value.replace(/\D/g, '').slice(0, 8);
@@ -54,10 +54,26 @@ export function DateInput({
     title,
 }: DateInputProps) {
     const [textValue, setTextValue] = useState(isoDateToText(value));
+    const pickerRef = useRef<HTMLInputElement | null>(null);
 
     useEffect(() => {
         setTextValue(isoDateToText(value));
     }, [value]);
+
+    const openPicker = () => {
+        const picker = pickerRef.current as (HTMLInputElement & { showPicker?: () => void }) | null;
+        if (!picker || disabled) return;
+        if (picker.showPicker) {
+            try {
+                picker.showPicker();
+            } catch {
+                // Some browsers only allow showPicker during direct user activation.
+            }
+            return;
+        }
+        picker.focus();
+        picker.click();
+    };
 
     return (
         <div className="relative min-w-0 w-full">
@@ -79,6 +95,7 @@ export function DateInput({
                         setTextValue(isoDateToText(value));
                     }
                 }}
+                onFocus={openPicker}
                 inputMode="numeric"
                 maxLength={10}
                 placeholder={placeholder}
@@ -87,6 +104,25 @@ export function DateInput({
                 required={required}
                 className={clsx('w-full pr-10', className)}
             />
+            <input
+                ref={pickerRef}
+                type="date"
+                value={value}
+                onChange={e => onChange(e.target.value)}
+                disabled={disabled}
+                aria-label="開啟日期選擇器"
+                tabIndex={-1}
+                className="absolute right-0 top-0 h-full w-10 cursor-pointer opacity-0 disabled:cursor-not-allowed"
+            />
+            <button
+                type="button"
+                aria-label="開啟日期選擇器"
+                onClick={openPicker}
+                disabled={disabled}
+                className="absolute right-0 top-0 h-full w-10 cursor-pointer disabled:cursor-not-allowed"
+            >
+                <span className="sr-only">開啟日期選擇器</span>
+            </button>
             <Calendar className="pointer-events-none absolute right-3 top-1/2 h-4 w-4 -translate-y-1/2 text-slate-500" />
         </div>
     );
