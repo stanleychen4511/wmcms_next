@@ -41,6 +41,10 @@ export interface PaymentDisbursement {
     receiptFilePath: string | null;
     remittanceSlipFilePath: string | null;
     medicalReceiptStatus: 'official' | 'unpaid' | null;
+    officialReceiptReplacedAt: string | null;
+    officialReceiptReplacedBy: string | null;
+    officialReceiptAccountantConfirmedAt: string | null;
+    officialReceiptAccountantConfirmedBy: string | null;
     notes: string | null;
     createdBy: string | null;
     createdAt: string;
@@ -74,7 +78,7 @@ export interface PaymentDisbursement {
     paymentReceiptScanUrl: string | null;      // 申請人寄回的領款收據紙本掃描檔 URL（id=18, disbursement_id=X 的最新一筆）
     lastReceiptEmailStatus: 'sent' | 'failed' | null;  // 最近一次寄送領款收據 email 狀態
     lastPrintedAt: string | null;              // 會計合併列印時間
-    medicalReceipts: { fileUrl: string; uploadedAt: string | null }[];  // 會計上傳的醫療收據（id=17）
+    medicalReceipts: { fileUrl: string; uploadedAt: string | null; isCurrent: boolean; archiveNote: string | null }[];  // 醫療收據（id=17，含歷史版本）
 
     // user feedback #12：是否同意公開捐贈者姓名（每筆撥款獨立記錄）+ 配套文件
     donorDisclosureConsent: boolean | null;    // null=未填 / true=同意公開 / false=不同意 → 須附聲明書
@@ -224,6 +228,10 @@ function rowToDisbursement(r: any): PaymentDisbursement {
         medicalReceiptStatus: (r.medical_receipt_status === 'official' || r.medical_receipt_status === 'unpaid')
             ? r.medical_receipt_status
             : null,
+        officialReceiptReplacedAt: r.official_receipt_replaced_at ? new Date(r.official_receipt_replaced_at).toISOString() : null,
+        officialReceiptReplacedBy: r.official_receipt_replaced_by ? String(r.official_receipt_replaced_by) : null,
+        officialReceiptAccountantConfirmedAt: r.official_receipt_accountant_confirmed_at ? new Date(r.official_receipt_accountant_confirmed_at).toISOString() : null,
+        officialReceiptAccountantConfirmedBy: r.official_receipt_accountant_confirmed_by ? String(r.official_receipt_accountant_confirmed_by) : null,
         notes: r.notes ?? null,
         createdBy: r.created_by ? String(r.created_by) : null,
         createdAt: r.created_at ? new Date(r.created_at).toISOString() : '',
@@ -256,6 +264,8 @@ function rowToDisbursement(r: any): PaymentDisbursement {
             ? r.medical_receipts.map((m: any) => ({
                 fileUrl: m.fileUrl ?? m.file_url ?? '',
                 uploadedAt: m.uploadedAt ?? m.uploaded_at ?? null,
+                isCurrent: m.isCurrent ?? m.is_current ?? true,
+                archiveNote: m.archiveNote ?? m.archive_note ?? null,
               }))
             : [],
         donorDisclosureConsent:           r.donor_disclosure_consent ?? null,
@@ -270,7 +280,10 @@ const SELECT_ALL_COLS = `
     id, application_id, receipt_number, external_code, amount,
     payee_name, payee_id_number, payee_relation, payee_relation_other,
     payment_method, bank_name, bank_branch, bank_account,
-    sent_at, received_at, receipt_file_path, remittance_slip_file_path, medical_receipt_status, notes,
+    sent_at, received_at, receipt_file_path, remittance_slip_file_path, medical_receipt_status,
+    official_receipt_replaced_at, official_receipt_replaced_by,
+    official_receipt_accountant_confirmed_at, official_receipt_accountant_confirmed_by,
+    notes,
     created_by, created_at, updated_at,
     review_stage, officer_signed_at,
     supervisor_user_id, supervisor_signed_at,
@@ -291,7 +304,7 @@ function logNotificationStub(reason: string, applicationId: string, disbursement
 
 // ─── 查詢撥款列表 + 摘要 ─────────────────────────────────────────────────
 
-const VIEW_ROLES = ['case_officer', 'supervisor', 'accountant', 'executive', 'admin', 'chairman'];
+const VIEW_ROLES = ['case_officer', 'supervisor', 'accountant', 'executive', 'admin', 'chairman', 'board_member'];
 
 export async function fetchDisbursements(
     operatorUserId: string,
@@ -332,8 +345,10 @@ export async function fetchDisbursements(
                        AND target_id = payment_disbursements.id::text) AS last_printed_at,
                     (SELECT COALESCE(json_agg(json_build_object(
                         'fileUrl',    file_path,
-                        'uploadedAt', uploaded_at
-                     ) ORDER BY uploaded_at DESC), '[]'::json)
+                        'uploadedAt', uploaded_at,
+                        'isCurrent',  COALESCE(is_current, TRUE),
+                        'archiveNote', archive_note
+                     ) ORDER BY COALESCE(is_current, TRUE) DESC, uploaded_at DESC), '[]'::json)
                      FROM application_documents ad2
                      WHERE ad2.id = 17 AND ad2.disbursement_id = payment_disbursements.id
                        AND ad2.file_path IS NOT NULL) AS medical_receipts,
@@ -364,8 +379,11 @@ export async function fetchDisbursements(
         const totalDisbursed = completed.reduce((s, d) => s + d.amount, 0);
         const totalInFlight  = inFlight.reduce((s, d) => s + d.amount, 0);
         const totalReceived  = completed.filter(d => d.receivedAt).reduce((s, d) => s + d.amount, 0);
+        const pendingOfficialReceiptConfirmation = completed.find(d => d.officialReceiptReplacedAt && !d.officialReceiptAccountantConfirmedAt);
         const missingRemittanceSlip = completed.find(d => d.receivedAt && !d.remittanceSlipFilePath);
-        const closeCaseBlockReason = missingRemittanceSlip
+        const closeCaseBlockReason = pendingOfficialReceiptConfirmation
+            ? `撥款單號${pendingOfficialReceiptConfirmation.externalCode || pendingOfficialReceiptConfirmation.receiptNumber}正式收據已更新，等待會計確認`
+            : missingRemittanceSlip
             ? `撥款單號${missingRemittanceSlip.externalCode || missingRemittanceSlip.receiptNumber}未上傳匯款單掃描檔`
             : totalReceived < approvedAmount
                 ? '尚有撥款未完成回收紙本；累積回收金額需達核定金額才能結案'
@@ -650,6 +668,7 @@ async function checkOfficerGate(client: any, disbursementId: string, cur: any): 
     const medRes = await client.query(
         `SELECT 1 FROM application_documents
          WHERE id = 17 AND disbursement_id = $1::bigint AND file_path IS NOT NULL
+           AND COALESCE(is_current, TRUE) = TRUE
          LIMIT 1`,
         [disbursementId]
     );
@@ -1324,6 +1343,7 @@ export async function sendDisbursementNotificationEmail(
     recipients: DisbursementEmailRecipientInput[],
     subject: string,
     body: string,
+    templateIdInput?: number | null,
 ): Promise<ActionResult> {
     if (!/^\d+$/.test(disbursementId)) return { success: false, error: '無效的撥款 ID' };
     if (kind !== 'approval' && kind !== 'receipt') return { success: false, error: '不正確的通知類型' };
@@ -1392,13 +1412,19 @@ export async function sendDisbursementNotificationEmail(
     const templateName = kind === 'receipt'
         ? 'email_case_payment_receipt_to_applicant'
         : 'email_case_disbursement_approval_to_applicant';
-    const templateClient = await pool.connect();
     let templateId: number | null = null;
+    const templateClient = await pool.connect();
     try {
-        const tr = await templateClient.query(
-            `SELECT id FROM notification_templates WHERE name = $1 AND status = 1 LIMIT 1`,
-            [templateName],
-        );
+        const tr = templateIdInput
+            ? await templateClient.query(
+                `SELECT id FROM notification_templates WHERE id = $1 AND channel = 'email' AND status = 1 LIMIT 1`,
+                [templateIdInput],
+              )
+            : await templateClient.query(
+                `SELECT id FROM notification_templates WHERE name = $1 AND status = 1 LIMIT 1`,
+                [templateName],
+              );
+        if (templateIdInput && tr.rowCount === 0) return { success: false, error: '通知範本不存在或已停用' };
         templateId = tr.rows[0]?.id ?? null;
     } finally {
         templateClient.release();
@@ -1642,28 +1668,120 @@ export async function setDisbursementMedicalReceiptStatus(
     const client = await pool.connect();
     try {
         const cur = await client.query(
-            `SELECT review_stage FROM payment_disbursements WHERE id = $1::bigint`,
+            `SELECT pd.review_stage, pd.application_id::text, pd.receipt_number, pd.external_code,
+                    pd.medical_receipt_status,
+                    pd.official_receipt_replaced_at,
+                    pd.official_receipt_accountant_confirmed_at,
+                    a.officer_id::text AS officer_id
+             FROM payment_disbursements pd
+             JOIN applications a ON a.id = pd.application_id
+             WHERE pd.id = $1::bigint`,
             [disbursementId]
         );
         if (cur.rowCount === 0) return { success: false, error: '撥款紀錄不存在' };
         const stage = cur.rows[0].review_stage as ReviewStage;
-        if (stage !== '1') {
+        const isPostPaymentReplacement = stage === '9'
+            && status === 'official'
+            && (
+                cur.rows[0].medical_receipt_status === 'unpaid'
+                || (cur.rows[0].official_receipt_replaced_at && !cur.rows[0].official_receipt_accountant_confirmed_at)
+            );
+        if (stage !== '1' && !isPostPaymentReplacement) {
             return { success: false, error: '僅在個管師持有中階段可設定醫療收據狀態' };
         }
-        if (!(await hasAnyRole(operatorUserId, rolesForStage('1')))) {
+        const canPostPaymentReplace = isPostPaymentReplacement
+            && ((await hasAnyRole(operatorUserId, ['admin']))
+                || ((await hasAnyRole(operatorUserId, ['case_officer'])) && cur.rows[0].officer_id === operatorUserId));
+        const canSetStageOneStatus = !isPostPaymentReplacement && (await hasAnyRole(operatorUserId, rolesForStage('1')));
+        if (!canPostPaymentReplace && !canSetStageOneStatus) {
             return { success: false, error: '僅個管師可設定醫療收據狀態' };
         }
         await client.query(
             `UPDATE payment_disbursements
              SET medical_receipt_status = $1,
+                 official_receipt_replaced_at = CASE WHEN $3 THEN NOW() ELSE official_receipt_replaced_at END,
+                 official_receipt_replaced_by = CASE WHEN $3 THEN $4::bigint ELSE official_receipt_replaced_by END,
+                 official_receipt_accountant_confirmed_at = CASE WHEN $3 THEN NULL ELSE official_receipt_accountant_confirmed_at END,
+                 official_receipt_accountant_confirmed_by = CASE WHEN $3 THEN NULL ELSE official_receipt_accountant_confirmed_by END,
                  updated_at = NOW()
              WHERE id = $2::bigint`,
-            [status, disbursementId]
+            [status, disbursementId, isPostPaymentReplacement, operatorUserId]
         );
+        if (isPostPaymentReplacement) {
+            void writeAuditLog({
+                userId: operatorUserId,
+                action: 'payment_disbursement.official_receipt_replaced',
+                targetType: 'payment_disbursement',
+                targetId: disbursementId,
+                detail: {
+                    application_id: cur.rows[0].application_id,
+                    receipt_number: cur.rows[0].receipt_number,
+                    external_code: cur.rows[0].external_code,
+                },
+            });
+        }
         return { success: true, data: undefined };
     } catch (err: any) {
         console.error('setDisbursementMedicalReceiptStatus error:', err);
         return { success: false, error: err.message ?? '更新失敗' };
+    } finally {
+        client.release();
+    }
+}
+
+export async function confirmOfficialMedicalReceiptReplacement(
+    operatorUserId: string,
+    disbursementId: string,
+): Promise<ActionResult> {
+    if (!/^\d+$/.test(disbursementId)) return { success: false, error: '無效的撥款 ID' };
+    if (!(await hasAnyRole(operatorUserId, ['accountant', 'admin']))) {
+        return { success: false, error: '僅會計可確認正式收據更新' };
+    }
+
+    const client = await pool.connect();
+    try {
+        const cur = await client.query(
+            `SELECT review_stage, application_id::text, receipt_number, external_code,
+                    medical_receipt_status, official_receipt_replaced_at,
+                    official_receipt_accountant_confirmed_at
+             FROM payment_disbursements
+             WHERE id = $1::bigint`,
+            [disbursementId],
+        );
+        if (cur.rowCount === 0) return { success: false, error: '撥款紀錄不存在' };
+        const row = cur.rows[0];
+        if (row.review_stage !== '9') return { success: false, error: '僅已完成撥款的正式收據可確認' };
+        if (row.medical_receipt_status !== 'official' || !row.official_receipt_replaced_at) {
+            return { success: false, error: '此筆撥款沒有待確認的正式收據更新' };
+        }
+        if (row.official_receipt_accountant_confirmed_at) {
+            return { success: false, error: '此筆正式收據更新已確認' };
+        }
+
+        await client.query(
+            `UPDATE payment_disbursements
+             SET official_receipt_accountant_confirmed_at = NOW(),
+                 official_receipt_accountant_confirmed_by = $1::bigint,
+                 updated_at = NOW()
+             WHERE id = $2::bigint`,
+            [operatorUserId, disbursementId],
+        );
+
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'payment_disbursement.official_receipt_accountant_confirmed',
+            targetType: 'payment_disbursement',
+            targetId: disbursementId,
+            detail: {
+                application_id: row.application_id,
+                receipt_number: row.receipt_number,
+                external_code: row.external_code,
+            },
+        });
+        return { success: true, data: undefined };
+    } catch (err: any) {
+        console.error('confirmOfficialMedicalReceiptReplacement error:', err);
+        return { success: false, error: err.message ?? '確認失敗' };
     } finally {
         client.release();
     }

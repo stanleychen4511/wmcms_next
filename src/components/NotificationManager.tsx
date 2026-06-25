@@ -16,7 +16,7 @@ import {
     fetchSchedules, saveSchedule, deleteSchedule, toggleScheduleActive, executeSchedule, NotificationSchedule,
 } from '../app/actions/notificationActions';
 import { fetchLineCredentialStatus, sendLineMessage } from '../app/actions/lineActions';
-import { SYSTEM_TEMPLATE_NAMES } from '../lib/systemTemplates';
+import { SYSTEM_TEMPLATE_NAMES, getNotificationTemplateLabel } from '../lib/systemTemplates';
 import { useToast } from './FloatingToast';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
@@ -170,7 +170,7 @@ function TemplateModal({ mode, tpl, userId, onClose, onSaved }: TplModalProps) {
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">範本名稱 <span className="text-red-500">*</span></label>
                             <input className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-500"
-                                value={name} onChange={e => setName(e.target.value)} maxLength={255}
+                                value={isSystem ? getNotificationTemplateLabel(name) : name} onChange={e => setName(e.target.value)} maxLength={255}
                                 disabled={isSystem}
                                 title={isSystem ? '系統範本不可改名（body/subject 仍可編輯）' : undefined} />
                             {isSystem && <p className="text-[10px] text-amber-600 mt-1">系統範本：名稱鎖定，但 subject/內文可編輯</p>}
@@ -289,7 +289,7 @@ function ScheduleFormModal({ schedule, templates, onClose, onSaved }: ScheduleFo
                             value={templateId ?? ''} onChange={e => setTemplateId(e.target.value ? Number(e.target.value) : null)}>
                             <option value="">— 不選擇 —</option>
                             {templates.filter(t => t.status === 1).map(t => (
-                                <option key={t.id} value={t.id}>{t.name}</option>
+                                <option key={t.id} value={t.id}>{getNotificationTemplateLabel(t.name)}</option>
                             ))}
                         </select>
                     </div>
@@ -546,7 +546,7 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                                                 tpl.status === 0 && 'opacity-50'
                                             )}>
                                                 <td className="py-3 px-4 text-sm font-medium text-slate-800">
-                                                    {tpl.name}
+                                                    {getNotificationTemplateLabel(tpl.name)}
                                                     {isSystem && (
                                                         <span className="ml-2 inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-semibold bg-amber-100 text-amber-700"
                                                             title="系統範本：可編輯內容（subject/body），但不可改名或停用">
@@ -632,7 +632,7 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                                                 !sch.is_active && 'opacity-50'
                                             )}>
                                                 <td className="py-3 px-4 text-sm font-medium text-slate-800">{sch.name}</td>
-                                                <td className="py-3 px-4 text-xs text-slate-500">{sch.template_name ?? '—'}</td>
+                                                <td className="py-3 px-4 text-xs text-slate-500">{getNotificationTemplateLabel(sch.template_name)}</td>
                                                 <td className="py-3 px-4 text-xs text-slate-500">
                                                     缺件 &gt; {(sch.conditions as any)?.missing_doc_days_gt ?? 0} 天
                                                 </td>

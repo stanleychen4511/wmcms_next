@@ -143,6 +143,7 @@ export async function fetchMedicalReceipts(
                AND dtc.label = '醫療收據'
                AND ad.file_path IS NOT NULL
                AND ad.file_path <> ''
+               AND COALESCE(ad.is_current, TRUE) = TRUE
              ORDER BY ad.uploaded_at DESC NULLS LAST`,
             [applicationId]
         );

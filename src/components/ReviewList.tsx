@@ -219,6 +219,25 @@ function StatusIcon({ status }: { status: DocumentEntry['status'] }) {
     }
 }
 
+function DocTooltipButton({ text, onOpen }: { text: string; onOpen: (text: string) => void }) {
+    return (
+        <button
+            type="button"
+            onClick={e => {
+                e.stopPropagation();
+                onOpen(text);
+            }}
+            className="group relative ml-1 inline-flex align-middle text-slate-400 hover:text-amber-600 focus:outline-none"
+            aria-label="檢視文件提示"
+        >
+            <AlertCircle className="w-3.5 h-3.5" />
+            <span className="pointer-events-none absolute left-1/2 top-full z-30 mt-1 hidden w-64 -translate-x-1/2 whitespace-pre-wrap rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-xs font-normal leading-relaxed text-slate-700 shadow-lg group-hover:block group-focus-visible:block">
+                {text}
+            </span>
+        </button>
+    );
+}
+
 const PAPER_REQUIREMENT_BADGE: Record<NonNullable<DocumentEntry['paperRequirement']>, { label: string; className: string }> = {
     original: { label: '正本', className: 'bg-indigo-50 text-indigo-700 border-indigo-100' },
     copy: { label: '影本', className: 'bg-emerald-50 text-emerald-700 border-emerald-100' },
@@ -247,6 +266,7 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
     const [rejectModal, setRejectModal] = useState<{ docId: string } | null>(null);
     const [rejectReason, setRejectReason] = useState('');
     const [preview, setPreview] = useState<{ url: string; label: string } | null>(null);
+    const [tooltipDialog, setTooltipDialog] = useState<string | null>(null);
     const [zoom, setZoom] = useState(100);
     const fileInputRef = useRef<HTMLInputElement>(null);
     const [activeUploadId, setActiveUploadId] = useState<string | null>(null);
@@ -403,15 +423,10 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                                 <StatusIcon status={doc.status} />
 
                                 <div className="flex-1 min-w-0">
-                                    <p className="text-sm font-semibold text-gray-900 truncate">
-                                        {doc.label}
+                                    <p className="text-sm font-semibold text-gray-900 flex items-center min-w-0">
+                                        <span className="truncate">{doc.label}</span>
                                         {doc.tooltipText && (
-                                            <span
-                                                className="ml-1 inline-flex align-middle text-slate-400"
-                                                title={doc.tooltipText}
-                                            >
-                                                <AlertCircle className="w-3.5 h-3.5" />
-                                            </span>
+                                            <DocTooltipButton text={doc.tooltipText} onOpen={setTooltipDialog} />
                                         )}
                                         {!doc.isRequired && (
                                             <span className="ml-2 text-[10px] font-normal text-slate-400 bg-slate-100 px-1.5 py-0.5 rounded">非必填</span>
@@ -629,6 +644,42 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
 
                         <div className="px-5 py-2 border-t border-slate-100 shrink-0 bg-slate-50">
                             <p className="text-xs text-slate-400 text-center">此文件僅供線上檢視，不支援下載或另存</p>
+                        </div>
+                    </div>
+                </div>
+            )}
+
+            {/* Document tooltip dialog */}
+            {tooltipDialog && (
+                <div
+                    className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+                    onClick={() => setTooltipDialog(null)}
+                >
+                    <ModalEscapeListener onClose={() => setTooltipDialog(null)} />
+                    <div
+                        className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md"
+                        onClick={e => e.stopPropagation()}
+                    >
+                        <div className="flex items-start justify-between gap-4 mb-3">
+                            <h4 className="font-bold text-slate-800 text-lg">文件提示</h4>
+                            <button
+                                type="button"
+                                onClick={() => setTooltipDialog(null)}
+                                className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"
+                                aria-label="關閉"
+                            >
+                                <XCircle className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{tooltipDialog}</p>
+                        <div className="flex justify-end mt-5">
+                            <button
+                                type="button"
+                                onClick={() => setTooltipDialog(null)}
+                                className="px-4 py-2 text-sm font-medium bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition"
+                            >
+                                知道了
+                            </button>
                         </div>
                     </div>
                 </div>

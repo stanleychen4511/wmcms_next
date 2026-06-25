@@ -90,6 +90,8 @@ export type AuditAction =
     | 'payment_disbursement.receipt_generated'
     | 'payment_disbursement.approval_email_sent'
     | 'payment_disbursement.receipt_email_sent'
+    | 'payment_disbursement.official_receipt_replaced'
+    | 'payment_disbursement.official_receipt_accountant_confirmed'
     | 'payment_disbursement.print_merged';
 
 export type AuditTargetType =

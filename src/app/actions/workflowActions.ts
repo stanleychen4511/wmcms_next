@@ -2093,6 +2093,25 @@ export async function closeCase(
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+        const pendingOfficialReceiptConfirmation = await client.query<{ receipt_number: string; external_code: string | null }>(
+            `SELECT receipt_number, external_code
+             FROM payment_disbursements
+             WHERE application_id = $1::bigint
+               AND review_stage = '9'
+               AND official_receipt_replaced_at IS NOT NULL
+               AND official_receipt_accountant_confirmed_at IS NULL
+             ORDER BY created_at ASC
+             LIMIT 1`,
+            [applicationId],
+        );
+        if ((pendingOfficialReceiptConfirmation.rowCount ?? 0) > 0) {
+            await client.query('ROLLBACK');
+            const row = pendingOfficialReceiptConfirmation.rows[0];
+            return {
+                success: false,
+                error: `撥款單號${row.external_code || row.receipt_number}正式收據已更新，等待會計確認`,
+            };
+        }
         const missingRemittance = await client.query<{ receipt_number: string }>(
             `SELECT receipt_number
              FROM payment_disbursements

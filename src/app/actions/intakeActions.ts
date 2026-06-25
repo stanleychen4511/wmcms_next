@@ -231,6 +231,7 @@ export async function submitExternalApplication(
     const subsidySubtypeRaw = (formData.get('subsidy_subtype') as string | null) ?? null;
     const subsidySubtype: '1' | '2' | null =
         subsidySubtypeRaw === '1' || subsidySubtypeRaw === '2' ? subsidySubtypeRaw : null;
+    const isEconomicWeak = subsidySubtype === '1';
     // 經濟弱勢專屬（萬元）
     const econDeposit       = formData.get('econ_deposit')        ? Number(formData.get('econ_deposit'))        : null;
     const econMonthlyIncome = formData.get('econ_monthly_income') ? Number(formData.get('econ_monthly_income')) : null;
@@ -241,8 +242,8 @@ export async function submitExternalApplication(
     if (name.length > 50) {
         return { success: false, error: '申請人姓名不可超過 50 個字' };
     }
-    // Email 必填驗證（核銷階段需自動寄領款收據至此信箱）
-    if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
+    // 經濟弱勢主要聯繫轉介單位；申請人 Email 可空白。
+    if (!isEconomicWeak && (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
         return { success: false, error: '請填寫有效的 Email 地址' };
     }
     // 申請人聯絡電話必填
@@ -275,7 +276,7 @@ export async function submitExternalApplication(
     if (!subsidySubtype) {
         return { success: false, error: '請選擇補助子類型（經濟弱勢／小康家庭）' };
     }
-    if (!(await verifyEmailVerificationToken(email, 'applicant_application', emailVerificationToken))) {
+    if (!isEconomicWeak && !(await verifyEmailVerificationToken(email, 'applicant_application', emailVerificationToken))) {
         return { success: false, error: '請先完成申請人 Email 驗證' };
     }
     if (applicationWay === '2' && !(await verifyEmailVerificationToken(referralContactEmailIn, 'referral_application', referralEmailVerificationToken))) {
@@ -317,13 +318,14 @@ export async function submitExternalApplication(
 
         // ── 1. Find or create applicant ──────────────────────────────────────
         let applicantId: string | null = null;
+        const applicantEmailForDb = email || null;
 
         applicantId = await findApplicantUserIdByIdNumber(client, idNumber);
-        if (applicantId) {
+        if (applicantId && applicantEmailForDb) {
             // Refresh email for existing applicant (they may be reapplying with new contact)
             await client.query(
                 `UPDATE users SET email = $1 WHERE id = $2::bigint`,
-                [email, applicantId]
+                [applicantEmailForDb, applicantId]
             );
         }
 
@@ -361,7 +363,7 @@ export async function submitExternalApplication(
                       email, is_active)
                  VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,true)
                  RETURNING id`,
-                [account, passHash, saltBuffer, nameEnc, nameIv, nameBidx, idEnc, idIv, idBidx, email]
+                [account, passHash, saltBuffer, nameEnc, nameIv, nameBidx, idEnc, idIv, idBidx, applicantEmailForDb]
             );
             applicantId = newU.rows[0].id;
 

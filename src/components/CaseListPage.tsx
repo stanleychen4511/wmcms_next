@@ -54,6 +54,19 @@ const STAGE_COLORS: Record<WorkflowStage, string> = {
     reimbursement: 'bg-green-100 text-green-700',
 };
 
+const SUBSIDY_SUBTYPE_LABEL: Record<'1' | '2', string> = {
+    '1': '經濟弱勢',
+    '2': '小康家庭',
+};
+
+const STATUS_BADGE: Record<string, { label: string; className: string }> = {
+    '1': { label: '審核中', className: 'bg-blue-100 text-blue-700' },
+    '2': { label: '結案（未通過）', className: 'bg-rose-100 text-rose-700' },
+    '3': { label: '待核銷', className: 'bg-amber-100 text-amber-700' },
+    '4': { label: '結案（通過）', className: 'bg-emerald-100 text-emerald-700' },
+    '5': { label: '結案（通過）', className: 'bg-emerald-100 text-emerald-700' },
+};
+
 function getMonthRange(): { first: string; last: string } {
     const now = new Date();
     const y = now.getFullYear();
@@ -275,7 +288,7 @@ export function CaseListPage({
         }
     };
 
-    const colSpan = canAssign ? 10 : 9;
+    const colSpan = canAssign ? 12 : 11;
 
     const [refreshing, setRefreshing] = useState(false);
     const handleRefresh = async () => {
@@ -534,7 +547,7 @@ export function CaseListPage({
 
                 {/* Results Table */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 overflow-x-auto">
-                    <table className="w-full text-sm min-w-[860px] lg:min-w-0">
+                    <table className="w-full text-sm min-w-[1080px] lg:min-w-0">
                         <thead>
                             <tr className="bg-gray-50 border-b border-gray-200">
                                 {canAssign && (
@@ -549,12 +562,14 @@ export function CaseListPage({
                                     </th>
                                 )}
                                 <Th>案件編號</Th>
+                                <Th>子類別</Th>
                                 <Th>申請人姓名</Th>
                                 <Th>申請次數</Th>
                                 <ThCenter>累積金額</ThCenter>
                                 <ThCenter>剩餘金額</ThCenter>
                                 <Th>申請時間</Th>
                                 <Th>當前申請流程</Th>
+                                <Th>案件狀態</Th>
                                 <Th>經辦人</Th>
                                 <th className="py-3 px-4 w-10" />
                             </tr>
@@ -745,6 +760,15 @@ function CaseRow({
             <td className={`py-3.5 px-4 font-mono text-xs text-slate-500 ${cellCursor} whitespace-nowrap`} onClick={handleClick}>
                 {c.caseNumber || <span className="text-slate-300">—</span>}
             </td>
+            <td className={`py-3.5 px-4 ${cellCursor}`} onClick={handleClick}>
+                {c.subsidySubtype ? (
+                    <span className="inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium bg-slate-100 text-slate-700">
+                        {SUBSIDY_SUBTYPE_LABEL[c.subsidySubtype]}
+                    </span>
+                ) : (
+                    <span className="text-slate-300">—</span>
+                )}
+            </td>
             <td className={`py-3.5 px-4 font-medium text-slate-800 transition-colors ${canOpen ? 'group-hover:text-blue-700 cursor-pointer' : 'cursor-not-allowed'}`} onClick={handleClick}>
                 <span className="flex items-center gap-2">
                     {c.applicantName}
@@ -778,6 +802,16 @@ function CaseRow({
                 <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STAGE_COLORS[c.stage]}`}>
                     {STAGE_LABELS[c.stage]}
                 </span>
+            </td>
+            <td className={`py-3.5 px-4 ${cellCursor}`} onClick={handleClick}>
+                {(() => {
+                    const badge = STATUS_BADGE[c.statusCode ?? '1'] ?? STATUS_BADGE['1'];
+                    return (
+                        <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${badge.className}`}>
+                            {badge.label}
+                        </span>
+                    );
+                })()}
             </td>
             <td className={`py-3.5 px-4 ${cellCursor}`} onClick={handleClick}>
                 {c.officerId

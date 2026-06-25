@@ -13,13 +13,15 @@ interface ApplicationFormProps {
     subtypeMaxAmounts?: Record<'1' | '2', number>;
     /** 隱藏子類型 radio（呼叫端自行管理時用，例如 NewApplicationPage 在外層另有 radio） */
     hideSubsidyType?: boolean;
+    /** 年齡由出生年月日自動計算時鎖定，避免與生日不一致 */
+    lockAge?: boolean;
 }
 
 const APPLICATION_TYPE_LABEL: Record<string, string> = {
     A: 'A 類', B: 'B 類', C: 'C 類', D: 'D 類',
 };
 
-export function ApplicationForm({ initialValues, onValidation, readOnly = false, applicationType, subtypeMaxAmounts, hideSubsidyType = false }: ApplicationFormProps) {
+export function ApplicationForm({ initialValues, onValidation, readOnly = false, applicationType, subtypeMaxAmounts, hideSubsidyType = false, lockAge = false }: ApplicationFormProps) {
     const {
         register,
         watch,
@@ -215,8 +217,10 @@ export function ApplicationForm({ initialValues, onValidation, readOnly = false,
                     <label className="block text-sm font-medium text-gray-700">年齡</label>
                     <input
                         type="text" inputMode="numeric" pattern="[0-9]*" maxLength={3}
-                        {...register('age')} disabled={readOnly}
+                        {...register('age')} disabled={readOnly} readOnly={lockAge}
+                        title={lockAge ? '年齡由出生年月日自動計算' : undefined}
                         className={clsx("mt-1 block w-full rounded-md shadow-sm p-2 border",
+                            lockAge && "bg-gray-50 text-gray-600 cursor-not-allowed",
                             errors.age ? "border-red-300 focus:border-red-500 focus:ring-red-500"
                                        : "border-gray-300 focus:border-blue-500 focus:ring-blue-500")}
                     />

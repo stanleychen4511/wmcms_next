@@ -45,7 +45,7 @@ import { SendNotificationModal, ChecklistDoc } from './components/SendNotificati
 import { EditCaseBasicsModal } from './components/EditCaseBasicsModal';
 import { BoardVoteCard } from './components/BoardVoteCard';
 import { BoardSignaturePanel } from './components/BoardSignaturePanel';
-import type { BoardReviewSignatureStatus } from './app/actions/boardSignatureActions';
+import { fetchBoardReviewSignatures, type BoardReviewSignatureStatus } from './app/actions/boardSignatureActions';
 import { fetchActiveBoardGroups, assignCaseToBoardGroup, isUserInAssignedGroupForCase, saveBoardReviewDraft, BoardGroup } from './app/actions/boardGroupActions';
 import { fetchNotificationLogs, NotificationLog } from './app/actions/notificationActions';
 import { ApplicationForm } from './components/ApplicationForm';
@@ -118,6 +118,40 @@ const STAGE_ICON_MAP: Record<WorkflowStage, React.ReactNode> = {
     reimbursement: <CreditCard className="w-4 h-4" />,
 };
 
+type AppView = 'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager' | 'announcements' | 'user_settings' | 'stats' | 'reports' | 'rejected_archive';
+type DetailReturnView = 'home' | 'list' | 'history';
+type BrowserNavState = {
+    __wmcms: true;
+    view: AppView;
+    selectedPersonId: string | null;
+    selectedAppId: string | null;
+    detailReturnView: DetailReturnView;
+};
+
+const APP_VIEWS = new Set<AppView>([
+    'home',
+    'list',
+    'history',
+    'detail',
+    'new_application',
+    'admin',
+    'template_download',
+    'notification_manager',
+    'announcements',
+    'user_settings',
+    'stats',
+    'reports',
+    'rejected_archive',
+]);
+
+function isAppView(v: unknown): v is AppView {
+    return typeof v === 'string' && APP_VIEWS.has(v as AppView);
+}
+
+function isDetailReturnView(v: unknown): v is DetailReturnView {
+    return v === 'home' || v === 'list' || v === 'history';
+}
+
 // ── App ───────────────────────────────────────────────────────────────────────
 
 function getAttachmentDisplayName(url: string, fallback: string): string {
@@ -138,15 +172,24 @@ function App() {
     const [role, setRole] = useState<Role>('case_officer');
     const [loggedInUser, setLoggedInUser] = useState<{ username: string; roles: Role[]; account: string; id: string } | null>(null);
 
-    const [view, setView] = useState<'home' | 'list' | 'history' | 'detail' | 'new_application' | 'admin' | 'template_download' | 'notification_manager' | 'announcements' | 'user_settings' | 'stats' | 'reports' | 'rejected_archive'>('home');
+    const [view, setView] = useState<AppView>('home');
     const [selectedPersonId, setSelectedPersonId] = useState<string | null>(null);
     const [selectedAppId, setSelectedAppId] = useState<string | null>(null);
-    const [detailReturnView, setDetailReturnView] = useState<'home' | 'list' | 'history'>('history');
+    const [detailReturnView, setDetailReturnView] = useState<DetailReturnView>('history');
+    const [navHydrated, setNavHydrated] = useState(false);
+    const applyingBrowserNavRef = useRef(false);
     // Mirror selectedAppId into a ref for use inside stable callbacks (e.g. handleSignatureStatusChange)
     // Avoids stale closure problem without re-creating the callback on every state change.
 
     // Restore login + navigation state from sessionStorage (runs once on mount)
     useEffect(() => {
+        const navState: BrowserNavState = {
+            __wmcms: true,
+            view: 'home',
+            selectedPersonId: null,
+            selectedAppId: null,
+            detailReturnView: 'history',
+        };
         try {
             const saved = sessionStorage.getItem('loggedInUser');
             if (saved) {
@@ -157,22 +200,66 @@ function App() {
             const nav = sessionStorage.getItem('navState');
             if (nav) {
                 const n = JSON.parse(nav);
-                if (n.view)             setView(n.view);
-                if (n.selectedPersonId) setSelectedPersonId(n.selectedPersonId);
-                if (n.selectedAppId)    setSelectedAppId(n.selectedAppId);
-                if (n.detailReturnView === 'home' || n.detailReturnView === 'list' || n.detailReturnView === 'history') {
-                    setDetailReturnView(n.detailReturnView);
-                }
+                if (isAppView(n.view)) navState.view = n.view;
+                if (typeof n.selectedPersonId === 'string') navState.selectedPersonId = n.selectedPersonId;
+                if (typeof n.selectedAppId === 'string') navState.selectedAppId = n.selectedAppId;
+                if (isDetailReturnView(n.detailReturnView)) navState.detailReturnView = n.detailReturnView;
             }
         } catch { /* ignore */ }
+
+        setView(navState.view);
+        setSelectedPersonId(navState.selectedPersonId);
+        setSelectedAppId(navState.selectedAppId);
+        setDetailReturnView(navState.detailReturnView);
+        window.history.replaceState(navState, '', window.location.href);
+        setNavHydrated(true);
     }, []);
 
-    // Persist navigation state whenever it changes
+    // Persist navigation state whenever it changes, and mirror it to browser Back/Forward.
     useEffect(() => {
+        if (!navHydrated) return;
+        const nextState: BrowserNavState = {
+            __wmcms: true,
+            view,
+            selectedPersonId,
+            selectedAppId,
+            detailReturnView,
+        };
         try {
-            sessionStorage.setItem('navState', JSON.stringify({ view, selectedPersonId, selectedAppId, detailReturnView }));
+            sessionStorage.setItem('navState', JSON.stringify(nextState));
         } catch { /* ignore */ }
-    }, [view, selectedPersonId, selectedAppId, detailReturnView]);
+
+        if (applyingBrowserNavRef.current) {
+            applyingBrowserNavRef.current = false;
+            window.history.replaceState(nextState, '', window.location.href);
+            return;
+        }
+
+        const current = window.history.state as BrowserNavState | null;
+        const isSame =
+            current?.__wmcms === true &&
+            current.view === nextState.view &&
+            current.selectedPersonId === nextState.selectedPersonId &&
+            current.selectedAppId === nextState.selectedAppId &&
+            current.detailReturnView === nextState.detailReturnView;
+        if (!isSame) {
+            window.history.pushState(nextState, '', window.location.href);
+        }
+    }, [navHydrated, view, selectedPersonId, selectedAppId, detailReturnView]);
+
+    useEffect(() => {
+        const onPopState = (event: PopStateEvent) => {
+            const state = event.state as Partial<BrowserNavState> | null;
+            if (!state || state.__wmcms !== true || !isAppView(state.view)) return;
+            applyingBrowserNavRef.current = true;
+            setView(state.view);
+            setSelectedPersonId(typeof state.selectedPersonId === 'string' ? state.selectedPersonId : null);
+            setSelectedAppId(typeof state.selectedAppId === 'string' ? state.selectedAppId : null);
+            setDetailReturnView(isDetailReturnView(state.detailReturnView) ? state.detailReturnView : 'history');
+        };
+        window.addEventListener('popstate', onPopState);
+        return () => window.removeEventListener('popstate', onPopState);
+    }, []);
 
     // Viewed stage for read-only browsing (separate from true stage)
     const [viewedStage, setViewedStage] = useState<WorkflowStage | null>(null);
@@ -199,6 +286,7 @@ function App() {
     const [reconsiderSupervisorNote, setReconsiderSupervisorNote] = useState('');
     const [reconsiderBusy, setReconsiderBusy] = useState(false);
     const [showOlderReconsiderations, setShowOlderReconsiderations] = useState(false);
+    const [showOlderBoardReviewRounds, setShowOlderBoardReviewRounds] = useState(false);
     const [showReconsiderRequestForm, setShowReconsiderRequestForm] = useState(false);
     const [filePreview, setFilePreview] = useState<{ url: string; label: string } | null>(null);
     const [applyAmount, setApplyAmount] = useState<number>(0);
@@ -223,10 +311,16 @@ function App() {
         titleSuffix?: string;
     }>(null);
     const [notifLogs, setNotifLogs] = useState<NotificationLog[]>([]);
+    const [showNotificationLogsDialog, setShowNotificationLogsDialog] = useState(false);
+    const [selectedNotificationLog, setSelectedNotificationLog] = useState<NotificationLog | null>(null);
 
     const loadNotifLogs = useCallback(async (appId: string) => {
         const res = await fetchNotificationLogs(appId);
-        if (res.success && res.data) setNotifLogs(res.data);
+        if (res.success && res.data) {
+            setNotifLogs(res.data);
+            setShowNotificationLogsDialog(false);
+            setSelectedNotificationLog(null);
+        }
     }, []);
 
     // DB-driven application detail (loaded when entering detail view)
@@ -291,7 +385,7 @@ function App() {
                 // 同步 selectedPersonId — 從首頁未補件 / 輪到我處理 / 未派案 modal 進入流程頁時
                 // 只設定了 selectedAppId，這裡補上 applicantId，避免「返回歷史紀錄」變空白。
                 if (detail.applicantId) setSelectedPersonId(detail.applicantId);
-                setViewedStage(detail.stage as WorkflowStage);
+                setViewedStage(detail.status === '2' ? 'board_review' : detail.stage as WorkflowStage);
                 if (detail.applyAmount != null) setApplyAmount(detail.applyAmount);
                 // 結案案件（status='2'/'4'）→ 從 workflow 彙整值顯示供查閱
                 // 進行中案件（status='1'）→ 完全交給後續 useEffect 處理：
@@ -447,9 +541,22 @@ function App() {
     //   - supervisor / admin / chairman → 看全部
     //   - 其他角色 → 空清單（顯示「您不在派組成員中」）
     const userRolesListForTabs = (loggedInUser?.roles ?? []) as Role[];
+    const canViewRejectedClosedAllStages = !!(
+        appDetail?.status === '2'
+        && loggedInUser
+        && (
+            String(loggedInUser.id) === String(appDetail.officerId ?? '')
+            || userRolesListForTabs.includes('supervisor')
+            || userRolesListForTabs.includes('board_member')
+            || userRolesListForTabs.includes('chairman' as Role)
+            || userRolesListForTabs.includes('executive')
+            || userRolesListForTabs.includes('admin')
+        )
+    );
     const canViewAllMemberTabs = userRolesListForTabs.includes('supervisor')
         || userRolesListForTabs.includes('admin')
-        || userRolesListForTabs.includes('chairman' as Role);
+        || userRolesListForTabs.includes('chairman' as Role)
+        || canViewRejectedClosedAllStages;
     const visibleBoardMembers = (() => {
         const all = signatureStatus?.members ?? [];
         if (canViewAllMemberTabs) return all;
@@ -508,6 +615,14 @@ function App() {
             setIsAssignedGroupMember(!!res.data);
         });
     }, [view, selectedAppId, appDetail?.stage, loggedInUser]);
+
+    useEffect(() => {
+        const currentDisplayedStage = viewedStage ?? (appDetail?.stage as WorkflowStage | undefined) ?? 'admin_review';
+        if (view !== 'detail' || !selectedAppId || currentDisplayedStage !== 'board_review' || !canViewRejectedClosedAllStages) return;
+        fetchBoardReviewSignatures(selectedAppId).then(res => {
+            if (res.success && res.data) setSignatureStatus(res.data);
+        });
+    }, [view, selectedAppId, viewedStage, appDetail?.stage, canViewRejectedClosedAllStages]);
 
     useEffect(() => {
         // 載入兩個子類型的補助上限（取代舊 max_apply_amount 設定）
@@ -975,7 +1090,6 @@ function App() {
         hasPermission('chairman' as Role);
     const isHomeVisitAssigneeOnlyView = isHomeVisitAssignedToMe && !hasFullCaseDetailAccess;
 
-
     // Use DB applicant name if available
     const personName = appDetail?.applicantName ?? '';
 
@@ -1280,6 +1394,156 @@ function App() {
     // 受限視野統一旗標 — 不可點 admin_review 步驟
     const restrictAdminReviewStep = isVolunteerView || isSocialWorkerView;
 
+    const renderBoardReconsiderationHistory = (
+        history: NonNullable<ApplicationDetail['boardReconsiderationHistory']>
+    ) => {
+        const latest = history[0];
+        const older = history.slice(1);
+        if (!latest) return null;
+
+        const renderRecord = (item: typeof history[number], idx: number) => (
+            <div key={item.id} className="rounded-lg border border-slate-200 bg-slate-50 p-4 space-y-3">
+                <div className="flex flex-wrap items-center gap-2 text-sm">
+                    <span className="font-semibold text-slate-800">
+                        第 {history.length - idx} 次退回
+                    </span>
+                    <span className="text-slate-500">
+                        送出日期：{item.requestedAt ? item.requestedAt.slice(0, 10) : '—'}
+                    </span>
+                    <span className={clsx(
+                        'px-2 py-0.5 rounded-full text-xs font-semibold',
+                        item.status === 'pending_supervisor' ? 'bg-amber-100 text-amber-800'
+                            : item.status === 'approved' ? 'bg-emerald-100 text-emerald-800'
+                            : 'bg-rose-100 text-rose-800'
+                    )}>
+                        {item.status === 'pending_supervisor' ? '待主管審核' : item.status === 'approved' ? '已核准' : '已駁回'}
+                    </span>
+                </div>
+                <div>
+                    <p className="text-xs font-semibold text-slate-500 mb-1">退回原因</p>
+                    <p className="whitespace-pre-wrap text-slate-800 leading-relaxed">{item.reason}</p>
+                </div>
+                {item.supervisorNote && (
+                    <div className="rounded-md bg-white border border-slate-200 p-3">
+                        <p className="text-xs font-semibold text-slate-500 mb-1">主管審核備註</p>
+                        <p className="whitespace-pre-wrap text-slate-700 leading-relaxed">{item.supervisorNote}</p>
+                    </div>
+                )}
+                {item.attachmentUrls.length > 0 && (
+                    <div className="flex flex-wrap gap-2">
+                        {item.attachmentUrls.map((url, fileIdx) => {
+                            const fileLabel = getAttachmentDisplayName(url, `附件 ${fileIdx + 1}`);
+                            return (
+                                <button
+                                    key={`${item.id}-${url}`}
+                                    type="button"
+                                    onClick={() => setFilePreview({ url, label: fileLabel })}
+                                    className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md border border-slate-300 bg-white text-slate-700 hover:bg-slate-100 text-xs font-semibold"
+                                >
+                                    <Eye className="w-3.5 h-3.5" />
+                                    {fileLabel}
+                                </button>
+                            );
+                        })}
+                    </div>
+                )}
+            </div>
+        );
+
+        return (
+            <div className="space-y-3">
+                {renderRecord(latest, 0)}
+                {older.length > 0 && (
+                    <div className="rounded-lg border border-slate-200 bg-white">
+                        <button
+                            type="button"
+                            onClick={() => setShowOlderReconsiderations(v => !v)}
+                            className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50 rounded-lg"
+                        >
+                            <span>歷史退回紀錄（{older.length} 筆）</span>
+                            {showOlderReconsiderations ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                        </button>
+                        {showOlderReconsiderations && (
+                            <div className="border-t border-slate-200 p-3 space-y-3">
+                                {older.map((item, olderIdx) => renderRecord(item, olderIdx + 1))}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
+    const renderBoardReviewRounds = (
+        rounds: NonNullable<ApplicationDetail['boardReviewRounds']>
+    ) => {
+        const sorted = [...rounds].sort((a, b) => b.roundNo - a.roundNo);
+        const latest = sorted[0];
+        const older = sorted.slice(1);
+        if (!latest) return null;
+
+        const renderRound = (round: typeof rounds[number]) => (
+            <div key={round.id} className="rounded-lg border border-purple-200 bg-purple-50 p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2">
+                        <span className="text-sm font-bold text-slate-800">
+                            第 {round.roundNo} 次董事審核
+                        </span>
+                    </div>
+                    {round.completedAt && (
+                        <span className="text-xs text-slate-500">
+                            {new Date(round.completedAt).toLocaleString('zh-TW')}
+                        </span>
+                    )}
+                </div>
+                <div className="mt-2 text-sm text-slate-700 space-y-1">
+                    <p>
+                        核定金額：
+                        <span className="font-semibold text-slate-900">
+                            {round.approvedAmount != null ? `NT$ ${round.approvedAmount.toLocaleString()}` : '未填寫'}
+                        </span>
+                    </p>
+                    {round.signatures.map((s, idx) => (
+                        <div key={`${round.id}-${s.signerUserId ?? idx}`} className="rounded-md bg-white/70 border border-slate-200 p-2">
+                            <p className="text-sm font-semibold text-slate-800">{s.signerName}</p>
+                            <p className="text-xs font-semibold text-slate-500 mt-1">通過金額</p>
+                            <p className="text-sm text-slate-900 font-semibold mt-0.5">
+                                {s.memberAmount != null ? `NT$ ${s.memberAmount.toLocaleString()}` : '未填寫'}
+                            </p>
+                            <p className="text-xs font-semibold text-slate-500 mt-1">審核意見</p>
+                            <p className="text-sm text-slate-700 whitespace-pre-wrap mt-0.5">
+                                {s.memberComments?.trim() || '未填寫'}
+                            </p>
+                        </div>
+                    ))}
+                </div>
+            </div>
+        );
+
+        return (
+            <div className="space-y-3">
+                {renderRound(latest)}
+                {older.length > 0 && (
+                    <div className="rounded-lg border border-slate-200 bg-white">
+                        <button
+                            type="button"
+                            onClick={() => setShowOlderBoardReviewRounds(v => !v)}
+                            className="w-full flex items-center justify-between gap-3 px-4 py-3 text-left text-sm font-semibold text-slate-700 hover:bg-slate-50 rounded-lg"
+                        >
+                            <span>歷史董事審核紀錄（{older.length} 筆）</span>
+                            {showOlderBoardReviewRounds ? <ChevronDown className="w-4 h-4" /> : <ChevronRight className="w-4 h-4" />}
+                        </button>
+                        {showOlderBoardReviewRounds && (
+                            <div className="border-t border-slate-200 p-3 space-y-3">
+                                {older.map(renderRound)}
+                            </div>
+                        )}
+                    </div>
+                )}
+            </div>
+        );
+    };
+
     const renderStageContent = () => {
         switch (displayedStage) {
             case 'admin_review':
@@ -1576,6 +1840,12 @@ function App() {
                 const displayApproved = isOwnTab ? boardApproved : (activeMember?.memberApproved ?? null);
                 const displayAmount   = isOwnTab ? boardApprovedAmount : (activeMember?.memberAmount ?? 0);
                 const displayOpinion  = isOwnTab ? boardOpinion : (activeMember?.memberComments ?? '');
+                const reconsiderationHistory = appDetail?.boardReconsiderationHistory ?? [];
+                const canViewReconsiderationHistory =
+                    hasPermission('board_member') ||
+                    hasPermission('chairman' as Role) ||
+                    hasPermission('admin') ||
+                    hasPermission('supervisor');
                 return (
                     <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative space-y-6">
                         <h3 className="text-lg font-bold flex items-center gap-2">
@@ -1583,10 +1853,32 @@ function App() {
                             董事審核
                         </h3>
 
+                        {canViewReconsiderationHistory && reconsiderationHistory.length > 0 && (
+                            <div className="rounded-xl border border-purple-100 bg-purple-50/40 p-4 space-y-3">
+                                <div>
+                                    <h4 className="text-sm font-bold text-slate-900 flex items-center gap-2">
+                                        <Gavel className="w-4 h-4 text-purple-600" />
+                                        退回董事再次審核歷程
+                                    </h4>
+                                    <p className="text-xs text-slate-500 mt-1">
+                                        承辦人於核銷撥款階段發起的退回董事再審紀錄。
+                                    </p>
+                                </div>
+                                {renderBoardReconsiderationHistory(reconsiderationHistory)}
+                            </div>
+                        )}
+
                         {/* Member Tab strip */}
                         {visibleBoardMembers.length === 0 ? (
-                            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 text-sm text-amber-700">
-                                您不在本案派組成員中，無法檢視個別審核意見。
+                            <div className={clsx(
+                                'rounded-lg border p-3 text-sm',
+                                canViewRejectedClosedAllStages
+                                    ? 'bg-slate-50 border-slate-200 text-slate-500'
+                                    : 'bg-amber-50 border-amber-200 text-amber-700'
+                            )}>
+                                {canViewRejectedClosedAllStages
+                                    ? '無董事意見'
+                                    : '您不在本案派組成員中，無法檢視個別審核意見。'}
                             </div>
                         ) : (
                             <>
@@ -2038,6 +2330,7 @@ function App() {
                         {loggedInUser && selectedAppId && (
                             hasPermission('admin') || hasPermission('case_officer') || hasPermission('supervisor')
                             || hasPermission('accountant') || hasPermission('executive') || hasPermission('chairman' as Role)
+                            || canViewRejectedClosedAllStages
                         ) && (
                             <DisbursementPanel
                                 applicationId={selectedAppId}
@@ -2191,7 +2484,7 @@ function App() {
                                 const restrictedForRole =
                                     (restrictAdminReviewStep && s === 'admin_review') ||
                                     (isVolunteerView && (s === 'board_review' || s === 'reimbursement'));
-                                const disabled = isFuture || restrictedForRole;
+                                const disabled = (isFuture && !canViewRejectedClosedAllStages) || restrictedForRole;
                                 return (
                                     <StepItem
                                         key={s}
@@ -2269,37 +2562,54 @@ function App() {
                         {/* Notification log */}
                         {notifLogs.length > 0 && (
                             <div className="space-y-2 pt-2 border-t border-slate-100">
-                                <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">通知紀錄</p>
+                                <div className="flex items-center justify-between gap-2">
+                                    <p className="text-xs font-semibold text-slate-400 uppercase tracking-wide">通知紀錄</p>
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setSelectedNotificationLog(null);
+                                            setShowNotificationLogsDialog(true);
+                                        }}
+                                        className="inline-flex items-center gap-1 rounded-md border border-slate-200 bg-white px-2 py-1 text-xs font-medium text-slate-600 hover:bg-slate-50"
+                                    >
+                                        <Eye className="w-3.5 h-3.5" />
+                                        檢視全部
+                                    </button>
+                                </div>
                                 <div className="space-y-2 max-h-52 overflow-y-auto">
-                                    {notifLogs.map(log => (
-                                        <div key={log.id} className={clsx(
-                                            'rounded-lg px-3 py-2 text-xs border',
-                                            log.status === 'sent'
-                                                ? 'bg-green-50 border-green-100'
-                                                : 'bg-red-50 border-red-100'
-                                        )}>
-                                            <div className="flex items-center justify-between gap-1 mb-0.5">
-                                                <span className={clsx(
-                                                    'font-semibold',
-                                                    log.status === 'sent' ? 'text-green-700' : 'text-red-700'
-                                                )}>
-                                                    {log.status === 'sent' ? '✓ 已發送' : '✗ 失敗'}
-                                                </span>
-                                                <span className="text-slate-400 shrink-0">
-                                                    {log.sent_at?.slice(0, 16).replace('T', ' ')}
-                                                </span>
-                                            </div>
-                                            {log.subject && (
-                                                <p className="text-slate-600 truncate">{log.subject}</p>
-                                            )}
-                                            <p className="text-slate-400">
-                                                收件人：{log.recipients.map(r => r.name).join('、')}
-                                            </p>
-                                            {log.sender_name && (
-                                                <p className="text-slate-400">發送者：{log.sender_name}</p>
-                                            )}
-                                        </div>
-                                    ))}
+                                    {notifLogs.map(log => {
+                                        const recipients = Array.isArray(log.recipients) ? log.recipients : [];
+                                        const sentAt = log.sent_at?.slice(0, 16).replace('T', ' ') || '—';
+
+                                        return (
+                                            <button key={log.id} type="button" onClick={() => {
+                                                setSelectedNotificationLog(log);
+                                                setShowNotificationLogsDialog(true);
+                                            }} className={clsx(
+                                                'w-full rounded-lg px-3 py-2 text-left text-xs border transition hover:shadow-sm',
+                                                log.status === 'sent'
+                                                    ? 'bg-green-50 border-green-100'
+                                                    : 'bg-red-50 border-red-100'
+                                            )}>
+                                                <div className="flex items-center justify-between gap-2 mb-0.5">
+                                                    <span className={clsx(
+                                                        'font-semibold',
+                                                        log.status === 'sent' ? 'text-green-700' : 'text-red-700'
+                                                    )}>
+                                                        {log.status === 'sent' ? '已發送' : '失敗'}
+                                                    </span>
+                                                    <span className="text-slate-400 shrink-0">{sentAt}</span>
+                                                </div>
+                                                {log.subject && (
+                                                    <p className="text-slate-600 truncate">{log.subject}</p>
+                                                )}
+                                                <p className="text-slate-400 truncate">收件人：{recipients.map(r => r.name || r.email).join('、') || '—'}</p>
+                                                {log.sender_name && (
+                                                    <p className="text-slate-400">發送者：{log.sender_name}</p>
+                                                )}
+                                            </button>
+                                        );
+                                    })}
                                 </div>
                             </div>
                         )}
@@ -2462,7 +2772,7 @@ function App() {
                     )}
 
                     {/* Read-only banner */}
-                    {isViewingPastStep && (
+                    {isViewingPastStep && !isCaseClosed && (
                         <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 rounded-lg px-4 py-2.5 text-sm text-amber-700">
                             <Eye className="w-4 h-4 shrink-0" />
                             <span>
@@ -2535,54 +2845,7 @@ function App() {
                                             若因核銷階段退回重新審核，最新輪次為實際審核依據，前次結果僅供參考。
                                         </p>
                                     </div>
-                                    <div className="space-y-2">
-                                        {[...appDetail.boardReviewRounds]
-                                            .sort((a, b) => b.roundNo - a.roundNo)
-                                            .map(round => (
-                                                <div
-                                                    key={round.id}
-                                                    className={`rounded-lg border p-3 ${
-                                                        round.isLatest
-                                                            ? 'border-purple-200 bg-purple-50'
-                                                            : 'border-slate-200 bg-slate-50'
-                                                    }`}
-                                                >
-                                                    <div className="flex flex-wrap items-center justify-between gap-2">
-                                                        <div className="flex items-center gap-2">
-                                                            <span className="text-sm font-bold text-slate-800">
-                                                                第 {round.roundNo} 次董事審核
-                                                            </span>
-                                                        </div>
-                                                        {round.completedAt && (
-                                                            <span className="text-xs text-slate-500">
-                                                                {new Date(round.completedAt).toLocaleString('zh-TW')}
-                                                            </span>
-                                                        )}
-                                                    </div>
-                                                    <div className="mt-2 text-sm text-slate-700 space-y-1">
-                                                        <p>
-                                                            核定金額：
-                                                            <span className="font-semibold text-slate-900">
-                                                                {round.approvedAmount != null ? `NT$ ${round.approvedAmount.toLocaleString()}` : '未填寫'}
-                                                            </span>
-                                                        </p>
-                                                        {round.signatures.map((s, idx) => (
-                                                            <div key={`${round.id}-${s.signerUserId ?? idx}`} className="rounded-md bg-white/70 border border-slate-200 p-2">
-                                                                <p className="text-sm font-semibold text-slate-800">{s.signerName}</p>
-                                                                <p className="text-xs font-semibold text-slate-500 mt-1">通過金額</p>
-                                                                <p className="text-sm text-slate-900 font-semibold mt-0.5">
-                                                                    {s.memberAmount != null ? `NT$ ${s.memberAmount.toLocaleString()}` : '未填寫'}
-                                                                </p>
-                                                                <p className="text-xs font-semibold text-slate-500 mt-1">審核意見</p>
-                                                                <p className="text-sm text-slate-700 whitespace-pre-wrap mt-0.5">
-                                                                    {s.memberComments?.trim() || '未填寫'}
-                                                                </p>
-                                                            </div>
-                                                        ))}
-                                                    </div>
-                                                </div>
-                                            ))}
-                                    </div>
+                                    {renderBoardReviewRounds(appDetail.boardReviewRounds)}
                                 </div>
                             )}
                             {isAdminOrChairman && (
@@ -2657,7 +2920,7 @@ function App() {
                     {/* Flow Controls */}
                     <div className="bg-white p-4 rounded-lg border border-gray-200">
                         <div className="flex flex-col sm:flex-row justify-end items-start sm:items-center gap-4">
-                            {isViewingPastStep && (
+                            {isViewingPastStep && !isCaseClosed && (
                                 <p className="text-xs text-amber-500">請先返回目前步驟再操作流程</p>
                             )}
                             <div className="flex gap-2 items-center">
@@ -2871,17 +3134,22 @@ function App() {
                                         // 其他角色看不到任何主管按鈕，但 needsSupervisorForBoard=true 會讓「進入下一階段」disabled
                                     }
                                     return (
-                                        <button
-                                            onClick={handleAdvanceStage}
-                                            disabled={advanceDisabled}
-                                            title={advanceTitle}
-                                            className={btnClass}
-                                        >
-                                            <span>{btnLabel}</span>
-                                            {!isCaseClosed && !isViewingPastStep && !isReimbursement && !(isBoardReview && boardApproved === false) && advanceLabel && (
-                                                <span className="text-xs font-normal text-slate-400">→ {advanceLabel}</span>
+                                        <>
+                                            {reimbursementBlocked && (
+                                                <p className="max-w-sm text-xs text-amber-600 text-right">{advanceTitle}</p>
                                             )}
-                                        </button>
+                                            <button
+                                                onClick={handleAdvanceStage}
+                                                disabled={advanceDisabled}
+                                                title={advanceTitle}
+                                                className={btnClass}
+                                            >
+                                                <span>{btnLabel}</span>
+                                                {!isCaseClosed && !isViewingPastStep && !isReimbursement && !(isBoardReview && boardApproved === false) && advanceLabel && (
+                                                    <span className="text-xs font-normal text-slate-400">→ {advanceLabel}</span>
+                                                )}
+                                            </button>
+                                        </>
                                     );
                                 })()}
                             </div>
@@ -3038,6 +3306,95 @@ function App() {
                     operatorUserId={loggedInUser.id}
                     onClose={() => setShowCareRecordsModal(false)}
                 />
+            )}
+
+            {showNotificationLogsDialog && (
+                <div className="fixed inset-0 z-[90] flex items-center justify-center bg-slate-900/50 p-4">
+                    <ModalEscapeListener onClose={() => setShowNotificationLogsDialog(false)} />
+                    <div
+                        className="absolute inset-0"
+                        onClick={() => setShowNotificationLogsDialog(false)}
+                    />
+                    <div
+                        role="dialog"
+                        aria-modal="true"
+                        aria-labelledby="notification-log-dialog-title"
+                        className="relative z-10 w-full max-w-4xl overflow-hidden rounded-2xl bg-white shadow-2xl"
+                    >
+                        <div className="flex items-center justify-between border-b border-slate-200 px-6 py-4">
+                            <div>
+                                <h2 id="notification-log-dialog-title" className="text-lg font-bold text-slate-900">
+                                    {selectedNotificationLog ? '通知內容' : '通知紀錄'}
+                                </h2>
+                                <p className="mt-1 text-sm text-slate-500">
+                                    {selectedNotificationLog ? '單筆通知紀錄' : `共 ${notifLogs.length} 筆通知`}
+                                </p>
+                            </div>
+                            <button
+                                type="button"
+                                onClick={() => setShowNotificationLogsDialog(false)}
+                                className="rounded-lg p-1.5 text-slate-400 hover:bg-slate-100 hover:text-slate-600"
+                                aria-label="關閉通知紀錄"
+                            >
+                                <XCircle className="h-5 w-5" />
+                            </button>
+                        </div>
+                        <div className="max-h-[70vh] space-y-4 overflow-y-auto px-6 py-5 text-sm">
+                            {(selectedNotificationLog ? [selectedNotificationLog] : notifLogs).map(log => {
+                                const recipients = Array.isArray(log.recipients) ? log.recipients : [];
+                                const recipientText = recipients
+                                    .map(r => `${r.name || r.email}${r.email ? ` <${r.email}>` : ''}${r.is_bcc ? '（密件）' : ''}`)
+                                    .join('、') || '—';
+                                const sentAt = log.sent_at?.slice(0, 16).replace('T', ' ') || '—';
+
+                                return (
+                                    <article key={log.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
+                                        <div className="mb-3 flex items-center justify-between gap-3">
+                                            <span className={clsx(
+                                                'rounded-full px-2 py-0.5 text-xs font-semibold',
+                                                log.status === 'sent'
+                                                    ? 'bg-green-100 text-green-700'
+                                                    : 'bg-red-100 text-red-700'
+                                            )}>
+                                                {log.status === 'sent' ? '已發送' : '失敗'}
+                                            </span>
+                                            <span className="text-xs text-slate-400">{sentAt}</span>
+                                        </div>
+                                        <div className="space-y-3">
+                                            <div>
+                                                <p className="mb-1 font-semibold text-slate-500">收件人</p>
+                                                <p className="break-words rounded-lg bg-slate-50 px-3 py-2 text-slate-800">{recipientText}</p>
+                                            </div>
+                                            <div>
+                                                <p className="mb-1 font-semibold text-slate-500">標題</p>
+                                                <p className="break-words rounded-lg bg-slate-50 px-3 py-2 text-slate-800">{log.subject || '—'}</p>
+                                            </div>
+                                            <div>
+                                                <p className="mb-1 font-semibold text-slate-500">內容</p>
+                                                <div className="whitespace-pre-wrap break-words rounded-lg border border-slate-200 bg-white px-3 py-2 leading-6 text-slate-800">
+                                                    {log.body || '—'}
+                                                </div>
+                                            </div>
+                                            <div>
+                                                <p className="mb-1 font-semibold text-slate-500">寄送時間</p>
+                                                <p className="rounded-lg bg-slate-50 px-3 py-2 text-slate-800">{sentAt}</p>
+                                            </div>
+                                        </div>
+                                    </article>
+                                );
+                            })}
+                        </div>
+                        <div className="flex justify-end border-t border-slate-200 bg-slate-50 px-6 py-4">
+                            <button
+                                type="button"
+                                onClick={() => setShowNotificationLogsDialog(false)}
+                                className="rounded-lg bg-blue-600 px-4 py-2 text-sm font-semibold text-white hover:bg-blue-700"
+                            >
+                                關閉
+                            </button>
+                        </div>
+                    </div>
+                </div>
             )}
 
             {/* Send Notification Modal */}

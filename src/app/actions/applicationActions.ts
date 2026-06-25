@@ -6,7 +6,6 @@ import { generateBlindIndex } from '../../lib/crypto';
 import { CaseSummary, ApplicationRecord, WorkflowStage, ApplicationStatus } from '../../types';
 import { STATUS_TO_STAGE, DB_STAGE_TO_FRONTEND, STATUS_LABEL } from '../../lib/stageMaps';
 import { writeAuditLog } from './auditActions';
-import { verifyEmailVerificationToken } from './emailVerificationActions';
 
 export interface ApplicationStatusResult {
     found: boolean;
@@ -191,17 +190,14 @@ export async function createNewApplication(
     applicationForm: 'P' | 'E' | '' = '',
     /** 治療階段：'B' 治療前 / 'A' 治療後 / 'X' 治療前後（必填） */
     treatmentPhase: 'B' | 'A' | 'X' | '' = '',
-    emailVerificationToken: string = '',
-    referralEmailVerificationToken: string = '',
+    _emailVerificationToken: string = '',
+    _referralEmailVerificationToken: string = '',
 ): Promise<{ success: boolean; caseId?: string; error?: string }> {
-    // Email 必填驗證（核銷階段需自動寄領款收據至此信箱）
+    const isEconomicWeak = subsidySubtype === '1';
+    // 內部新增案件不需 Email 驗證；經濟弱勢主要聯繫轉介單位，申請人 Email 可空白。
     const trimmedEmail = (email ?? '').trim();
-    if (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+    if (!isEconomicWeak && (!trimmedEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail))) {
         return { success: false, error: '請填寫有效的 Email 地址' };
-    }
-    // 申請人電話必填
-    if (!(await verifyEmailVerificationToken(trimmedEmail, 'applicant_application', emailVerificationToken))) {
-        return { success: false, error: '請先完成申請人 Email 驗證' };
     }
     const trimmedPhone = (applicantPhone ?? '').trim();
     if (!trimmedPhone) {
@@ -242,9 +238,6 @@ export async function createNewApplication(
         const referralEmail = referralInfo?.contactEmail?.trim() ?? '';
         if (!referralEmail || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(referralEmail)) {
             return { success: false, error: '轉介申請須填寫有效的轉介人 Email' };
-        }
-        if (!(await verifyEmailVerificationToken(referralEmail, 'referral_application', referralEmailVerificationToken))) {
-            return { success: false, error: '請先完成轉介人 Email 驗證' };
         }
         if (hasUnitId) effectiveUnitId = String(referralUnitId);
     }
@@ -290,11 +283,13 @@ export async function createNewApplication(
             }
         }
 
-        if (applicantId) {
+        const applicantEmailForDb = trimmedEmail || null;
+
+        if (applicantId && applicantEmailForDb) {
             // Existing applicant — refresh email (they may be re-applying with updated contact)
             await client.query(
                 `UPDATE users SET email = $1 WHERE id = $2::bigint`,
-                [trimmedEmail, applicantId]
+                [applicantEmailForDb, applicantId]
             );
         }
 
@@ -342,7 +337,7 @@ export async function createNewApplication(
                 generatedAccount, passHash, saltBuffer,
                 nameEnc, nameIv, nameBidx,
                 idEnc, idIv, idBidx,
-                trimmedEmail,
+                applicantEmailForDb,
             ]);
             applicantId = newU.rows[0].id;
             
@@ -552,6 +547,7 @@ export async function fetchCaseSummaries(
                 assignedBoardGroupId: row.board_group_id != null ? String(row.board_group_id) : null,
                 subsidySubtype: (row.subsidy_subtype === '1' || row.subsidy_subtype === '2')
                     ? row.subsidy_subtype : null,
+                statusCode: dbStatus,
             };
         });
     } catch (err) {

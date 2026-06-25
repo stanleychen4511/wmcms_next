@@ -43,7 +43,7 @@ export interface DocumentEntry {
     label: string; // Display name
     status: '0' | '1' | '2'; // 0=待上傳/未符合, 1=符合, 2=逾期
     fileUrl?: string; // the database file_path
-    files?: { rowId: string; fileUrl: string; uploadedAt?: string; status: '0' | '1' | '2'; rejectReason?: string }[];
+    files?: { rowId: string; fileUrl: string; uploadedAt?: string; status: '0' | '1' | '2'; rejectReason?: string; isCurrent?: boolean; archiveNote?: string | null }[];
     rejectReason?: string;
     uploadedAt?: string;
     isRequired: boolean;
@@ -272,7 +272,7 @@ function sanitizeForFilename(str: string): string {
  *   scope='C' → disbursementId 必須為 null/undefined（case-level）
  *   scope='D' → disbursementId 必須非 null（disbursement-level），且依文件類型強制角色 + review_stage：
  *     id=18 領款收據：case_officer + review_stage='1'
- *     id=17 醫療收據：case_officer + review_stage='1'
+ *     id=17 醫療收據：case_officer + review_stage='1'，或已完成未繳款領據由該案承辦/admin 補正式收據
  *
  * 若 disbursementId 提供 → 需傳入 operatorUserId 以做角色檢查。
  */
@@ -299,18 +299,26 @@ async function checkDocumentScopeAndRole(
     }
     if (scope === 'C') return { ok: true };
 
-    // scope='D'：必須有 operator + 取得撥款的 review_stage
+    // scope='D'：必須有 operator + 取得撥款狀態
     if (!operatorUserId) {
         return { ok: false, error: '上傳 disbursement-level 文件需要 operatorUserId' };
     }
     const disbRes = await client.query(
-        `SELECT review_stage FROM payment_disbursements WHERE id = $1`,
+        `SELECT pd.review_stage,
+                pd.medical_receipt_status,
+                pd.official_receipt_replaced_at,
+                pd.official_receipt_accountant_confirmed_at,
+                a.officer_id::text AS officer_id
+           FROM payment_disbursements pd
+           JOIN applications a ON a.id = pd.application_id
+          WHERE pd.id = $1`,
         [disbursementId]
     );
     if (disbRes.rows.length === 0) {
         return { ok: false, error: '撥款不存在' };
     }
-    const stage: string = disbRes.rows[0].review_stage;
+    const disb = disbRes.rows[0];
+    const stage: string = disb.review_stage;
 
     const rolesRes = await client.query(
         `SELECT r.code FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1`,
@@ -323,10 +331,18 @@ async function checkDocumentScopeAndRole(
         if (!roles.has('case_officer')) return { ok: false, error: '只有個管師可上傳領款收據' };
         if (stage !== '1') return { ok: false, error: '僅個管階段（review_stage=1）可上傳領款收據' };
     }
-    // 醫療收據（id=17）：個管階段
+    // 醫療收據（id=17）：個管階段；或完成後由該案承辦/admin 將未繳款領據補為正式收據
     if (Number(documentId) === 17) {
-        if (!roles.has('case_officer')) return { ok: false, error: '只有個管師可上傳醫療收據' };
-        if (stage !== '1') return { ok: false, error: '僅個管階段（review_stage=1）可上傳醫療收據' };
+        const canUploadAtOfficerStage = stage === '1' && roles.has('case_officer');
+        const canReplaceAfterCompleted = stage === '9'
+            && (
+                disb.medical_receipt_status === 'unpaid'
+                || (disb.official_receipt_replaced_at && !disb.official_receipt_accountant_confirmed_at)
+            )
+            && (roles.has('admin') || (roles.has('case_officer') && disb.officer_id === operatorUserId));
+        if (!canUploadAtOfficerStage && !canReplaceAfterCompleted) {
+            return { ok: false, error: '僅個管階段可上傳醫療收據；已完成且待補正/待確認的醫療收據僅限該案承辦修正' };
+        }
     }
     return { ok: true };
 }
@@ -533,7 +549,17 @@ export async function linkApplicationDocumentByUrl(
             try {
                 await writeClient.query('BEGIN');
                 if (replaceExisting) {
-                    if (disbursementId) {
+                    if (disbursementId && Number(documentId) === 17) {
+                        await writeClient.query(
+                            `UPDATE application_documents
+                             SET is_current = FALSE,
+                                 archive_note = COALESCE(archive_note, '已由重新上傳的醫療收據取代')
+                             WHERE application_id = $1 AND id = $2 AND disbursement_id = $3
+                               AND file_path IS NOT NULL
+                               AND COALESCE(is_current, TRUE) = TRUE`,
+                            [applicationId, documentId, disbursementId]
+                        );
+                    } else if (disbursementId) {
                         await writeClient.query(
                             `DELETE FROM application_documents
                              WHERE application_id = $1 AND id = $2 AND disbursement_id = $3`,

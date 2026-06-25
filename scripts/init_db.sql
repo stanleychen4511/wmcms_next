@@ -170,6 +170,8 @@ CREATE TABLE IF NOT EXISTS application_documents (
     reject_reason   TEXT,
     uploaded_at     TIMESTAMPTZ,
     pages           INT,
+    is_current      BOOLEAN NOT NULL DEFAULT TRUE,
+    archive_note    TEXT,
     PRIMARY KEY (application_id, id)
 );
 
@@ -735,6 +737,17 @@ BEGIN
 END $$;
 COMMENT ON COLUMN payment_disbursements.medical_receipt_status IS '醫療收據狀態：official=正式收據；unpaid=未繳款領據';
 
+-- 7f-1e. payment_disbursements 正式收據補換與會計確認（2026-06）
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS official_receipt_replaced_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS official_receipt_replaced_by BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS official_receipt_accountant_confirmed_at TIMESTAMPTZ,
+    ADD COLUMN IF NOT EXISTS official_receipt_accountant_confirmed_by BIGINT REFERENCES users(id) ON DELETE SET NULL;
+COMMENT ON COLUMN payment_disbursements.official_receipt_replaced_at IS '未繳款領據於撥款完成後補換正式收據的時間';
+COMMENT ON COLUMN payment_disbursements.official_receipt_replaced_by IS '補換正式收據的使用者 ID';
+COMMENT ON COLUMN payment_disbursements.official_receipt_accountant_confirmed_at IS '會計確認正式收據補換的時間';
+COMMENT ON COLUMN payment_disbursements.official_receipt_accountant_confirmed_by IS '確認正式收據補換的會計使用者 ID';
+
 -- 7f-2. payment_disbursements 多層審核欄位（#12，added 2026-04）
 ALTER TABLE payment_disbursements
     ADD COLUMN IF NOT EXISTS review_stage CHAR(1) NOT NULL DEFAULT '9'
@@ -813,6 +826,10 @@ ALTER TABLE application_documents
 -- 加 row_id 代理鍵（已存在則略過）並用它替換複合 PK（冪等）
 ALTER TABLE application_documents
     ADD COLUMN IF NOT EXISTS row_id BIGSERIAL;
+
+ALTER TABLE application_documents
+    ADD COLUMN IF NOT EXISTS is_current BOOLEAN NOT NULL DEFAULT TRUE,
+    ADD COLUMN IF NOT EXISTS archive_note TEXT;
 DO $$
 BEGIN
     IF EXISTS (
@@ -846,6 +863,8 @@ CREATE INDEX IF NOT EXISTS idx_app_docs_disbursement_id
 
 COMMENT ON COLUMN application_documents.disbursement_id IS '若文件 scope=D（如醫療收據、領款收據），指向對應 payment_disbursements；scope=C 則為 NULL';
 COMMENT ON COLUMN application_documents.row_id          IS 'Surrogate primary key（取代原複合 PK），讓 disbursement-level 文件可同 (app_id, id) 多筆';
+COMMENT ON COLUMN application_documents.is_current      IS '是否為目前採用版本；重新上傳時舊檔保留但標示為歷史版本';
+COMMENT ON COLUMN application_documents.archive_note    IS '歷史版本註記（例如：已由正式收據取代）';
 
 -- 9b. home_visit: 訪視者資訊 + 照片（added 2026-04）
 ALTER TABLE home_visit ADD COLUMN IF NOT EXISTS visitor_title TEXT;
@@ -1145,10 +1164,10 @@ INSERT INTO notification_templates (name, channel, subject, body, description, s
 SELECT * FROM (VALUES
     ('line_case_entered_board_review', 'line', '',
      E'【萬美基金會】新案件待派組\n案號：{{案號}}\n申請人：{{申請人}}\n申請金額：NT$ {{申請金額}}\n\n本案已進入董事審核階段，請至系統儘速指派董事組。\n{{系統連結}}',
-     '系統範本：案件進入 board_review 時通知董事長（LINE）', 1, 100),
+     '系統範本：案件進入董事審核階段時通知董事長（LINE）', 1, 100),
     ('email_case_entered_board_review', 'email', '【萬美基金會】新案件待派組',
      E'董事長 您好：\n\n以下案件已進入「董事審核」階段，請儘速於系統指派董事組進行審查：\n\n案號：{{案號}}\n申請人：{{申請人}}\n申請金額：NT$ {{申請金額}}\n\n系統連結：{{系統連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
-     '系統範本：案件進入 board_review 時通知董事長（Email）', 1, 101),
+     '系統範本：案件進入董事審核階段時通知董事長（Email）', 1, 101),
     ('line_case_assigned_to_board_group', 'line', '',
      E'【萬美基金會】您所屬組別有新案件待審\n組別：{{組別名稱}}\n案號：{{案號}}\n申請人：{{申請人}}\n\n請至系統完成審查與簽章。\n{{系統連結}}',
      '系統範本：案件派組時通知該組成員（LINE）', 1, 102),
@@ -1157,7 +1176,7 @@ SELECT * FROM (VALUES
      '系統範本：案件派組時通知該組成員（Email）', 1, 103),
     ('email_case_payment_receipt_to_applicant', 'email', '萬美基金會申請通過通知',
      E'{{申請人}} 您好：\n\n您所申請的補助案件已通過董事審核，特此通知。\n\n案號：{{案號}}\n申請金額：NT$ {{申請金額}}\n核定金額：NT$ {{核定金額}}\n\n請列印附件之「領款收據」，填寫具領人資料、簽名後郵寄回基金會以辦理撥款。\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
-     '系統範本：個管師於每筆撥款手動產生並寄送領款收據 PDF 給申請人（refine-disbursement-flow 起改為手動觸發）', 1, 104),
+     '系統範本：個管師於每筆撥款手動產生並寄送領款收據 PDF 給申請人', 1, 104),
     -- refine-disbursement-flow：撥款完成通知（站內 + Email + LINE）
     ('email_disbursement_completed', 'email', '萬美基金會撥款完成通知',
      E'{{申請人}} 您好：\n\n您所申請的補助案件當次撥款已完成發放。\n\n案號：{{案號}}\n本次撥款金額：NT$ {{本次撥款金額}}\n累計已撥金額：NT$ {{累計撥款金額}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
@@ -1168,6 +1187,37 @@ SELECT * FROM (VALUES
 ) AS v(name, channel, subject, body, description, status, sort_order)
 WHERE NOT EXISTS (
     SELECT 1 FROM notification_templates t WHERE t.name = v.name
+);
+
+-- 既有環境若已建立系統範本，僅同步人看的說明文字；name 保留為系統查找 key。
+UPDATE notification_templates
+SET description = '系統範本：案件進入董事審核階段時通知董事長（LINE）'
+WHERE name = 'line_case_entered_board_review'
+  AND description IS DISTINCT FROM '系統範本：案件進入董事審核階段時通知董事長（LINE）';
+
+UPDATE notification_templates
+SET description = '系統範本：案件進入董事審核階段時通知董事長（Email）'
+WHERE name = 'email_case_entered_board_review'
+  AND description IS DISTINCT FROM '系統範本：案件進入董事審核階段時通知董事長（Email）';
+
+UPDATE notification_templates
+SET description = '系統範本：個管師於每筆撥款手動產生並寄送領款收據 PDF 給申請人'
+WHERE name = 'email_case_payment_receipt_to_applicant'
+  AND description IS DISTINCT FROM '系統範本：個管師於每筆撥款手動產生並寄送領款收據 PDF 給申請人';
+
+INSERT INTO notification_templates (name, channel, subject, body, description, status, sort_order)
+SELECT
+    'email_case_disbursement_approval_to_applicant',
+    'email',
+    '萬美基金會申請通過通知',
+    E'{{申請人}} 您好：\n\n您所申請的補助案件已通過董事審核，特此通知。\n\n本次撥款金額：{{本次撥款金額}}\n\n後續撥款流程將由基金會人員協助辦理。\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+    '系統範本：個管師於撥款階段寄送申請通過通知給申請人',
+    1,
+    104
+WHERE NOT EXISTS (
+    SELECT 1
+    FROM notification_templates
+    WHERE name = 'email_case_disbursement_approval_to_applicant'
 );
 
 -- ── 檔案儲存位置 ──────────────────────────────────────────────

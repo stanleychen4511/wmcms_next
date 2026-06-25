@@ -17,10 +17,22 @@ import { fetchDocumentTypeConfigs, type DocumentTypeConfig } from '../app/action
 import { uploadFileToBlob } from '../lib/uploadClient';
 import { EmailVerificationControl } from './EmailVerificationControl';
 import { DateInput } from './DateInput';
+import { ModalEscapeListener } from '../hooks/useModalDismiss';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type Step = 'landing' | 'query' | 'checking' | 'ineligible' | 'form' | 'submitting' | 'success';
+type BrowserStep = Exclude<Step, 'checking' | 'submitting'>;
+type ExternalIntakeHistoryState = {
+    __wmcmsApply: true;
+    step: BrowserStep;
+};
+
+const BROWSER_STEPS = new Set<BrowserStep>(['landing', 'query', 'ineligible', 'form', 'success']);
+
+function isBrowserStep(step: unknown): step is BrowserStep {
+    return typeof step === 'string' && BROWSER_STEPS.has(step as BrowserStep);
+}
 
 interface DocFile {
     docId: string;
@@ -124,7 +136,63 @@ function StepIndicator({ current }: { current: number }) {
 
 // ─── Document Upload Row ──────────────────────────────────────────────────────
 
-function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (files: File[] | null) => void }) {
+function DocumentTooltipButton({ text, onOpen }: { text: string; onOpen: (text: string) => void }) {
+    return (
+        <button
+            type="button"
+            onClick={e => {
+                e.stopPropagation();
+                onOpen(text);
+            }}
+            className="group relative ml-1 inline-flex align-middle text-slate-400 hover:text-amber-600 focus:outline-none"
+            aria-label="檢視文件提示"
+        >
+            <Info className="w-3.5 h-3.5" />
+            <span className="pointer-events-none absolute left-1/2 top-full z-30 mt-1 hidden w-64 -translate-x-1/2 whitespace-pre-wrap rounded-md border border-slate-200 bg-white px-3 py-2 text-left text-xs font-normal leading-relaxed text-slate-700 shadow-lg group-hover:block group-focus-visible:block">
+                {text}
+            </span>
+        </button>
+    );
+}
+
+function DocumentTooltipDialog({ text, onClose }: { text: string; onClose: () => void }) {
+    return (
+        <div
+            className="fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-4"
+            onClick={onClose}
+        >
+            <ModalEscapeListener onClose={onClose} />
+            <div
+                className="bg-white rounded-2xl shadow-2xl p-6 w-full max-w-md"
+                onClick={e => e.stopPropagation()}
+            >
+                <div className="flex items-start justify-between gap-4 mb-3">
+                    <h4 className="font-bold text-slate-800 text-lg">文件提示</h4>
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="p-1 text-slate-400 hover:text-red-500 hover:bg-red-50 rounded-lg transition"
+                        aria-label="關閉"
+                    >
+                        <X className="w-5 h-5" />
+                    </button>
+                </div>
+                <p className="whitespace-pre-wrap text-sm leading-relaxed text-slate-700">{text}</p>
+                <div className="flex justify-end mt-5">
+                    <button
+                        type="button"
+                        onClick={onClose}
+                        className="px-4 py-2 text-sm font-medium bg-slate-900 text-white rounded-lg hover:bg-slate-800 transition"
+                    >
+                        知道了
+                    </button>
+                </div>
+            </div>
+        </div>
+    );
+}
+
+function DocUploadRow({ doc, onChange, onOpenTooltip }: { doc: DocFile; onChange: (files: File[] | null) => void; onOpenTooltip: (text: string) => void }) {
     const inputRef = useRef<HTMLInputElement>(null);
     const isUploading = doc.uploadStatus === 'uploading';
     const isError = doc.uploadStatus === 'error';
@@ -134,12 +202,10 @@ function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (files: File[
         <div className="py-2.5 border-b border-gray-100 last:border-0">
             <div className="flex items-center gap-3">
                 <div className="flex-1 min-w-0">
-                    <span className="text-sm font-medium text-gray-700">
-                        {doc.label}
+                    <span className="text-sm font-medium text-gray-700 inline-flex items-center min-w-0">
+                        <span className="truncate">{doc.label}</span>
                         {doc.tooltipText && (
-                            <span className="ml-1 inline-flex align-middle text-slate-400" title={doc.tooltipText}>
-                                <Info className="w-3.5 h-3.5" />
-                            </span>
+                            <DocumentTooltipButton text={doc.tooltipText} onOpen={onOpenTooltip} />
                         )}
                     </span>
                     {doc.required && !doc.allowSupplement && (
@@ -235,6 +301,9 @@ function DocUploadRow({ doc, onChange }: { doc: DocFile; onChange: (files: File[
 
 export function ExternalIntake() {
     const [step, setStep] = useState<Step>('landing');
+    const [historyHydrated, setHistoryHydrated] = useState(false);
+    const [browserNavReloadToken, setBrowserNavReloadToken] = useState(0);
+    const applyingBrowserStepRef = useRef(false);
     const [email, setEmail] = useState('');
     const [emailVerificationToken, setEmailVerificationToken] = useState('');
     const [applicantPhone, setApplicantPhone] = useState('');
@@ -254,11 +323,38 @@ export function ExternalIntake() {
     /** 各子類型補助上限（依 115 辦法）；未選子類型時 UI 顯示用兩者較大值 */
     const [subtypeMaxAmounts, setSubtypeMaxAmounts] = useState<Record<'1' | '2', number>>({ '1': 30000, '2': 350000 });
     useEffect(() => {
-        import('../app/actions/eligibilityRulesActions')
-            .then(m => m.fetchSubsidyAmountLimitsMap())
-            .then(setSubtypeMaxAmounts)
-            .catch(err => console.error('fetchSubsidyAmountLimitsMap error:', err));
+        const initialState: ExternalIntakeHistoryState = { __wmcmsApply: true, step: 'landing' };
+        window.history.replaceState(initialState, '', window.location.href);
+        setHistoryHydrated(true);
     }, []);
+
+    useEffect(() => {
+        const onPopState = (event: PopStateEvent) => {
+            const state = event.state as Partial<ExternalIntakeHistoryState> | null;
+            if (!state || state.__wmcmsApply !== true || !isBrowserStep(state.step)) return;
+            applyingBrowserStepRef.current = true;
+            setBrowserNavReloadToken(n => n + 1);
+            setStep(state.step);
+        };
+        window.addEventListener('popstate', onPopState);
+        return () => window.removeEventListener('popstate', onPopState);
+    }, []);
+
+    useEffect(() => {
+        if (!historyHydrated || !isBrowserStep(step)) return;
+
+        const nextState: ExternalIntakeHistoryState = { __wmcmsApply: true, step };
+        if (applyingBrowserStepRef.current) {
+            applyingBrowserStepRef.current = false;
+            window.history.replaceState(nextState, '', window.location.href);
+            return;
+        }
+
+        const current = window.history.state as ExternalIntakeHistoryState | null;
+        if (current?.__wmcmsApply === true && current.step === step) return;
+        window.history.pushState(nextState, '', window.location.href);
+    }, [historyHydrated, step]);
+
     const [ineligibleReason, setIneligibleReason] = useState('');
     const [activeApplicationStatus, setActiveApplicationStatus] = useState<{ caseNumber: string; progress: string } | null>(null);
     const [errorMsg, setErrorMsg] = useState('');
@@ -278,13 +374,8 @@ export function ExternalIntake() {
     const [qualFormValues, setQualFormValues] = useState<ApplicantFormValues>(DEFAULT_QUALIFICATION);
     const [documentConfigs, setDocumentConfigs] = useState<DocumentTypeConfig[]>([]);
     const [docs, setDocs] = useState<DocFile[]>([]);
+    const [tooltipDialog, setTooltipDialog] = useState<string | null>(null);
     const [quota, setQuota] = useState<ApplicantQuota | null>(null);
-
-    useEffect(() => {
-        fetchDocumentTypeConfigs()
-            .then(setDocumentConfigs)
-            .catch(err => console.error('fetchDocumentTypeConfigs error:', err));
-    }, []);
 
     useEffect(() => {
         const selectedSubtype = qualFormValues.subsidyType;
@@ -306,7 +397,22 @@ export function ExternalIntake() {
                 uploadProgress: 0,
                 tooltipText: c.tooltip_text,
             }));
-        setDocs(applyDocs);
+        setDocs(prevDocs => applyDocs.map(doc => {
+            const prev = prevDocs.find(p => p.docId === doc.docId);
+            return prev
+                ? {
+                    ...doc,
+                    file: prev.file,
+                    files: prev.files,
+                    uploadStatus: prev.uploadStatus,
+                    uploadProgress: prev.uploadProgress,
+                    url: prev.url,
+                    mimeType: prev.mimeType,
+                    size: prev.size,
+                    errorMsg: prev.errorMsg,
+                }
+                : doc;
+        }));
     }, [documentConfigs, qualFormValues.subsidyType]);
 
     /** 資格判定狀態：null = 尚未執行；checked + eligible 兩段式 */
@@ -316,13 +422,30 @@ export function ExternalIntake() {
 
     /** 後台設定的萬美聯絡方式（LINE 官方帳號 + 電話 + QR code） */
     const [orgContact, setOrgContact] = useState<{ lineId: string; phone: string; qrUrl: string }>({ lineId: '', phone: '', qrUrl: '' });
-    useEffect(() => {
-        Promise.all([
-            fetchSetting('line_official_account_id', ''),
-            fetchSetting('org_phone', ''),
-            fetchSetting('org_line_qr_url', ''),
-        ]).then(([lineId, phone, qrUrl]) => setOrgContact({ lineId, phone, qrUrl }));
+    const reloadReferenceData = useCallback(async () => {
+        const [limits, configs, contact] = await Promise.all([
+            import('../app/actions/eligibilityRulesActions').then(m => m.fetchSubsidyAmountLimitsMap()),
+            fetchDocumentTypeConfigs(),
+            Promise.all([
+                fetchSetting('line_official_account_id', ''),
+                fetchSetting('org_phone', ''),
+                fetchSetting('org_line_qr_url', ''),
+            ]),
+        ]);
+        setSubtypeMaxAmounts(limits);
+        setDocumentConfigs(configs);
+        const [lineId, phone, qrUrl] = contact;
+        setOrgContact({ lineId, phone, qrUrl });
     }, []);
+
+    useEffect(() => {
+        reloadReferenceData().catch(err => console.error('reload external intake reference data error:', err));
+    }, [reloadReferenceData]);
+
+    useEffect(() => {
+        if (browserNavReloadToken === 0) return;
+        reloadReferenceData().catch(err => console.error('reload external intake reference data on browser navigation error:', err));
+    }, [browserNavReloadToken, reloadReferenceData]);
 
     /** 動態計算當前 form 適用的最大值：選了子類型就用該值，否則取較大者 */
     const maxApplyAmount = (() => {
@@ -766,6 +889,7 @@ export function ExternalIntake() {
             requiredDocsMissing.length === 0 &&
             !hasInflightUploads &&
             !hasFailedUploads;
+        const isEconomicWeak = qualFormValues.subsidyType === '1';
 
         const handleSubmit = async () => {
             if (!canSubmit) return;
@@ -777,7 +901,9 @@ export function ExternalIntake() {
             // 申請人電話 / 出生年月日 / 癌別 / 期數 必填
             let formOk = true;
             const trimmedEmail = email.trim();
-            if (!trimmedEmail) {
+            if (isEconomicWeak) {
+                setErrorMsg('');
+            } else if (!trimmedEmail) {
                 setErrorMsg('請填寫申請人 Email');
                 formOk = false;
             } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
@@ -786,7 +912,7 @@ export function ExternalIntake() {
             } else {
                 setErrorMsg('');
             }
-            if (!emailVerificationToken) {
+            if (!isEconomicWeak && !emailVerificationToken) {
                 setErrorMsg('請先完成申請人 Email 驗證');
                 formOk = false;
             }
@@ -825,8 +951,8 @@ export function ExternalIntake() {
             const fd = new FormData();
             fd.append('name', name.trim());
             fd.append('idNumber', idNumber);
-            fd.append('email', email);
-            fd.append('email_verification_token', emailVerificationToken);
+            fd.append('email', isEconomicWeak ? '' : trimmedEmail);
+            fd.append('email_verification_token', isEconomicWeak ? '' : emailVerificationToken);
             fd.append('applicant_phone', applicantPhone.trim());
             fd.append('applicant_dob', applicantDob.trim());
             fd.append('cancer_type', cancerType.trim());
@@ -915,14 +1041,6 @@ export function ExternalIntake() {
                                     placeholder="請輸入真實姓名"
                                     className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
                                 />
-                                <EmailVerificationControl
-                                    email={email}
-                                    purpose="applicant_application"
-                                    verifiedToken={emailVerificationToken}
-                                    onVerified={setEmailVerificationToken}
-                                    onReset={() => setEmailVerificationToken('')}
-                                    label="申請人 Email"
-                                />
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-1">身分證字號</label>
@@ -933,19 +1051,29 @@ export function ExternalIntake() {
                                     className="w-full border border-gray-200 bg-gray-50 rounded-md px-3 py-2 text-sm font-mono text-gray-500 cursor-not-allowed"
                                 />
                             </div>
-                            <div className="md:col-span-2">
-                                <label className="block text-sm font-medium text-gray-700 mb-1">
-                                    申請人 Email <span className="text-red-500">*</span>
-                                </label>
-                                <input
-                                    type="email"
-                                    value={email}
-                                    onChange={e => { setEmail(e.target.value); setErrorMsg(''); }}
-                                    placeholder="applicant@example.com"
-                                    className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                                />
-                                <p className="text-xs text-slate-400 mt-1">案件通知與後續聯絡會寄至此信箱。</p>
-                            </div>
+                            {!isEconomicWeak && (
+                                <div className="md:col-span-2">
+                                    <label className="block text-sm font-medium text-gray-700 mb-1">
+                                        申請人 Email <span className="text-red-500">*</span>
+                                    </label>
+                                    <input
+                                        type="email"
+                                        value={email}
+                                        onChange={e => { setEmail(e.target.value); setErrorMsg(''); }}
+                                        placeholder="applicant@example.com"
+                                        className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+                                    />
+                                    <EmailVerificationControl
+                                        email={email}
+                                        purpose="applicant_application"
+                                        verifiedToken={emailVerificationToken}
+                                        onVerified={setEmailVerificationToken}
+                                        onReset={() => setEmailVerificationToken('')}
+                                        label="申請人 Email"
+                                    />
+                                    <p className="text-xs text-slate-400 mt-1">案件通知與後續聯絡會寄至此信箱。</p>
+                                </div>
+                            )}
                             <div className="md:col-span-2">
                                 <label className="block text-sm font-medium text-gray-700 mb-1">
                                     聯絡電話 <span className="text-red-500">*</span>
@@ -977,9 +1105,7 @@ export function ExternalIntake() {
                                         setApplicantDob(value);
                                         setApplicantDobError('');
                                         const age = calculateAgeFromDob(value);
-                                        if (age !== null) {
-                                            setQualFormValues(prev => ({ ...prev, age }));
-                                        }
+                                        setQualFormValues(prev => ({ ...prev, age: age ?? 0 }));
                                     }}
                                     className={[
                                         'w-full border rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2',
@@ -1256,6 +1382,7 @@ export function ExternalIntake() {
                             onValidation={handleQualValidation}
                             readOnly={step === 'submitting'}
                             subtypeMaxAmounts={subtypeMaxAmounts}
+                            lockAge={true}
                         />
                         {/* #4：手動「資格判定」按鈕 + 結果顯示（必須通過才能上傳文件） */}
                         <div className="mt-4 space-y-2">
@@ -1372,6 +1499,7 @@ export function ExternalIntake() {
                                     key={doc.field}
                                     doc={doc}
                                     onChange={files => updateDoc(doc.field, files)}
+                                    onOpenTooltip={setTooltipDialog}
                                 />
                             ))}
                         </div>
@@ -1445,6 +1573,12 @@ export function ExternalIntake() {
                         </button>
                     </div>
                 </div>
+                {tooltipDialog && (
+                    <DocumentTooltipDialog
+                        text={tooltipDialog}
+                        onClose={() => setTooltipDialog(null)}
+                    />
+                )}
             </div>
         );
     }

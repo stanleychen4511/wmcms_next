@@ -11,6 +11,7 @@ import {
     sendNotificationEmail,
 } from '../app/actions/notificationActions';
 import { applyPlaceholders } from '../lib/notificationUtils';
+import { getNotificationTemplateLabel } from '../lib/systemTemplates';
 import { isApplicationInPendingDocState } from '../app/actions/pendingDocAlertActions';
 import { useModalDismiss } from '../hooks/useModalDismiss';
 
@@ -131,7 +132,11 @@ export function SendNotificationModal({
             setStaffRecipients(rRes.data);
             setBccRecipients(new Set(rRes.data.map(r => r.user_id)));
         }
-        if (aRes.success && aRes.data) setApplicantRecipient(aRes.data);
+        if (aRes.success && aRes.data) {
+            const recipient = aRes.data;
+            setApplicantRecipient(recipient);
+            setSelectedRecipients(prev => new Set(prev).add(recipient.user_id));
+        }
         if (pdRes.success) setIsPendingDocReminder(!!pdRes.data);
         setLoadingInit(false);
     }, [applicationId]);
@@ -354,7 +359,7 @@ export function SendNotificationModal({
                             >
                                 <option value="">（不使用範本，自行填寫）</option>
                                 {templates.filter(t => t.channel === 'email').map(t => (
-                                    <option key={t.id} value={t.id}>{t.name}</option>
+                                    <option key={t.id} value={t.id}>{getNotificationTemplateLabel(t.name)}</option>
                                 ))}
                             </select>
                             <p className="text-xs text-slate-400 mt-1">套用後仍可自由修改主旨與內文</p>
@@ -403,8 +408,12 @@ export function SendNotificationModal({
                                             <div>
                                                 <div className="px-4 py-1.5 bg-amber-50 border-b border-amber-100 flex items-center gap-1.5">
                                                     <UserCircle className="w-3 h-3 text-amber-500" />
-                                                    <span className="text-xs font-semibold text-amber-700">申請人</span>
-                                                    <span className="text-xs text-amber-500 ml-1">（本案）</span>
+                                                    <span className="text-xs font-semibold text-amber-700">
+                                                        {applicantRecipient.is_referral ? '轉介窗口' : '申請人'}
+                                                    </span>
+                                                    <span className="text-xs text-amber-500 ml-1">
+                                                        {applicantRecipient.is_referral ? '（經濟弱勢主要聯繫窗口）' : '（本案）'}
+                                                    </span>
                                                 </div>
                                                 <div className="flex items-center gap-3 px-4 py-2.5 hover:bg-amber-50 transition border-b border-slate-100">
                                                     <input

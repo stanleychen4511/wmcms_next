@@ -194,6 +194,31 @@ export async function fetchMyTurnCases(operatorUserId: string): Promise<MyTurnRe
                 });
             }
 
+            const r4c = await client.query(
+                `SELECT DISTINCT a.id::text AS app_id, a.case_number,
+                        u.name_enc, u.name_iv
+                 FROM board_reconsideration_requests brr
+                 JOIN applications a ON a.id = brr.application_id
+                 JOIN users u ON u.id = a.applicant_id
+                 LEFT JOIN LATERAL (
+                     SELECT stage FROM application_workflow
+                     WHERE application_id = a.id
+                     ORDER BY id DESC LIMIT 1
+                 ) w ON TRUE
+                 WHERE a.status = '3'
+                   AND w.stage = 'reimbursement'
+                   AND brr.status = 'pending_supervisor'`,
+                []
+            );
+            for (const row of r4c.rows) {
+                items.push({
+                    applicationId: row.app_id,
+                    caseNumber: row.case_number,
+                    applicantName: decryptName(row.name_enc, row.name_iv),
+                    reasonText: '主管審核（退回董事再次審核）',
+                });
+            }
+
             // board_review 階段、簽核完成、待 supervisor 推進到核銷
             //   - 所有派組成員都已簽（signature_data_url 非空）
             //   - 派組成員意見一致 OR 不一致但董事長已簽（第三審）
@@ -355,6 +380,26 @@ export async function fetchMyTurnCases(operatorUserId: string): Promise<MyTurnRe
                     caseNumber: row.case_number,
                     applicantName: decryptName(row.name_enc, row.name_iv),
                     reasonText: '會計核對核銷',
+                });
+            }
+
+            const r6b = await client.query(
+                `SELECT DISTINCT a.id::text AS app_id, a.case_number,
+                        u.name_enc, u.name_iv
+                 FROM payment_disbursements pd
+                 JOIN applications a ON a.id = pd.application_id
+                 JOIN users u ON u.id = a.applicant_id
+                 WHERE pd.review_stage = '9'
+                   AND pd.official_receipt_replaced_at IS NOT NULL
+                   AND pd.official_receipt_accountant_confirmed_at IS NULL`,
+                []
+            );
+            for (const row of r6b.rows) {
+                items.push({
+                    applicationId: row.app_id,
+                    caseNumber: row.case_number,
+                    applicantName: decryptName(row.name_enc, row.name_iv),
+                    reasonText: '正式收據更新待確認',
                 });
             }
         }

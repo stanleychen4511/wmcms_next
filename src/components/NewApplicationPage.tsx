@@ -6,7 +6,6 @@ import { AppHeader } from './AppHeader';
 import { useToast } from './FloatingToast';
 import { ApplicationForm } from './ApplicationForm';
 import { ContactSearchModal } from './ContactSearchModal';
-import { EmailVerificationControl } from './EmailVerificationControl';
 import { DateInput } from './DateInput';
 import type { ApplicantFormValues } from '../schemas/applicant';
 
@@ -153,7 +152,6 @@ export function NewApplicationPage({
     const [name, setName] = useState('');
     const [idNumber, setIdNumber] = useState('');
     const [email, setEmail] = useState('');
-    const [emailVerificationToken, setEmailVerificationToken] = useState('');
     const [emailError, setEmailError] = useState('');
     const [applicantPhone, setApplicantPhone] = useState('');
     const [applicantPhoneError, setApplicantPhoneError] = useState('');
@@ -182,7 +180,6 @@ export function NewApplicationPage({
     const [referralContactTitle, setReferralContactTitle] = useState('');
     const [referralContactPhone, setReferralContactPhone] = useState('');
     const [referralContactEmail, setReferralContactEmail] = useState('');
-    const [referralEmailVerificationToken, setReferralEmailVerificationToken] = useState('');
     /** 4 個轉介必填欄位的個別錯誤訊息 */
     const [referralFieldErrors, setReferralFieldErrors] = useState<{
         unit?: string; name?: string; title?: string; phone?: string; email?: string;
@@ -359,14 +356,13 @@ export function NewApplicationPage({
             setNameError('');
         }
         const trimmedEmail = email.trim();
-        if (!trimmedEmail) {
+        if (subsidySubtype === '1') {
+            setEmailError('');
+        } else if (!trimmedEmail) {
             setEmailError('請填寫 Email');
             ok = false;
         } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
             setEmailError('請填寫有效的 Email 地址');
-            ok = false;
-        } else if (!emailVerificationToken) {
-            setEmailError('請先完成申請人 Email 驗證');
             ok = false;
         } else {
             setEmailError('');
@@ -452,9 +448,6 @@ export function NewApplicationPage({
                 errs.email = '承辦人 Email 必填';
             } else if (!/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(referralContactEmail.trim())) {
                 errs.email = '請填寫有效的承辦人 Email';
-            }
-            if (!errs.email && !referralEmailVerificationToken) {
-                errs.email = '請先完成承辦人 Email 驗證';
             }
             setReferralFieldErrors(errs);
             if (Object.keys(errs).length > 0) ok = false;
@@ -563,7 +556,7 @@ export function NewApplicationPage({
                 applyAmount === '' ? null : Number(applyAmount),
                 applicationWay,
                 effectiveReferralUnitId,
-                email.trim(),
+                subsidySubtype === '1' ? '' : email.trim(),
                 applicationWay === '2' ? {
                     unitName:     referralUnitName.trim() || undefined,
                     contactName:  referralContactName.trim() || undefined,
@@ -578,8 +571,8 @@ export function NewApplicationPage({
                 cancerStage.trim(),
                 applicationForm || '',
                 treatmentPhase || '',
-                emailVerificationToken,
-                applicationWay === '2' ? referralEmailVerificationToken : '',
+                '',
+                '',
             );
             if (res.success && res.caseId) {
                 // 寫入資格預審資料（婚姻 / 子女 / 收入 / 動產 / 不動產 / 經濟弱勢專屬）
@@ -836,40 +829,33 @@ export function NewApplicationPage({
                     {/* (申請類別已移至上方查詢區) */}
                     {/* (補助子類型已移至上方查詢區) */}
 
-                    {/* Email */}
-                    <div>
-                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                            申請人 Email
-                            <span className="text-red-500 ml-1">*</span>
-                        </label>
-                        <input
-                            type="email"
-                            value={email}
-                            onChange={e => { setEmail(e.target.value); setEmailError(''); }}
-                            placeholder="applicant@example.com"
-                            className={[
-                                'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
-                                emailError
-                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
-                                : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
-                            ].join(' ')}
-                        />
-                        <EmailVerificationControl
-                            email={email}
-                            purpose="applicant_application"
-                            verifiedToken={emailVerificationToken}
-                            onVerified={setEmailVerificationToken}
-                            onReset={() => setEmailVerificationToken('')}
-                            label="申請人 Email"
-                        />
-                        {emailError && (
-                            <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
-                                <XCircle className="w-3 h-3" />
-                                {emailError}
-                            </p>
-                        )}
-                        <p className="text-xs text-slate-400 mt-1">核銷階段將寄送領款收據至此信箱</p>
-                    </div>
+                    {subsidySubtype !== '1' && (
+                        <div>
+                            <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                                申請人 Email
+                                <span className="text-red-500 ml-1">*</span>
+                            </label>
+                            <input
+                                type="email"
+                                value={email}
+                                onChange={e => { setEmail(e.target.value); setEmailError(''); }}
+                                placeholder="applicant@example.com"
+                                className={[
+                                    'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
+                                    emailError
+                                        ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400',
+                                ].join(' ')}
+                            />
+                            {emailError && (
+                                <p className="text-xs text-red-500 mt-1 flex items-center gap-1">
+                                    <XCircle className="w-3 h-3" />
+                                    {emailError}
+                                </p>
+                            )}
+                            <p className="text-xs text-slate-400 mt-1">內部新增案件不需 Email 驗證。</p>
+                        </div>
+                    )}
 
                     {/* 申請人聯絡電話 */}
                     <div>
@@ -909,9 +895,7 @@ export function NewApplicationPage({
                                 setApplicantDob(value);
                                 setApplicantDobError('');
                                 const age = calculateAgeFromDob(value);
-                                if (age !== null) {
-                                    setQualFormValues(prev => ({ ...prev, age }));
-                                }
+                                setQualFormValues(prev => ({ ...prev, age: age ?? 0 }));
                             }}
                             className={[
                                 'w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition',
@@ -1033,12 +1017,13 @@ export function NewApplicationPage({
                             // 同步 econ/midclass 專屬欄位顯示。
                             key={subsidySubtype || 'unset'}
                             initialValues={{
-                                ...DEFAULT_QUAL,
+                                ...qualFormValues,
                                 subsidyType: subsidySubtype || undefined,
                             }}
                             onValidation={handleQualValidation}
                             subtypeMaxAmounts={subtypeMaxAmounts}
                             hideSubsidyType={true}  // 子類型由外層 radio 管
+                            lockAge={true}
                         />
 
                         {/* 資格判定按鈕 + 結果（仿外部收件） */}
@@ -1269,14 +1254,6 @@ export function NewApplicationPage({
                                                 }}
                                                 placeholder="例：social.worker@example.org"
                                                 className={`w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ${referralFieldErrors.email ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
-                                            />
-                                            <EmailVerificationControl
-                                                email={referralContactEmail}
-                                                purpose="referral_application"
-                                                verifiedToken={referralEmailVerificationToken}
-                                                onVerified={setReferralEmailVerificationToken}
-                                                onReset={() => setReferralEmailVerificationToken('')}
-                                                label="承辦人 Email"
                                             />
                                             {referralFieldErrors.email && (
                                                 <p className="text-xs text-red-500 mt-0.5">{referralFieldErrors.email}</p>

@@ -14,4 +14,22 @@ export const SYSTEM_TEMPLATE_NAMES = new Set<string>([
     'line_case_assigned_to_board_group',
     'email_case_assigned_to_board_group',
     'email_case_payment_receipt_to_applicant',
+    'email_case_disbursement_approval_to_applicant',
+    'line_disbursement_completed',
 ]);
+
+const TEMPLATE_LABELS: Record<string, string> = {
+    line_case_entered_board_review: 'LINE：新案件進入董事審核待派組',
+    email_case_entered_board_review: 'Email：新案件進入董事審核待派組',
+    line_case_assigned_to_board_group: 'LINE：董事審核派組通知',
+    email_case_assigned_to_board_group: 'Email：董事審核派組通知',
+    email_case_payment_receipt_to_applicant: 'Email：寄送領款收據通知',
+    email_case_disbursement_approval_to_applicant: 'Email：寄送申請通過通知',
+    email_disbursement_completed: 'Email：撥款完成通知',
+    line_disbursement_completed: 'LINE：撥款完成通知',
+};
+
+export function getNotificationTemplateLabel(name: string | null | undefined): string {
+    if (!name) return '—';
+    return TEMPLATE_LABELS[name] ?? name;
+}

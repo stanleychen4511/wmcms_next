@@ -41,6 +41,7 @@ export interface NotificationRecipient {
     email: string;
     roles?: string[];          // present when fetched from staff list
     is_applicant?: boolean;    // true when fetched as the case applicant
+    is_referral?: boolean;     // true when economic-weak cases use referral contact as primary recipient
     is_bcc?: boolean;          // manual notification: send this recipient as Bcc
 }
 
@@ -318,7 +319,8 @@ export async function fetchApplicantRecipient(
     const client = await pool.connect();
     try {
         const res = await client.query(
-            `SELECT u.id::text AS user_id, u.name_enc, u.name_iv, u.email
+            `SELECT u.id::text AS user_id, u.name_enc, u.name_iv, u.email,
+                    a.subsidy_subtype, a.referral_contact_name, a.referral_contact_email
              FROM applications a
              JOIN users u ON u.id = a.applicant_id
              WHERE a.id = $1
@@ -327,6 +329,20 @@ export async function fetchApplicantRecipient(
         );
         if (res.rows.length === 0) return { success: true, data: null };
         const r = res.rows[0];
+        if (r.subsidy_subtype === '1') {
+            return {
+                success: true,
+                data: r.referral_contact_email
+                    ? {
+                        user_id: `referral:${applicationId}`,
+                        name: r.referral_contact_name ? `轉介人：${r.referral_contact_name}` : '轉介人',
+                        email: r.referral_contact_email,
+                        is_applicant: true,
+                        is_referral: true,
+                    }
+                    : null,
+            };
+        }
         if (!r.email) return { success: true, data: null };
         const { decryptAES: dec } = await import('../../lib/crypto');
         const recipient: NotificationRecipient = {

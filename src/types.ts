@@ -29,6 +29,8 @@ export interface CaseSummary {
     assignedBoardGroupId?: string | null;
     /** 補助子類型（115 年辦法）：'1'=經濟弱勢, '2'=小康家庭；NULL = 舊資料未分類 */
     subsidySubtype?: '1' | '2' | null;
+    /** DB applications.status：'1'=審核中, '2'=審核未通過, '3'=待核銷, '4'=核銷完成 */
+    statusCode?: string | null;
 }
 
 export type ApplicationStatus = 'active' | 'closed';
@@ -54,4 +56,3 @@ export interface DocumentItem {
     required: boolean;
     status: DocumentStatus;
 }
-
