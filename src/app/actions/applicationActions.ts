@@ -890,16 +890,48 @@ export interface UpdateApplicationBasicsPatch {
     referralContactPhone?: string | null;
 }
 
+export async function checkApplicationBasicsEditBlock(
+    applicationId: string,
+): Promise<{ blocked: boolean; reason?: string }> {
+    if (!/^\d+$/.test(applicationId)) return { blocked: true, reason: '不正確的案件 ID' };
+
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT receipt_number, external_code
+             FROM payment_disbursements
+             WHERE application_id = $1::bigint
+               AND review_stage IN ('1','2','3','4')
+             ORDER BY id DESC
+             LIMIT 1`,
+            [applicationId]
+        );
+        if ((res.rowCount ?? 0) === 0) return { blocked: false };
+
+        const row = res.rows[0];
+        const no = row.receipt_number || row.external_code || '未編號';
+        return {
+            blocked: true,
+            reason: `此案有進行中的撥款（撥款單號 ${no}），請先作廢當前撥款後再編輯個人資料。`,
+        };
+    } catch (err: any) {
+        console.error('checkApplicationBasicsEditBlock error:', err);
+        return { blocked: true, reason: err.message ?? '檢查撥款狀態失敗' };
+    } finally {
+        client.release();
+    }
+}
+
 /**
- * Edit a case's basic info (applicant name / source / referral unit) during the
- * `admin_review` stage only. Writes a single audit entry with before/after diff
+ * Edit a case's basic info (applicant name / source / referral unit). Writes a
+ * single audit entry with before/after diff
  * of only the fields that actually changed. No audit log when nothing changed.
  *
  * 申請類別（application_type）不在可編輯欄位內 — 案號 case_number 已綁定類別首字母，
  * 類別有誤須以不通過結案重新建立新案件。
  *
  * Permission: caller must be the case's officer OR have the admin role.
- * Stage: applications.status must be '1' AND workflow.stage must be 'admin_review'.
+ * Guard: blocked while the case has an in-flight payment_disbursement.
  */
 export async function updateApplicationBasics(
     applicationId: string,
@@ -937,10 +969,21 @@ export async function updateApplicationBasics(
         }
         const row = caseRes.rows[0];
 
-        // ── Step b: stage check ────────────────────────────────────────────
-        if (row.status !== '1' || row.wf_stage !== 'admin_review') {
+        // ── Step b: disbursement guard ─────────────────────────────────────
+        const blockRes = await client.query(
+            `SELECT receipt_number, external_code
+             FROM payment_disbursements
+             WHERE application_id = $1::bigint
+               AND review_stage IN ('1','2','3','4')
+             ORDER BY id DESC
+             LIMIT 1`,
+            [applicationId]
+        );
+        if ((blockRes.rowCount ?? 0) > 0) {
             await client.query('ROLLBACK');
-            return { success: false, error: '僅行政初審階段可修改案件基本資訊' };
+            const d = blockRes.rows[0];
+            const no = d.receipt_number || d.external_code || '未編號';
+            return { success: false, error: `此案有進行中的撥款（撥款單號 ${no}），請先作廢當前撥款後再編輯個人資料。` };
         }
 
         // ── Step c: permission check ───────────────────────────────────────

@@ -176,6 +176,7 @@ export function DisbursementPanel({ applicationId, applicantId, operatorUserId, 
         resetForm();
         setShowCreateForm(false);
         await reload();
+        onCaseDataChanged?.();
     };
 
     if (loading) {
@@ -1225,7 +1226,10 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
     const handleDelete = async () => {
         if (!confirm(`確認刪除撥款紀錄 ${d.receiptNumber}（金額 ${d.amount.toLocaleString()} 元）？`)) return;
         const res = await deleteDisbursement(operatorUserId, d.id);
-        if (res.success) onChanged();
+        if (res.success) {
+            await onChanged();
+            onCaseDataChanged?.();
+        }
         else pushToast({ type: 'error', msg: res.error });
     };
 

@@ -84,6 +84,7 @@ import {
     fetchUnassignedCount,
     fetchUnassignedCases,
     fetchDisbursableCases,
+    checkApplicationBasicsEditBlock,
 } from './app/actions/applicationActions';
 
 import { fetchCaseOfficers, fetchCaseOfficersWithId } from './app/actions/userActions';
@@ -426,6 +427,7 @@ function App() {
 
     // Edit-case-basics modal state
     const [showEditBasicsModal, setShowEditBasicsModal] = useState(false);
+    const [editBasicsBlockReason, setEditBasicsBlockReason] = useState<string | null>(null);
 
     // Board group re-assignment state (chairman/admin)
     const [showAssignDropdown, setShowAssignDropdown] = useState(false);
@@ -448,6 +450,21 @@ function App() {
      *  loadAppDetail 用 queueMicrotask 延後到 render 結束才呼叫，避免「render 中更新其他 component」警告。 */
     const selectedAppIdRef = useRef<string | null>(null);
     useEffect(() => { selectedAppIdRef.current = selectedAppId; }, [selectedAppId]);
+    useEffect(() => {
+        if (view !== 'detail' || !selectedAppId) {
+            setEditBasicsBlockReason(null);
+            return;
+        }
+        let cancelled = false;
+        void checkApplicationBasicsEditBlock(selectedAppId).then(res => {
+            if (!cancelled) {
+                setEditBasicsBlockReason(res.blocked
+                    ? (res.reason ?? '此案有進行中的撥款，請先作廢後再編輯個人資料。')
+                    : null);
+            }
+        });
+        return () => { cancelled = true; };
+    }, [view, selectedAppId, appDetail]);
     const handleSignatureStatusChange = useCallback((status: BoardReviewSignatureStatus) => {
         setSignatureStatus(status);
         const id = selectedAppIdRef.current;
@@ -2634,14 +2651,13 @@ function App() {
 
                     {/* 案件來源與轉介單位 */}
                     {appDetail && (() => {
-                        const canEditBasics =
-                            appDetail.status === '1' &&
-                            appDetail.stage === 'admin_review' &&
+                        const canEditBasicsRole =
                             !!loggedInUser &&
                             (
                                 String(loggedInUser.id) === String(appDetail.officerId ?? '')
                                 || (loggedInUser.roles as Role[]).includes('admin')
                             );
+                        const canEditBasics = canEditBasicsRole && !editBasicsBlockReason;
                         return (
                             <div className="bg-white rounded-lg border border-slate-200 px-4 py-3 text-sm text-slate-700 space-y-2">
                                 <div className="flex flex-wrap items-center gap-x-6 gap-y-1">
@@ -2695,14 +2711,27 @@ function App() {
                                                 : <span className="text-slate-400 italic">（未填寫）</span>}
                                         </span>
                                     )}
-                                    {canEditBasics && (
-                                        <button
-                                            type="button"
-                                            onClick={() => setShowEditBasicsModal(true)}
-                                            className="ml-auto inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium text-blue-700 bg-blue-50 border border-blue-200 rounded-md hover:bg-blue-100 transition cursor-pointer"
-                                        >
-                                            編輯案件基本資訊
-                                        </button>
+                                    {canEditBasicsRole && (
+                                        <div className="ml-auto flex flex-col items-end gap-1">
+                                            <button
+                                                type="button"
+                                                onClick={() => canEditBasics && setShowEditBasicsModal(true)}
+                                                disabled={!canEditBasics}
+                                                title={editBasicsBlockReason ?? undefined}
+                                                className={`inline-flex items-center gap-1 px-2.5 py-1 text-xs font-medium border rounded-md transition ${
+                                                    canEditBasics
+                                                        ? 'text-blue-700 bg-blue-50 border-blue-200 hover:bg-blue-100 cursor-pointer'
+                                                        : 'text-slate-400 bg-slate-100 border-slate-200 cursor-not-allowed'
+                                                }`}
+                                            >
+                                                編輯案件基本資訊
+                                            </button>
+                                            {editBasicsBlockReason && (
+                                                <span className="max-w-[360px] text-right text-xs text-amber-700">
+                                                    {editBasicsBlockReason}
+                                                </span>
+                                            )}
+                                        </div>
                                     )}
                                 </div>
                                 {appDetail.applicationWay === '2' && (
