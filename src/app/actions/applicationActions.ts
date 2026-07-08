@@ -581,6 +581,11 @@ export async function assignOfficerBatch(
             targetId: applicationIds.join(','),
             detail: { applicationIds, officerUserId },
         });
+        const { notifyEvent } = await import('./notificationDispatcher');
+        for (const applicationId of applicationIds) {
+            void notifyEvent('case_assigned_to_officer', { applicationId, officerUserId })
+                .catch(err => console.error('[notify] case_assigned_to_officer failed:', err));
+        }
         return { success: true };
     } catch (err: any) {
         console.error('assignOfficerBatch error', err);

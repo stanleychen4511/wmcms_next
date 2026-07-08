@@ -457,6 +457,9 @@ export async function reassignOfficer(
             targetId: applicationId,
             detail: { newOfficerId },
         });
+        const { notifyEvent } = await import('./notificationDispatcher');
+        void notifyEvent('case_assigned_to_officer', { applicationId, officerUserId: newOfficerId })
+            .catch(err => console.error('[notify] case_assigned_to_officer failed:', err));
         return { success: true };
     } catch (err: any) {
         return { success: false, error: err.message };

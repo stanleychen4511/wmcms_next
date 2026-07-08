@@ -256,6 +256,44 @@ CREATE TABLE IF NOT EXISTS notification_logs (
     sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 14c. automatic notification events/rules
+CREATE TABLE IF NOT EXISTS notification_events (
+    code           TEXT PRIMARY KEY,
+    module         TEXT NOT NULL DEFAULT 'application',
+    name           TEXT NOT NULL,
+    description    TEXT,
+    payload_schema JSONB NOT NULL DEFAULT '{}'::jsonb,
+    is_active      BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at     TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+CREATE TABLE IF NOT EXISTS notification_rules (
+    id               BIGSERIAL PRIMARY KEY,
+    event_code       TEXT NOT NULL REFERENCES notification_events(code) ON DELETE CASCADE,
+    name             TEXT NOT NULL,
+    is_enabled       BOOLEAN NOT NULL DEFAULT TRUE,
+    conditions       JSONB NOT NULL DEFAULT '{}'::jsonb,
+    recipient_policy JSONB NOT NULL DEFAULT '{}'::jsonb,
+    channels         TEXT[] NOT NULL DEFAULT ARRAY['email'],
+    dedupe_key       TEXT,
+    sort_order       INT NOT NULL DEFAULT 100,
+    created_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at       TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    CONSTRAINT notification_rules_event_name_uniq UNIQUE (event_code, name),
+    CONSTRAINT notification_rules_channels_chk CHECK (
+        array_length(channels, 1) IS NOT NULL
+        AND channels <@ ARRAY['email', 'line']::text[]
+    )
+);
+
+CREATE TABLE IF NOT EXISTS notification_rule_templates (
+    rule_id     BIGINT NOT NULL REFERENCES notification_rules(id) ON DELETE CASCADE,
+    channel     TEXT NOT NULL,
+    template_id INT NOT NULL REFERENCES notification_templates(id) ON DELETE RESTRICT,
+    PRIMARY KEY (rule_id, channel),
+    CONSTRAINT notification_rule_templates_channel_chk CHECK (channel IN ('email', 'line'))
+);
+
 -- 7a. board_groups（董事組別主檔，added 2026-04）
 CREATE TABLE IF NOT EXISTS board_groups (
     id          BIGSERIAL   PRIMARY KEY,
@@ -815,6 +853,18 @@ CREATE INDEX IF NOT EXISTS idx_notification_logs_disbursement
     ON notification_logs (disbursement_id) WHERE disbursement_id IS NOT NULL;
 COMMENT ON COLUMN notification_logs.disbursement_id IS '若通知與特定撥款關聯（例：個管寄領款收據／撥款完成通知）則記錄該 payment_disbursements.id';
 
+ALTER TABLE notification_logs
+    ADD COLUMN IF NOT EXISTS event_code TEXT REFERENCES notification_events(code) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS rule_id BIGINT REFERENCES notification_rules(id) ON DELETE SET NULL,
+    ADD COLUMN IF NOT EXISTS recipient_type TEXT,
+    ADD COLUMN IF NOT EXISTS delivery_key TEXT;
+
+CREATE INDEX IF NOT EXISTS idx_notification_rules_event
+    ON notification_rules (event_code, is_enabled, sort_order);
+
+CREATE INDEX IF NOT EXISTS idx_notification_logs_event
+    ON notification_logs (event_code, rule_id, sent_at);
+
 -- 8b. application_documents 加 disbursement_id 並重構 PK（refine-disbursement-flow，2026-04）
 --   配合 document_type_config.scope：
 --     scope='C'（case-level）：每案每 type 至多一筆 → 由 partial unique index 守門
@@ -1183,7 +1233,13 @@ SELECT * FROM (VALUES
      '系統範本：執行長按【完成】時通知所有相關人員（個管/主管/會計/申請人）', 1, 105),
     ('line_disbursement_completed', 'line', '',
      E'【萬美基金會】撥款完成\n案號：{{案號}}\n本次金額：NT$ {{本次撥款金額}}\n累計：NT$ {{累計撥款金額}}',
-     '系統範本：撥款完成通知（LINE）', 1, 106)
+     '系統範本：撥款完成通知（LINE）', 1, 106),
+    ('line_case_assigned_to_officer', 'line', '',
+     E'【萬美基金會】您有新案件被指派\n案號：{{案號}}\n申請人：{{申請人}}\n申請金額：NT$ {{申請金額}}\n\n請至系統查看案件並進行處理。\n{{案件連結}}',
+     '系統範本：承辦人被派發案件時通知本人（LINE）', 1, 107),
+    ('email_case_assigned_to_officer', 'email', '【萬美基金會】您有新案件被指派',
+     E'{{承辦人}} 您好：\n\n以下案件已指派給您處理：\n\n案號：{{案號}}\n申請人：{{申請人}}\n申請金額：NT$ {{申請金額}}\n\n請至系統查看案件並進行處理：{{案件連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     '系統範本：承辦人被派發案件時通知本人（Email）', 1, 108)
 ) AS v(name, channel, subject, body, description, status, sort_order)
 WHERE NOT EXISTS (
     SELECT 1 FROM notification_templates t WHERE t.name = v.name
@@ -1219,6 +1275,82 @@ WHERE NOT EXISTS (
     FROM notification_templates
     WHERE name = 'email_case_disbursement_approval_to_applicant'
 );
+
+INSERT INTO notification_events (code, module, name, description)
+VALUES
+    ('case_entered_board_review', 'application', '案件進入董事審核', '案件進入董事審核、尚未派組時自動通知。'),
+    ('case_assigned_to_board_group', 'application', '董事審核派組', '案件派給董事審核小組時自動通知組員。'),
+    ('case_assigned_to_officer', 'application', '承辦人被派發案件', '案件指派或改派給承辦人時自動通知該承辦人。'),
+    ('disbursement_completed', 'payment', '撥款完成', '撥款流程完成時自動通知相關人員。')
+ON CONFLICT (code) DO UPDATE SET
+    module = EXCLUDED.module,
+    name = EXCLUDED.name,
+    description = EXCLUDED.description;
+
+INSERT INTO notification_rules (event_code, name, is_enabled, recipient_policy, channels, sort_order)
+VALUES
+    (
+        'case_entered_board_review',
+        '通知董事長待派組',
+        TRUE,
+        '{"recipient_types":["chairman"],"respect_user_preferences":true}'::jsonb,
+        ARRAY['email', 'line']::text[],
+        10
+    ),
+    (
+        'case_assigned_to_board_group',
+        '通知董事審核組員',
+        TRUE,
+        '{"recipient_types":["board_group_members"],"respect_user_preferences":true}'::jsonb,
+        ARRAY['email', 'line']::text[],
+        20
+    ),
+    (
+        'case_assigned_to_officer',
+        '通知被指派承辦人',
+        TRUE,
+        '{"recipient_types":["assigned_officer"],"respect_user_preferences":true}'::jsonb,
+        ARRAY['email', 'line']::text[],
+        15
+    ),
+    (
+        'disbursement_completed',
+        '通知撥款完成相關人員',
+        TRUE,
+        '{"recipient_types":["disbursement_related_users"],"respect_user_preferences":true}'::jsonb,
+        ARRAY['email', 'line']::text[],
+        30
+    )
+ON CONFLICT (event_code, name) DO UPDATE SET
+    recipient_policy = EXCLUDED.recipient_policy,
+    channels = EXCLUDED.channels,
+    sort_order = EXCLUDED.sort_order,
+    updated_at = NOW();
+
+WITH desired(rule_event, rule_name, channel, template_name) AS (
+    VALUES
+        ('case_entered_board_review', '通知董事長待派組', 'email', 'email_case_entered_board_review'),
+        ('case_entered_board_review', '通知董事長待派組', 'line', 'line_case_entered_board_review'),
+        ('case_assigned_to_board_group', '通知董事審核組員', 'email', 'email_case_assigned_to_board_group'),
+        ('case_assigned_to_board_group', '通知董事審核組員', 'line', 'line_case_assigned_to_board_group'),
+        ('case_assigned_to_officer', '通知被指派承辦人', 'email', 'email_case_assigned_to_officer'),
+        ('case_assigned_to_officer', '通知被指派承辦人', 'line', 'line_case_assigned_to_officer'),
+        ('disbursement_completed', '通知撥款完成相關人員', 'email', 'email_disbursement_completed'),
+        ('disbursement_completed', '通知撥款完成相關人員', 'line', 'line_disbursement_completed')
+)
+INSERT INTO notification_rule_templates (rule_id, channel, template_id)
+SELECT r.id, d.channel, t.id
+FROM desired d
+JOIN notification_rules r ON r.event_code = d.rule_event AND r.name = d.rule_name
+JOIN LATERAL (
+    SELECT id
+    FROM notification_templates
+    WHERE name = d.template_name
+    ORDER BY id
+    LIMIT 1
+) t ON TRUE
+ON CONFLICT (rule_id, channel) DO UPDATE SET
+    template_id = EXCLUDED.template_id;
 
 -- ── 檔案儲存位置 ──────────────────────────────────────────────
 -- 先插入無 parent 的根節點，再插入子節點

@@ -645,6 +645,129 @@ export async function toggleScheduleActive(id: number, isActive: boolean): Promi
     }
 }
 
+// ─── Automatic Notification Rules ───────────────────────────────────────────
+
+export interface AutoNotificationRule {
+    id: string;
+    event_code: string;
+    event_name: string;
+    event_description: string | null;
+    name: string;
+    is_enabled: boolean;
+    channels: string[];
+    recipient_policy: Record<string, any>;
+    email_template_id: number | null;
+    email_template_name: string | null;
+    line_template_id: number | null;
+    line_template_name: string | null;
+    updated_at: string;
+}
+
+export async function fetchAutoNotificationRules(): Promise<{ success: boolean; data?: AutoNotificationRule[]; error?: string }> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(`
+            SELECT
+                r.id::text,
+                r.event_code,
+                e.name AS event_name,
+                e.description AS event_description,
+                r.name,
+                r.is_enabled,
+                r.channels,
+                r.recipient_policy,
+                et.template_id AS email_template_id,
+                email_tpl.name AS email_template_name,
+                lt.template_id AS line_template_id,
+                line_tpl.name AS line_template_name,
+                r.updated_at::text
+            FROM notification_rules r
+            JOIN notification_events e ON e.code = r.event_code
+            LEFT JOIN notification_rule_templates et
+                ON et.rule_id = r.id AND et.channel = 'email'
+            LEFT JOIN notification_templates email_tpl ON email_tpl.id = et.template_id
+            LEFT JOIN notification_rule_templates lt
+                ON lt.rule_id = r.id AND lt.channel = 'line'
+            LEFT JOIN notification_templates line_tpl ON line_tpl.id = lt.template_id
+            ORDER BY r.sort_order, r.id
+        `);
+        return { success: true, data: res.rows };
+    } catch (err: any) {
+        console.error('fetchAutoNotificationRules error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+export async function saveAutoNotificationRule(data: {
+    id: string;
+    is_enabled: boolean;
+    channels: string[];
+    email_template_id: number | null;
+    line_template_id: number | null;
+}): Promise<{ success: boolean; error?: string }> {
+    if (!/^\d+$/.test(data.id)) return { success: false, error: '規則 ID 格式錯誤' };
+    const channels = [...new Set(data.channels)].filter(c => c === 'email' || c === 'line');
+    if (channels.length === 0) return { success: false, error: '至少要選擇一個通知渠道' };
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const ruleRes = await client.query(
+            `SELECT id FROM notification_rules WHERE id = $1::bigint FOR UPDATE`,
+            [data.id]
+        );
+        if (ruleRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '找不到自動通知規則' };
+        }
+
+        await client.query(
+            `UPDATE notification_rules
+             SET is_enabled = $1, channels = $2::text[], updated_at = NOW()
+             WHERE id = $3::bigint`,
+            [data.is_enabled, channels, data.id]
+        );
+
+        const upsertTemplate = async (channel: 'email' | 'line', templateId: number | null) => {
+            if (templateId == null) {
+                await client.query(
+                    `DELETE FROM notification_rule_templates WHERE rule_id = $1::bigint AND channel = $2`,
+                    [data.id, channel]
+                );
+                return;
+            }
+            const tplRes = await client.query(
+                `SELECT id FROM notification_templates
+                 WHERE id = $1 AND channel = $2 AND status = 1
+                 LIMIT 1`,
+                [templateId, channel]
+            );
+            if (tplRes.rowCount === 0) {
+                throw new Error(`${channel === 'email' ? 'Email' : 'LINE'} 範本不存在或未啟用`);
+            }
+            await client.query(
+                `INSERT INTO notification_rule_templates (rule_id, channel, template_id)
+                 VALUES ($1::bigint, $2, $3)
+                 ON CONFLICT (rule_id, channel) DO UPDATE SET template_id = EXCLUDED.template_id`,
+                [data.id, channel, templateId]
+            );
+        };
+
+        await upsertTemplate('email', data.email_template_id);
+        await upsertTemplate('line', data.line_template_id);
+        await client.query('COMMIT');
+        return { success: true };
+    } catch (err: any) {
+        try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+        console.error('saveAutoNotificationRule error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
 export async function executeSchedule(
     scheduleId: number,
     triggeredBy: 'cron' | 'manual' = 'manual'

@@ -11,6 +11,7 @@ import { applyPlaceholders } from '../../lib/notificationUtils';
 export type NotificationEventType =
     | 'case_entered_board_review'
     | 'case_assigned_to_board_group'
+    | 'case_assigned_to_officer'
     | 'case_payment_receipt_to_applicant'
     | 'disbursement_completed';
 
@@ -19,84 +20,9 @@ type Channel = 'email' | 'line';
 interface EventContext {
     applicationId: string;
     groupId?: string;
-    /** 若事件與特定撥款關聯（個管寄領款收據、撥款完成），帶入 payment_disbursements.id */
     disbursementId?: string;
+    officerUserId?: string;
 }
-
-/**
- * Per-event channel restriction. Events listed here SHALL only attempt
- * the listed channels regardless of the recipient's notification_channels.
- * Events NOT listed respect the user's preference (existing behaviour).
- */
-const EVENT_CHANNEL_RESTRICTIONS: Partial<Record<NotificationEventType, Channel[]>> = {
-    case_payment_receipt_to_applicant: ['email'],
-};
-
-type PerChannelStatus = 'sent' | 'failed' | 'skipped_no_channel' | 'skipped_template_missing' | 'skipped_no_target';
-
-// ─── Recipient resolvers (hardcoded per event) ───────────────────────────────
-
-async function resolveRecipients(eventType: NotificationEventType, ctx: EventContext): Promise<string[]> {
-    const client = await pool.connect();
-    try {
-        if (eventType === 'case_entered_board_review') {
-            const res = await client.query(
-                `SELECT DISTINCT u.id::text AS id
-                 FROM users u
-                 JOIN user_roles ur ON ur.user_id = u.id
-                 JOIN roles r ON r.id = ur.role_id
-                 WHERE r.code = 'chairman' AND u.is_active = TRUE`
-            );
-            return res.rows.map(r => r.id);
-        }
-        if (eventType === 'case_assigned_to_board_group') {
-            if (!ctx.groupId) return [];
-            const res = await client.query(
-                `SELECT user_id::text AS id
-                 FROM board_group_members
-                 WHERE group_id = $1::bigint`,
-                [ctx.groupId]
-            );
-            return res.rows.map(r => r.id);
-        }
-        if (eventType === 'case_payment_receipt_to_applicant') {
-            // 單一收件人 = 申請人；inactive 申請人靜默跳過
-            const res = await client.query(
-                `SELECT u.id::text AS id
-                 FROM applications a
-                 JOIN users u ON u.id = a.applicant_id
-                 WHERE a.id = $1::bigint AND u.is_active = TRUE
-                 LIMIT 1`,
-                [ctx.applicationId]
-            );
-            return res.rows.map(r => r.id);
-        }
-        if (eventType === 'disbursement_completed') {
-            // 收件人 = 該撥款的個管／主管／會計（站內 + email/line per user pref）+ 申請人（依 channels）
-            // 執行長本人（操作者）不另發通知（依 spec）
-            if (!ctx.disbursementId) return [];
-            const res = await client.query(
-                `SELECT DISTINCT u.id::text AS id
-                 FROM payment_disbursements pd
-                 LEFT JOIN users u ON u.id IN (pd.created_by, pd.supervisor_user_id, pd.accountant_user_id)
-                 WHERE pd.id = $1::bigint AND u.id IS NOT NULL AND u.is_active = TRUE
-                 UNION
-                 SELECT u.id::text AS id
-                 FROM payment_disbursements pd
-                 JOIN applications a ON a.id = pd.application_id
-                 JOIN users u ON u.id = a.applicant_id
-                 WHERE pd.id = $1::bigint AND u.is_active = TRUE`,
-                [ctx.disbursementId]
-            );
-            return res.rows.map(r => r.id);
-        }
-        return [];
-    } finally {
-        client.release();
-    }
-}
-
-// ─── Template lookup ────────────────────────────────────────────────────────
 
 interface TemplateRow {
     id: number;
@@ -104,23 +30,212 @@ interface TemplateRow {
     body: string;
 }
 
-async function loadTemplate(channel: Channel, eventType: NotificationEventType): Promise<TemplateRow | null> {
-    const name = `${channel}_${eventType}`;
+interface NotificationRule {
+    id: string;
+    name: string;
+    channels: Channel[];
+    recipientPolicy: Record<string, unknown>;
+    templatesByChannel: Partial<Record<Channel, number>>;
+}
+
+type PerChannelStatus =
+    | 'sent'
+    | 'failed'
+    | 'skipped_user_preference'
+    | 'skipped_template_missing'
+    | 'skipped_no_target';
+
+const EVENT_CHANNEL_RESTRICTIONS: Partial<Record<NotificationEventType, Channel[]>> = {
+    case_payment_receipt_to_applicant: ['email'],
+};
+
+function isChannel(value: unknown): value is Channel {
+    return value === 'email' || value === 'line';
+}
+
+function getPolicyRecipientTypes(policy: Record<string, unknown>): string[] {
+    const list = policy.recipient_types;
+    if (Array.isArray(list)) return list.map(String).filter(Boolean);
+    const single = policy.recipient_type;
+    return typeof single === 'string' && single ? [single] : [];
+}
+
+function shouldRespectUserPreferences(rule: NotificationRule | null): boolean {
+    return rule?.recipientPolicy.respect_user_preferences !== false;
+}
+
+async function loadRules(eventType: NotificationEventType): Promise<NotificationRule[] | null> {
     const client = await pool.connect();
     try {
         const res = await client.query(
-            `SELECT id, subject, body FROM notification_templates
-             WHERE name = $1 AND status = 1 LIMIT 1`,
-            [name]
+            `SELECT
+                r.id::text,
+                r.name,
+                r.channels,
+                r.recipient_policy,
+                COALESCE(
+                    jsonb_object_agg(rt.channel, rt.template_id) FILTER (WHERE rt.channel IS NOT NULL),
+                    '{}'::jsonb
+                ) AS templates_by_channel
+             FROM notification_rules r
+             LEFT JOIN notification_rule_templates rt ON rt.rule_id = r.id
+             WHERE r.event_code = $1 AND r.is_enabled = TRUE
+             GROUP BY r.id, r.name, r.channels, r.recipient_policy, r.sort_order
+             ORDER BY r.sort_order ASC, r.id ASC`,
+            [eventType]
         );
-        if (res.rowCount === 0) return null;
-        return { id: res.rows[0].id, subject: res.rows[0].subject, body: res.rows[0].body };
+        return res.rows.map(row => ({
+            id: row.id,
+            name: row.name,
+            channels: (row.channels ?? []).filter(isChannel),
+            recipientPolicy: row.recipient_policy ?? {},
+            templatesByChannel: row.templates_by_channel ?? {},
+        }));
+    } catch (err: any) {
+        if (err?.code === '42P01') return null;
+        throw err;
     } finally {
         client.release();
     }
 }
 
-// ─── Context placeholder loader ──────────────────────────────────────────────
+async function resolveRoleUsers(roleCode: string): Promise<string[]> {
+    const res = await pool.query(
+        `SELECT DISTINCT u.id::text AS id
+         FROM users u
+         JOIN user_roles ur ON ur.user_id = u.id
+         JOIN roles r ON r.id = ur.role_id
+         WHERE r.code = $1 AND u.is_active = TRUE`,
+        [roleCode]
+    );
+    return res.rows.map(r => r.id);
+}
+
+async function resolveBoardGroupMembers(groupId?: string): Promise<string[]> {
+    if (!groupId) return [];
+    const res = await pool.query(
+        `SELECT u.id::text AS id
+         FROM board_group_members bgm
+         JOIN users u ON u.id = bgm.user_id
+         WHERE bgm.group_id = $1::bigint AND u.is_active = TRUE`,
+        [groupId]
+    );
+    return res.rows.map(r => r.id);
+}
+
+async function resolveAssignedOfficer(ctx: EventContext): Promise<string[]> {
+    if (ctx.officerUserId) {
+        const res = await pool.query(
+            `SELECT id::text AS id
+             FROM users
+             WHERE id = $1::bigint AND is_active = TRUE
+             LIMIT 1`,
+            [ctx.officerUserId]
+        );
+        return res.rows.map(r => r.id);
+    }
+    const res = await pool.query(
+        `SELECT u.id::text AS id
+         FROM applications a
+         JOIN users u ON u.id = a.officer_id
+         WHERE a.id = $1::bigint AND u.is_active = TRUE
+         LIMIT 1`,
+        [ctx.applicationId]
+    );
+    return res.rows.map(r => r.id);
+}
+
+async function resolveApplicant(applicationId: string): Promise<string[]> {
+    const res = await pool.query(
+        `SELECT u.id::text AS id
+         FROM applications a
+         JOIN users u ON u.id = a.applicant_id
+         WHERE a.id = $1::bigint AND u.is_active = TRUE
+         LIMIT 1`,
+        [applicationId]
+    );
+    return res.rows.map(r => r.id);
+}
+
+async function resolveDisbursementRelatedUsers(disbursementId?: string): Promise<string[]> {
+    if (!disbursementId) return [];
+    const res = await pool.query(
+        `SELECT DISTINCT u.id::text AS id
+         FROM payment_disbursements pd
+         LEFT JOIN users u ON u.id IN (pd.created_by, pd.supervisor_user_id, pd.accountant_user_id)
+         WHERE pd.id = $1::bigint AND u.id IS NOT NULL AND u.is_active = TRUE
+         UNION
+         SELECT u.id::text AS id
+         FROM payment_disbursements pd
+         JOIN applications a ON a.id = pd.application_id
+         JOIN users u ON u.id = a.applicant_id
+         WHERE pd.id = $1::bigint AND u.is_active = TRUE`,
+        [disbursementId]
+    );
+    return res.rows.map(r => r.id);
+}
+
+async function resolveLegacyRecipients(eventType: NotificationEventType, ctx: EventContext): Promise<string[]> {
+    if (eventType === 'case_entered_board_review') return resolveRoleUsers('chairman');
+    if (eventType === 'case_assigned_to_board_group') return resolveBoardGroupMembers(ctx.groupId);
+    if (eventType === 'case_assigned_to_officer') return resolveAssignedOfficer(ctx);
+    if (eventType === 'case_payment_receipt_to_applicant') return resolveApplicant(ctx.applicationId);
+    if (eventType === 'disbursement_completed') return resolveDisbursementRelatedUsers(ctx.disbursementId);
+    return [];
+}
+
+async function resolveRuleRecipients(rule: NotificationRule, ctx: EventContext): Promise<string[]> {
+    const recipientTypes = getPolicyRecipientTypes(rule.recipientPolicy);
+    if (recipientTypes.length === 0) return [];
+
+    const ids = new Set<string>();
+    for (const type of recipientTypes) {
+        const resolved =
+            type === 'chairman' ? await resolveRoleUsers('chairman') :
+            type === 'board_group_members' ? await resolveBoardGroupMembers(ctx.groupId) :
+            type === 'assigned_officer' ? await resolveAssignedOfficer(ctx) :
+            type === 'disbursement_related_users' ? await resolveDisbursementRelatedUsers(ctx.disbursementId) :
+            type === 'applicant' ? await resolveApplicant(ctx.applicationId) :
+            type.startsWith('role:') ? await resolveRoleUsers(type.slice('role:'.length)) :
+            [];
+        resolved.forEach(id => ids.add(id));
+    }
+    return [...ids];
+}
+
+async function loadTemplateByName(channel: Channel, eventType: NotificationEventType): Promise<TemplateRow | null> {
+    const name = `${channel}_${eventType}`;
+    const res = await pool.query(
+        `SELECT id, subject, body
+         FROM notification_templates
+         WHERE name = $1 AND status = 1
+         LIMIT 1`,
+        [name]
+    );
+    if (res.rowCount === 0) return null;
+    return { id: res.rows[0].id, subject: res.rows[0].subject, body: res.rows[0].body };
+}
+
+async function loadTemplateForRule(
+    channel: Channel,
+    eventType: NotificationEventType,
+    rule: NotificationRule | null,
+): Promise<TemplateRow | null> {
+    const templateId = rule?.templatesByChannel[channel];
+    if (templateId) {
+        const res = await pool.query(
+            `SELECT id, subject, body
+             FROM notification_templates
+             WHERE id = $1 AND channel = $2 AND status = 1
+             LIMIT 1`,
+            [templateId, channel]
+        );
+    if ((res.rowCount ?? 0) > 0) {
+            return { id: res.rows[0].id, subject: res.rows[0].subject, body: res.rows[0].body };
+        }
+    }
+    return loadTemplateByName(channel, eventType);
+}
 
 async function loadPlaceholderVars(eventType: NotificationEventType, ctx: EventContext): Promise<Record<string, string>> {
     const client = await pool.connect();
@@ -128,89 +243,133 @@ async function loadPlaceholderVars(eventType: NotificationEventType, ctx: EventC
         const res = await client.query(
             `SELECT a.case_number, a.apply_amount, a.approved_amount,
                     u.name_enc AS applicant_name_enc, u.name_iv AS applicant_name_iv,
+                    ou.name_enc AS officer_name_enc, ou.name_iv AS officer_name_iv,
+                    ou.account AS officer_account,
                     bg.name AS group_name
              FROM applications a
              LEFT JOIN users u ON u.id = a.applicant_id
+             LEFT JOIN users ou ON ou.id = COALESCE($2::bigint, a.officer_id)
              LEFT JOIN board_review_assignments bra ON bra.application_id = a.id
              LEFT JOIN board_groups bg ON bg.id = bra.group_id
-             WHERE a.id = $1::bigint LIMIT 1`,
-            [ctx.applicationId]
+             WHERE a.id = $1::bigint
+             LIMIT 1`,
+            [ctx.applicationId, ctx.officerUserId ?? null]
         );
         if (res.rowCount === 0) {
-            return { '案號': '', '申請人': '', '申請金額': '', '核定金額': '', '組別名稱': '', '系統連結': '' };
+            return {};
         }
+
         const row = res.rows[0];
         const applicantName = row.applicant_name_enc && row.applicant_name_iv
-            ? (decryptAES(row.applicant_name_enc, row.applicant_name_iv) || '未知')
-            : '未知';
-        const amount = row.apply_amount != null ? Number(row.apply_amount).toLocaleString() : '—';
-        const approvedAmount = row.approved_amount != null ? Number(row.approved_amount).toLocaleString() : '—';
-        // If override group context provided (e.g. reassign not yet committed to assignments table), prefer it
+            ? (decryptAES(row.applicant_name_enc, row.applicant_name_iv) || '申請人')
+            : '申請人';
+        const amount = row.apply_amount != null ? Number(row.apply_amount).toLocaleString() : '';
+        const approvedAmount = row.approved_amount != null ? Number(row.approved_amount).toLocaleString() : '';
+        const officerName = row.officer_name_enc && row.officer_name_iv
+            ? (decryptAES(row.officer_name_enc, row.officer_name_iv) || row.officer_account || '')
+            : (row.officer_account || '');
+
         let groupName = row.group_name ?? '';
         if (eventType === 'case_assigned_to_board_group' && ctx.groupId && !groupName) {
-            const g = await client.query(`SELECT name FROM board_groups WHERE id = $1::bigint LIMIT 1`, [ctx.groupId]);
-            groupName = g.rows[0]?.name ?? '';
+            const groupRes = await client.query(
+                `SELECT name FROM board_groups WHERE id = $1::bigint LIMIT 1`,
+                [ctx.groupId]
+            );
+            groupName = groupRes.rows[0]?.name ?? '';
         }
+
         const systemUrl = process.env.NEXT_PUBLIC_SYSTEM_URL ?? '';
         const caseLink = systemUrl ? `${systemUrl.replace(/\/$/, '')}/?case=${ctx.applicationId}` : '';
 
-        // disbursement_completed 額外查詢本次/累計金額
-        let thisAmount = '—';
-        let cumulativeAmount = '—';
+        let thisDisbursementAmount = '';
+        let cumulativeDisbursementAmount = '';
         if (eventType === 'disbursement_completed' && ctx.disbursementId) {
-            const dr = await client.query(
+            const disbursementRes = await client.query(
                 `SELECT pd.amount,
-                        COALESCE((SELECT SUM(amount) FROM payment_disbursements
-                                  WHERE application_id = pd.application_id AND review_stage = '9'), 0) AS total_completed
-                 FROM payment_disbursements pd WHERE pd.id = $1::bigint LIMIT 1`,
+                        COALESCE((
+                            SELECT SUM(amount)
+                            FROM payment_disbursements
+                            WHERE application_id = pd.application_id AND review_stage = '9'
+                        ), 0) AS total_completed
+                 FROM payment_disbursements pd
+                 WHERE pd.id = $1::bigint
+                 LIMIT 1`,
                 [ctx.disbursementId]
             );
-            if (dr.rowCount && dr.rowCount > 0) {
-                thisAmount = Number(dr.rows[0].amount).toLocaleString();
-                cumulativeAmount = Number(dr.rows[0].total_completed).toLocaleString();
+            if (disbursementRes.rowCount && disbursementRes.rowCount > 0) {
+                thisDisbursementAmount = Number(disbursementRes.rows[0].amount).toLocaleString();
+                cumulativeDisbursementAmount = Number(disbursementRes.rows[0].total_completed).toLocaleString();
             }
         }
 
-        return {
+        const readableVars = {
             '案號': row.case_number ?? '',
             '申請人': applicantName,
             '申請金額': amount,
             '核定金額': approvedAmount,
+            '承辦人': officerName,
+            '組別名稱': groupName,
+            '系統連結': systemUrl,
+            '案件連結': caseLink,
+        };
+
+        return {
+            ...readableVars,
+            '案號': row.case_number ?? '',
+            '申請人': applicantName,
+            '申請金額': amount,
+            '核定金額': approvedAmount,
+            '董事組別': groupName,
+            '案件連結': caseLink,
             '組別名稱': groupName,
             '系統連結': caseLink,
-            '本次撥款金額': thisAmount,
-            '累計撥款金額': cumulativeAmount,
+            '本次撥款金額': thisDisbursementAmount,
+            '累計撥款金額': cumulativeDisbursementAmount,
         };
     } finally {
         client.release();
     }
 }
 
-// ─── Email recipient helper (needs name + email) ────────────────────────────
-
 async function buildEmailRecipient(userId: string): Promise<NotificationRecipient | null> {
-    const client = await pool.connect();
-    try {
-        const res = await client.query(
-            `SELECT id::text, account, email, name_enc, name_iv FROM users WHERE id = $1::bigint LIMIT 1`,
-            [userId]
-        );
-        if (res.rowCount === 0) return null;
-        const row = res.rows[0];
-        if (!row.email) return null;
-        const name = row.name_enc && row.name_iv ? (decryptAES(row.name_enc, row.name_iv) || row.account) : row.account;
-        return { user_id: row.id, name, email: row.email };
-    } finally {
-        client.release();
-    }
+    const res = await pool.query(
+        `SELECT id::text, account, email, name_enc, name_iv
+         FROM users
+         WHERE id = $1::bigint
+         LIMIT 1`,
+        [userId]
+    );
+    if (res.rowCount === 0) return null;
+    const row = res.rows[0];
+    if (!row.email) return null;
+    const name = row.name_enc && row.name_iv ? (decryptAES(row.name_enc, row.name_iv) || row.account) : row.account;
+    return { user_id: row.id, name, email: row.email };
 }
 
-// ─── Main entry ──────────────────────────────────────────────────────────────
+async function fetchUserDeliveryState(userId: string): Promise<{
+    channels: Channel[];
+    email: string | null;
+    lineUserId: string | null;
+} | null> {
+    const res = await pool.query(
+        `SELECT notification_channels, line_user_id, email
+         FROM users
+         WHERE id = $1::bigint
+         LIMIT 1`,
+        [userId]
+    );
+    if (res.rowCount === 0) return null;
+    return {
+        channels: (res.rows[0].notification_channels ?? []).filter(isChannel),
+        email: res.rows[0].email ?? null,
+        lineUserId: res.rows[0].line_user_id ?? null,
+    };
+}
 
 /**
  * Event-driven notification dispatcher.
- * Called from business actions AFTER their DB transactions commit.
- * Always fire-and-forget: never throws, errors only logged.
+ * Business actions call this after their DB transaction commits.
+ * It never throws to the caller; failures are logged and audited.
  */
 export async function notifyEvent(
     eventType: NotificationEventType,
@@ -220,90 +379,92 @@ export async function notifyEvent(
         const enabled = await fetchSetting('notification_dispatcher_enabled', 'false');
         if (enabled !== 'true') return;
 
-        // Resolve recipients
-        const recipientIds = await resolveRecipients(eventType, context);
-        if (recipientIds.length === 0) return;
-
-        // Load placeholder context once
+        const rules = await loadRules(eventType);
         const vars = await loadPlaceholderVars(eventType, context);
 
-        for (const userId of recipientIds) {
-            try {
-                await dispatchToRecipient(eventType, context, userId, vars);
-            } catch (err) {
-                console.error(`[dispatcher] unhandled error for user ${userId}`, err);
-                void writeAuditLog({
-                    userId: null,
-                    action: 'notification.event_dispatched',
-                    targetType: 'event',
-                    targetId: context.applicationId,
-                    detail: {
-                        event_type: eventType,
-                        recipient_user_id: userId,
-                        channels_used: [],
-                        status_per_channel: {},
-                        dispatch_error: String((err as Error)?.message ?? err),
-                    },
-                });
-            }
+        if (!rules || rules.length === 0) {
+            const recipientIds = await resolveLegacyRecipients(eventType, context);
+            await dispatchRuleToRecipients(eventType, context, null, recipientIds, vars);
+            return;
+        }
+
+        for (const rule of rules) {
+            const recipientIds = await resolveRuleRecipients(rule, context);
+            await dispatchRuleToRecipients(eventType, context, rule, recipientIds, vars);
         }
     } catch (outer) {
         console.error('[dispatcher] outer error', outer);
     }
 }
 
+async function dispatchRuleToRecipients(
+    eventType: NotificationEventType,
+    context: EventContext,
+    rule: NotificationRule | null,
+    recipientIds: string[],
+    vars: Record<string, string>,
+): Promise<void> {
+    for (const userId of [...new Set(recipientIds)]) {
+        try {
+            await dispatchToRecipient(eventType, context, rule, userId, vars);
+        } catch (err) {
+            console.error(`[dispatcher] unhandled error for user ${userId}`, err);
+            void writeAuditLog({
+                userId: null,
+                action: 'notification.event_dispatched',
+                targetType: 'event',
+                targetId: context.applicationId,
+                detail: {
+                    event_type: eventType,
+                    rule_id: rule?.id ?? null,
+                    recipient_user_id: userId,
+                    channels_used: [],
+                    status_per_channel: {},
+                    dispatch_error: String((err as Error)?.message ?? err),
+                },
+            });
+        }
+    }
+}
+
 async function dispatchToRecipient(
     eventType: NotificationEventType,
     context: EventContext,
+    rule: NotificationRule | null,
     userId: string,
     vars: Record<string, string>,
 ): Promise<void> {
-    // Fetch user's preferred channels + minimal info
-    const client = await pool.connect();
-    let userChannels: Channel[] = [];
-    let lineUserId: string | null = null;
-    let userEmail: string | null = null;
-    try {
-        const res = await client.query(
-            `SELECT notification_channels, line_user_id, email FROM users WHERE id = $1::bigint LIMIT 1`,
-            [userId]
-        );
-        if (res.rowCount === 0) return;
-        userChannels = (res.rows[0].notification_channels ?? []).filter(
-            (c: string) => c === 'email' || c === 'line'
-        ) as Channel[];
-        lineUserId = res.rows[0].line_user_id ?? null;
-        userEmail = res.rows[0].email ?? null;
-    } finally {
-        client.release();
-    }
+    const user = await fetchUserDeliveryState(userId);
+    if (!user) return;
 
-    // Apply per-event channel restriction
-    const restriction = EVENT_CHANNEL_RESTRICTIONS[eventType];
-    const channels: Channel[] = restriction
-        ? restriction.filter(c => c === 'email' || c === 'line')
-        : userChannels;
+    const hasLegacyRestriction = !rule && !!EVENT_CHANNEL_RESTRICTIONS[eventType];
+    const allowedChannels = rule?.channels.length
+        ? rule.channels
+        : (EVENT_CHANNEL_RESTRICTIONS[eventType] ?? user.channels);
+    const channels = hasLegacyRestriction || !shouldRespectUserPreferences(rule)
+        ? allowedChannels
+        : allowedChannels.filter(channel => user.channels.includes(channel));
 
-    // 為 case_payment_receipt_to_applicant 事件預先產生 PDF buffer 一次（共用給可能的 email send）
     let pdfBuffer: Buffer | null = null;
     let pdfError: string | null = null;
-    let caseNumberForFilename = vars['案號'] || context.applicationId;
+    const caseNumberForFilename = vars['案號'] || context.applicationId;
     if (eventType === 'case_payment_receipt_to_applicant') {
         try {
             const adminId = await fetchFirstAdminUserId();
             if (!adminId) {
-                pdfError = '系統內無 admin 帳號，無法產生 PDF';
+                pdfError = '找不到可產生 PDF 的管理員帳號';
             } else if (context.disbursementId) {
-                // refine-disbursement-flow：個管手動觸發時，用該筆撥款的所有欄位產生 PDF
                 const dRes = await pool.query(
                     `SELECT amount, external_code,
                             payment_method, bank_name, bank_branch, bank_account,
                             payee_name, payee_relation, payee_relation_other
-                     FROM payment_disbursements WHERE id = $1::bigint LIMIT 1`,
+                     FROM payment_disbursements
+                     WHERE id = $1::bigint
+                     LIMIT 1`,
                     [context.disbursementId]
                 );
                 if (dRes.rowCount === 0) {
-                    pdfError = '撥款不存在';
+                    pdfError = '找不到撥款資料';
                 } else {
                     const row = dRes.rows[0];
                     const { generateDisbursementPaymentReceiptPdf } =
@@ -335,29 +496,30 @@ async function dispatchToRecipient(
     }
 
     const statusPerChannel: Record<string, PerChannelStatus> = {};
+    for (const channel of allowedChannels) {
+        if (!channels.includes(channel)) {
+            statusPerChannel[channel] = 'skipped_user_preference';
+            continue;
+        }
 
-    for (const channel of channels) {
         try {
-            const tpl = await loadTemplate(channel, eventType);
-            if (!tpl) {
+            const template = await loadTemplateForRule(channel, eventType, rule);
+            if (!template) {
                 statusPerChannel[channel] = 'skipped_template_missing';
                 continue;
             }
 
-            const renderedBody = applyPlaceholders(tpl.body, vars);
-            const renderedSubject = tpl.subject ? applyPlaceholders(tpl.subject, vars) : '';
+            const renderedBody = applyPlaceholders(template.body, vars);
+            const renderedSubject = template.subject ? applyPlaceholders(template.subject, vars) : '';
 
             if (channel === 'email') {
-                // 對於 case_payment_receipt_to_applicant，不走 buildEmailRecipient（它要解密 name_enc）
-                // 申請人 email 在 users.email 欄位即可
                 let recipient: NotificationRecipient | null;
                 if (eventType === 'case_payment_receipt_to_applicant') {
-                    if (!userEmail) {
+                    if (!user.email) {
                         statusPerChannel[channel] = 'skipped_no_target';
                         continue;
                     }
-                    // 從 vars 取已解密的申請人姓名作為 display
-                    recipient = { user_id: userId, name: vars['申請人'] || userEmail, email: userEmail };
+                    recipient = { user_id: userId, name: vars['申請人'] || user.email, email: user.email };
                 } else {
                     recipient = await buildEmailRecipient(userId);
                     if (!recipient) {
@@ -366,7 +528,11 @@ async function dispatchToRecipient(
                     }
                 }
 
-                // PDF 附件（僅 case_payment_receipt_to_applicant 事件）
+                if (eventType === 'case_payment_receipt_to_applicant' && !pdfBuffer) {
+                    statusPerChannel[channel] = 'failed';
+                    continue;
+                }
+
                 const attachments = (eventType === 'case_payment_receipt_to_applicant' && pdfBuffer)
                     ? [{
                         filename: `領款收據_${caseNumberForFilename}.pdf`,
@@ -375,31 +541,27 @@ async function dispatchToRecipient(
                     }]
                     : undefined;
 
-                // PDF 失敗則不寄信（依 spec：no email-without-attachment fallback）
-                if (eventType === 'case_payment_receipt_to_applicant' && !pdfBuffer) {
-                    statusPerChannel[channel] = 'failed';
-                    continue;
-                }
-
-                const r = await sendNotificationEmail(
+                const result = await sendNotificationEmail(
                     context.applicationId,
                     [recipient],
-                    renderedSubject || '（無主旨）',
+                    renderedSubject || '萬美基金會通知',
                     renderedBody,
-                    tpl.id,
-                    '',  // senderUserId empty = system
+                    template.id,
+                    '',
                     false,
                     attachments,
                     context.disbursementId ?? null,
                 );
-                statusPerChannel[channel] = r.success ? 'sent' : 'failed';
-            } else if (channel === 'line') {
-                if (!lineUserId) {
+                statusPerChannel[channel] = result.success ? 'sent' : 'failed';
+            }
+
+            if (channel === 'line') {
+                if (!user.lineUserId) {
                     statusPerChannel[channel] = 'skipped_no_target';
                     continue;
                 }
-                const r = await sendLineMessage(lineUserId, renderedBody, '');
-                statusPerChannel[channel] = r.success ? 'sent' : 'failed';
+                const result = await sendLineMessage(user.lineUserId, renderedBody, '');
+                statusPerChannel[channel] = result.success ? 'sent' : 'failed';
             }
         } catch (err) {
             console.error(`[dispatcher] channel=${channel} user=${userId} failed`, err);
@@ -407,8 +569,8 @@ async function dispatchToRecipient(
         }
     }
 
-    const usedChannels = Object.keys(statusPerChannel).filter(k =>
-        statusPerChannel[k] === 'sent' || statusPerChannel[k] === 'failed'
+    const usedChannels = Object.keys(statusPerChannel).filter(key =>
+        statusPerChannel[key] === 'sent' || statusPerChannel[key] === 'failed'
     );
 
     void writeAuditLog({
@@ -418,17 +580,18 @@ async function dispatchToRecipient(
         targetId: context.applicationId,
         detail: {
             event_type: eventType,
+            rule_id: rule?.id ?? null,
+            rule_name: rule?.name ?? null,
             recipient_user_id: userId,
             channels_used: usedChannels,
             status_per_channel: statusPerChannel,
         },
     });
 
-    // 額外為 case_payment_receipt_to_applicant 寫一筆 payment_receipt_sent audit
     if (eventType === 'case_payment_receipt_to_applicant') {
         let status: 'sent' | 'failed' | 'skipped_no_email';
         let errorMessage: string | null = null;
-        if (!userEmail) {
+        if (!user.email) {
             status = 'skipped_no_email';
             errorMessage = 'applicant_email_missing';
         } else if (pdfError || !pdfBuffer) {
@@ -447,7 +610,7 @@ async function dispatchToRecipient(
             targetId: context.applicationId,
             detail: {
                 applicantUserId: userId,
-                recipientEmail: userEmail,
+                recipientEmail: user.email,
                 pdfBytes: pdfBuffer?.length ?? null,
                 status,
                 errorMessage,
@@ -457,21 +620,15 @@ async function dispatchToRecipient(
     }
 }
 
-/** 取系統內第一個 admin 帳號 ID，用於 PDF 產生時通過 fetchPaymentReceiptPrintData 的角色守門。 */
 async function fetchFirstAdminUserId(): Promise<string | null> {
-    const client = await pool.connect();
-    try {
-        const res = await client.query(
-            `SELECT u.id::text AS id
-             FROM users u
-             JOIN user_roles ur ON ur.user_id = u.id
-             JOIN roles r ON r.id = ur.role_id
-             WHERE r.code = 'admin' AND u.is_active = TRUE
-             ORDER BY u.id ASC
-             LIMIT 1`
-        );
-        return res.rows[0]?.id ?? null;
-    } finally {
-        client.release();
-    }
+    const res = await pool.query(
+        `SELECT u.id::text AS id
+         FROM users u
+         JOIN user_roles ur ON ur.user_id = u.id
+         JOIN roles r ON r.id = ur.role_id
+         WHERE r.code = 'admin' AND u.is_active = TRUE
+         ORDER BY u.id ASC
+         LIMIT 1`
+    );
+    return res.rows[0]?.id ?? null;
 }

@@ -14,6 +14,7 @@ import {
     fetchChannels, updateChannelEnabled, saveSmtpConfig, loadSmtpConfig,
     fetchTemplates, addTemplate, updateTemplate, toggleTemplateStatus,
     fetchSchedules, saveSchedule, deleteSchedule, toggleScheduleActive, executeSchedule, NotificationSchedule,
+    fetchAutoNotificationRules, saveAutoNotificationRule, AutoNotificationRule,
 } from '../app/actions/notificationActions';
 import { fetchLineCredentialStatus, sendLineMessage } from '../app/actions/lineActions';
 import { SYSTEM_TEMPLATE_NAMES, getNotificationTemplateLabel } from '../lib/systemTemplates';
@@ -344,7 +345,14 @@ function ScheduleFormModal({ schedule, templates, onClose, onSaved }: ScheduleFo
 
 // ─── Main Component ───────────────────────────────────────────────────────────
 
-type Tab = 'channels' | 'templates' | 'schedules' | 'line_test';
+type Tab = 'channels' | 'templates' | 'auto_rules' | 'schedules' | 'line_test';
+
+type AutoRuleDraft = {
+    is_enabled: boolean;
+    channels: string[];
+    email_template_id: number | null;
+    line_template_id: number | null;
+};
 
 interface NotificationManagerProps {
     userId: string;
@@ -359,6 +367,9 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
     const [channels, setChannels] = useState<NotificationChannel[]>([]);
     const [templates, setTemplates] = useState<NotificationTemplate[]>([]);
     const [schedules, setSchedules] = useState<NotificationSchedule[]>([]);
+    const [autoRules, setAutoRules] = useState<AutoNotificationRule[]>([]);
+    const [autoRuleDrafts, setAutoRuleDrafts] = useState<Record<string, AutoRuleDraft>>({});
+    const [savingAutoRuleId, setSavingAutoRuleId] = useState<string | null>(null);
     const [loading, setLoading] = useState(true);
     const [expandedEmail, setExpandedEmail] = useState(false);
     const [tplModal, setTplModal] = useState<{ mode: 'add' | 'edit'; tpl?: NotificationTemplate } | null>(null);
@@ -368,10 +379,27 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
 
     const loadData = useCallback(async () => {
         setLoading(true);
-        const [chRes, tplRes, schRes] = await Promise.all([fetchChannels(), fetchTemplates(), fetchSchedules()]);
+        const [chRes, tplRes, schRes, autoRuleRes] = await Promise.all([
+            fetchChannels(),
+            fetchTemplates(),
+            fetchSchedules(),
+            fetchAutoNotificationRules(),
+        ]);
         if (chRes.success && chRes.data) setChannels(chRes.data);
         if (tplRes.success && tplRes.data) setTemplates(tplRes.data);
         if (schRes.success && schRes.data) setSchedules(schRes.data);
+        if (autoRuleRes.success && autoRuleRes.data) {
+            setAutoRules(autoRuleRes.data);
+            setAutoRuleDrafts(Object.fromEntries(autoRuleRes.data.map(rule => [
+                rule.id,
+                {
+                    is_enabled: rule.is_enabled,
+                    channels: rule.channels,
+                    email_template_id: rule.email_template_id,
+                    line_template_id: rule.line_template_id,
+                },
+            ])));
+        }
         setLoading(false);
     }, []);
 
@@ -418,7 +446,42 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
         }
     };
 
+    const updateAutoRuleDraft = (ruleId: string, patch: Partial<AutoRuleDraft>) => {
+        setAutoRuleDrafts(prev => ({
+            ...prev,
+            [ruleId]: {
+                ...prev[ruleId],
+                ...patch,
+            },
+        }));
+    };
+
+    const toggleAutoRuleChannel = (ruleId: string, channel: 'email' | 'line') => {
+        const draft = autoRuleDrafts[ruleId];
+        if (!draft) return;
+        const nextChannels = draft.channels.includes(channel)
+            ? draft.channels.filter(c => c !== channel)
+            : [...draft.channels, channel];
+        updateAutoRuleDraft(ruleId, { channels: nextChannels });
+    };
+
+    const handleSaveAutoRule = async (rule: AutoNotificationRule) => {
+        const draft = autoRuleDrafts[rule.id];
+        if (!draft) return;
+        setSavingAutoRuleId(rule.id);
+        const res = await saveAutoNotificationRule({ id: rule.id, ...draft });
+        setSavingAutoRuleId(null);
+        if (res.success) {
+            pushToast({ type: 'success', msg: '自動通知規則已更新' });
+            await loadData();
+        } else {
+            pushToast({ type: 'error', msg: res.error ?? '儲存失敗' });
+        }
+    };
+
     const emailChannel = channels.find(c => c.channel === 'email');
+    const emailTemplates = templates.filter(t => t.channel === 'email' && t.status === 1);
+    const lineTemplates = templates.filter(t => t.channel === 'line' && t.status === 1);
 
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
@@ -438,6 +501,7 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                     {([
                         { key: 'channels', label: '渠道設定' },
                         { key: 'templates', label: '通知範本' },
+                        { key: 'auto_rules', label: '自動通知' },
                         { key: 'schedules', label: '批次發送排程' },
                         { key: 'line_test', label: 'LINE 測試推送' },
                     ] as { key: Tab; label: string }[]).map(tab => (
@@ -594,6 +658,160 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                 )}
 
                 {/* ── Schedule management ── */}
+                {activeTab === 'auto_rules' && (
+                    <section className="space-y-3">
+                        <div>
+                            <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide">自動通知規則</h3>
+                            <p className="text-xs text-slate-400 mt-0.5">
+                                僅設定系統事件自動觸發的通知；手動寄送通知、寄送申請通過通知、寄送領款收據不受此處影響。
+                            </p>
+                        </div>
+
+                        {loading ? (
+                            <p className="text-sm text-slate-400">載入中...</p>
+                        ) : autoRules.length === 0 ? (
+                            <div className="bg-white border border-slate-200 rounded-xl p-6 text-center text-sm text-slate-500">
+                                尚未建立自動通知規則，請先確認 migration 是否已執行。
+                            </div>
+                        ) : (
+                            <div className="space-y-3">
+                                {autoRules.map(rule => {
+                                    const draft = autoRuleDrafts[rule.id];
+                                    const recipientTypes = Array.isArray(rule.recipient_policy?.recipient_types)
+                                        ? rule.recipient_policy.recipient_types.map(String)
+                                        : [];
+                                    const recipientLabel = recipientTypes.length > 0
+                                        ? recipientTypes.map(type => ({
+                                            chairman: '董事長',
+                                            board_group_members: '董事審核組員',
+                                            assigned_officer: '被指派承辦人',
+                                            disbursement_related_users: '撥款相關人員',
+                                            applicant: '申請人',
+                                        }[type] ?? type)).join('、')
+                                        : '未設定';
+                                    const dirty = !!draft && (
+                                        draft.is_enabled !== rule.is_enabled
+                                        || draft.email_template_id !== rule.email_template_id
+                                        || draft.line_template_id !== rule.line_template_id
+                                        || draft.channels.join(',') !== rule.channels.join(',')
+                                    );
+
+                                    return (
+                                        <div
+                                            key={rule.id}
+                                            className={clsx(
+                                                'bg-white border rounded-xl p-5 space-y-4',
+                                                draft?.is_enabled ? 'border-slate-200' : 'border-slate-200 opacity-70'
+                                            )}
+                                        >
+                                            <div className="flex flex-col sm:flex-row sm:items-start sm:justify-between gap-3">
+                                                <div>
+                                                    <div className="flex items-center gap-2">
+                                                        <h4 className="text-base font-bold text-slate-800">{rule.event_name}</h4>
+                                                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-slate-100 text-slate-500 font-mono">
+                                                            {rule.event_code}
+                                                        </span>
+                                                    </div>
+                                                    <p className="text-sm text-slate-500 mt-1">{rule.name}</p>
+                                                    {rule.event_description && (
+                                                        <p className="text-xs text-slate-400 mt-0.5">{rule.event_description}</p>
+                                                    )}
+                                                </div>
+                                                <button
+                                                    type="button"
+                                                    onClick={() => draft && updateAutoRuleDraft(rule.id, { is_enabled: !draft.is_enabled })}
+                                                    className={clsx(
+                                                        'inline-flex items-center gap-2 px-3 py-1.5 rounded-lg text-sm font-medium transition self-start',
+                                                        draft?.is_enabled
+                                                            ? 'bg-green-50 text-green-700 hover:bg-green-100'
+                                                            : 'bg-slate-100 text-slate-500 hover:bg-slate-200'
+                                                    )}
+                                                >
+                                                    {draft?.is_enabled ? <ToggleRight className="w-5 h-5" /> : <ToggleLeft className="w-5 h-5" />}
+                                                    {draft?.is_enabled ? '啟用' : '停用'}
+                                                </button>
+                                            </div>
+
+                                            <div className="grid grid-cols-1 lg:grid-cols-[1fr_1.2fr] gap-4">
+                                                <div className="bg-slate-50 border border-slate-100 rounded-lg p-3 space-y-2">
+                                                    <div>
+                                                        <p className="text-xs font-semibold text-slate-500">收件對象</p>
+                                                        <p className="text-sm text-slate-800 mt-0.5">{recipientLabel}</p>
+                                                    </div>
+                                                    <div>
+                                                        <p className="text-xs font-semibold text-slate-500">通知渠道</p>
+                                                        <div className="flex flex-wrap gap-2 mt-2">
+                                                            {(['email', 'line'] as const).map(channel => (
+                                                                <label
+                                                                    key={channel}
+                                                                    className="inline-flex items-center gap-1.5 text-sm text-slate-700 bg-white border border-slate-200 rounded-lg px-2.5 py-1.5"
+                                                                >
+                                                                    <input
+                                                                        type="checkbox"
+                                                                        checked={draft?.channels.includes(channel) ?? false}
+                                                                        onChange={() => toggleAutoRuleChannel(rule.id, channel)}
+                                                                        className="w-4 h-4 accent-blue-600"
+                                                                    />
+                                                                    {CHANNEL_META[channel]?.label ?? channel}
+                                                                </label>
+                                                            ))}
+                                                        </div>
+                                                    </div>
+                                                </div>
+
+                                                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                                                    <div>
+                                                        <label className="block text-xs font-medium text-slate-600 mb-1">Email 範本</label>
+                                                        <select
+                                                            value={draft?.email_template_id ?? ''}
+                                                            onChange={e => updateAutoRuleDraft(rule.id, { email_template_id: e.target.value ? Number(e.target.value) : null })}
+                                                            disabled={!draft?.channels.includes('email')}
+                                                            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
+                                                        >
+                                                            <option value="">未指定</option>
+                                                            {emailTemplates.map(tpl => (
+                                                                <option key={tpl.id} value={tpl.id}>{getNotificationTemplateLabel(tpl.name)}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                    <div>
+                                                        <label className="block text-xs font-medium text-slate-600 mb-1">LINE 範本</label>
+                                                        <select
+                                                            value={draft?.line_template_id ?? ''}
+                                                            onChange={e => updateAutoRuleDraft(rule.id, { line_template_id: e.target.value ? Number(e.target.value) : null })}
+                                                            disabled={!draft?.channels.includes('line')}
+                                                            className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 disabled:bg-slate-100 disabled:text-slate-400"
+                                                        >
+                                                            <option value="">未指定</option>
+                                                            {lineTemplates.map(tpl => (
+                                                                <option key={tpl.id} value={tpl.id}>{getNotificationTemplateLabel(tpl.name)}</option>
+                                                            ))}
+                                                        </select>
+                                                    </div>
+                                                </div>
+                                            </div>
+
+                                            <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
+                                                <p className="text-xs text-slate-400">
+                                                    最後更新：{rule.updated_at ? new Date(rule.updated_at).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' }) : '-'}
+                                                </p>
+                                                <button
+                                                    type="button"
+                                                    disabled={!dirty || savingAutoRuleId === rule.id}
+                                                    onClick={() => handleSaveAutoRule(rule)}
+                                                    className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-40 disabled:cursor-not-allowed transition"
+                                                >
+                                                    {savingAutoRuleId === rule.id ? '儲存中...' : dirty ? '儲存設定' : '已儲存'}
+                                                </button>
+                                            </div>
+                                        </div>
+                                    );
+                                })}
+                            </div>
+                        )}
+                    </section>
+                )}
+
                 {activeTab === 'schedules' && (
                     <section className="space-y-3">
                         <div className="flex items-center justify-between">
