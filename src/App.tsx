@@ -3465,6 +3465,7 @@ function App() {
                     operatorUserId={loggedInUser.id}
                     initial={{
                         applicantName: appDetail.applicantName ?? '',
+                        applicantEmail: appDetail.applicantEmail ?? '',
                         applicantPhone: appDetail.applicantPhone ?? '',
                         applicantAddress: appDetail.applicantAddress ?? '',
                         applicantDob: appDetail.applicantDob ?? '',

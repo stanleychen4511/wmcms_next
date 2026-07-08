@@ -9,6 +9,7 @@ import { DateInput } from './DateInput';
 
 export interface EditCaseBasicsInitial {
     applicantName: string;
+    applicantEmail?: string | null;
     /** 申請人聯絡電話（必填） */
     applicantPhone?: string | null;
     /** 申請人戶籍地址（選填，但領款收據需要） */
@@ -53,6 +54,8 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
     useModalDismiss(onClose);
     const { push: pushToast } = useToast();
     const [applicantName, setApplicantName] = useState(initial.applicantName ?? '');
+    const [applicantEmail, setApplicantEmail] = useState(initial.applicantEmail ?? '');
+    const [emailError, setEmailError] = useState('');
     const [applicantPhone, setApplicantPhone] = useState(initial.applicantPhone ?? '');
     const [phoneError, setPhoneError] = useState('');
     const [applicantAddress, setApplicantAddress] = useState(initial.applicantAddress ?? '');
@@ -123,6 +126,17 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
         if (trimmed.length < 1) { setNameError('姓名為必填'); ok = false; }
         else if (trimmed.length > 50) { setNameError('姓名不可超過 50 字'); ok = false; }
         else { setNameError(''); }
+
+        const trimmedEmail = applicantEmail.trim();
+        if (trimmedEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedEmail)) {
+            setEmailError('請輸入有效的 Email 格式');
+            ok = false;
+        } else if (trimmedEmail.length > 255) {
+            setEmailError('Email 長度不可超過 255 字');
+            ok = false;
+        } else {
+            setEmailError('');
+        }
 
         const trimmedPhone = applicantPhone.trim();
         if (!trimmedPhone) { setPhoneError('聯絡電話為必填'); ok = false; }
@@ -197,6 +211,8 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
             const patch: UpdateApplicationBasicsPatch = {};
             const trimmedName = applicantName.trim();
             if (trimmedName !== (initial.applicantName ?? '')) patch.applicantName = trimmedName;
+            const trimmedEmail = applicantEmail.trim();
+            if (trimmedEmail !== (initial.applicantEmail ?? '')) patch.applicantEmail = trimmedEmail || null;
             const trimmedPhone = applicantPhone.trim();
             if (trimmedPhone !== (initial.applicantPhone ?? '')) patch.applicantPhone = trimmedPhone;
             const trimmedAddress = applicantAddress.trim();
@@ -299,6 +315,27 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
                             }`}
                         />
                         {phoneError && <p className="text-xs text-red-500 mt-1">{phoneError}</p>}
+                    </div>
+
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1">
+                            申請人信箱
+                        </label>
+                        <input
+                            type="email"
+                            value={applicantEmail}
+                            onChange={e => { setApplicantEmail(e.target.value); setEmailError(''); }}
+                            maxLength={255}
+                            placeholder="email@example.com"
+                            className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 transition ${
+                                emailError ? 'border-red-400 focus:ring-red-200' : 'border-slate-300 focus:ring-blue-200 focus:border-blue-400'
+                            }`}
+                        />
+                        {emailError && <p className="text-xs text-red-500 mt-1">{emailError}</p>}
+                        <p className="text-xs text-amber-700 mt-1 flex items-start gap-1">
+                            <AlertTriangle className="w-3.5 h-3.5 shrink-0 mt-0.5" />
+                            <span>此處修改會直接更新申請人信箱，請確認修改後的信箱可以正常收件。</span>
+                        </p>
                     </div>
 
                     {/* 申請人戶籍地址（領款收據用） */}

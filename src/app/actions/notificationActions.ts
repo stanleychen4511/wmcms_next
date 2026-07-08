@@ -362,6 +362,40 @@ export async function fetchApplicantRecipient(
 
 // ─── Send Email ───────────────────────────────────────────────────────────────
 
+export async function fetchReferralRecipient(
+    applicationId: string
+): Promise<{ success: boolean; data?: NotificationRecipient | null; error?: string }> {
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT referral_contact_name, referral_contact_email
+             FROM applications
+             WHERE id = $1
+             LIMIT 1`,
+            [applicationId]
+        );
+        if (res.rows.length === 0) return { success: true, data: null };
+        const r = res.rows[0];
+        const email = String(r.referral_contact_email ?? '').trim();
+        if (!email) return { success: true, data: null };
+        return {
+            success: true,
+            data: {
+                user_id: `referral:${applicationId}`,
+                name: r.referral_contact_name ? `轉介人：${r.referral_contact_name}` : '轉介人',
+                email,
+                roles: ['referral'],
+                is_referral: true,
+            },
+        };
+    } catch (err: any) {
+        console.error('fetchReferralRecipient error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
 export interface EmailAttachment {
     filename: string;
     content: Buffer;

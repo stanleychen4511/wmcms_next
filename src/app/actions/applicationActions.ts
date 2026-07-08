@@ -867,6 +867,7 @@ export async function updateApplicantContact(
 
 export interface UpdateApplicationBasicsPatch {
     applicantName?: string;
+    applicantEmail?: string | null;
     /** 申請人聯絡電話；不可清空 */
     applicantPhone?: string;
     /** 申請人戶籍地址；可空字串 */
@@ -952,8 +953,10 @@ export async function updateApplicationBasics(
                     a.referral_contact_title, a.referral_contact_phone,
                     a.applicant_phone, a.applicant_address, a.applicant_dob, a.cancer_type, a.cancer_stage,
                     a.application_form, a.treatment_phase,
+                    u_app.email AS applicant_email,
                     w.stage AS wf_stage
              FROM applications a
+             LEFT JOIN users u_app ON u_app.id = a.applicant_id
              LEFT JOIN LATERAL (
                  SELECT stage FROM application_workflow
                  WHERE application_id = a.id
@@ -1084,6 +1087,25 @@ export async function updateApplicationBasics(
         }
 
         // ── Step e2: applicant phone handling（必填、不可清空） ─────────────
+        let emailActuallyChanged = false;
+        let nextEmail: string | null = row.applicant_email ?? null;
+        if (patch.applicantEmail !== undefined) {
+            const newEmail = (patch.applicantEmail ?? '').trim();
+            if (newEmail.length > 255) {
+                await client.query('ROLLBACK');
+                return { success: false, error: 'Email 長度不可超過 255 字' };
+            }
+            if (newEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newEmail)) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '請輸入有效的 Email 格式' };
+            }
+            const normalizedEmail = newEmail || null;
+            if (normalizedEmail !== (row.applicant_email ?? null)) {
+                emailActuallyChanged = true;
+                nextEmail = normalizedEmail;
+            }
+        }
+
         let phoneActuallyChanged = false;
         let nextPhone: string = row.applicant_phone ?? '';
         if (patch.applicantPhone !== undefined) {
@@ -1190,6 +1212,11 @@ export async function updateApplicationBasics(
             before.applicantName = oldApplicantName;
             after.applicantName = patch.applicantName!.trim();
         }
+        if (emailActuallyChanged) {
+            changedFields.push('applicantEmail');
+            before.applicantEmail = row.applicant_email ?? null;
+            after.applicantEmail = nextEmail;
+        }
         if (phoneActuallyChanged) {
             changedFields.push('applicantPhone');
             before.applicantPhone = row.applicant_phone ?? null;
@@ -1277,10 +1304,16 @@ export async function updateApplicationBasics(
                 [newNameEncArgs.enc, newNameEncArgs.iv, newNameEncArgs.bidx, row.applicant_id]
             );
         }
+        if (emailActuallyChanged) {
+            await client.query(
+                `UPDATE users SET email = $1 WHERE id = $2::bigint`,
+                [nextEmail, row.applicant_id]
+            );
+        }
 
         // UPDATE applications if any of its columns changed
         // 不會更新 application_type（維持與 case_number 首字母一致）
-        const appChangedCols = changedFields.filter(f => f !== 'applicantName');
+        const appChangedCols = changedFields.filter(f => f !== 'applicantName' && f !== 'applicantEmail');
         if (appChangedCols.length > 0) {
             // 動態組欄位
             const sets: string[] = ['application_way = $1', 'referral_unit_id = $2::bigint', 'updated_at = NOW()'];

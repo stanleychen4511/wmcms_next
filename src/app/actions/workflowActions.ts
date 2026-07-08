@@ -54,6 +54,7 @@ export interface ApplicationDetail {
     statusLabel: string;
     stage: string;
     applicantName: string;
+    applicantEmail?: string | null;
     /** 申請人身分證字號（server 端解密後供案件頁顯示） */
     applicantIdNumber?: string | null;
     /** 申請人聯絡電話（內外部收件皆必填） */
@@ -479,6 +480,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 br.final_board_review_comments AS br_final_board_review_comments,
                 br.final_approved_amount AS br_final_approved_amount,
                 u_app.name_enc as app_name_enc, u_app.name_iv  as app_name_iv,
+                u_app.email as app_email,
                 u_app.id_number_enc as app_id_number_enc, u_app.id_number_iv as app_id_number_iv,
                 u_off.name_enc as off_name_enc, u_off.name_iv  as off_name_iv
             FROM applications a
@@ -667,6 +669,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             statusLabel,
             stage,
             applicantName,
+            applicantEmail: row.app_email ?? null,
             applicantIdNumber,
             applicantPhone: row.applicant_phone ?? null,
             // pg DATE → local Date midnight；用 local components 避免 toISOString 跨時區掉一天
