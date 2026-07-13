@@ -112,15 +112,33 @@ export async function checkApplicationStatus(idNumber: string): Promise<Applicat
             LIMIT 1
         `, [matchedUserId]);
 
-        // 4. Get total approved amount (status='4' 核銷完成 only)
+        // 4. Get total approved amount (status='3' approved/in reimbursement, status='4' closed).
         //    同時依 subsidy_subtype 分開累計，給 UI 顯示「經濟弱勢累計 / 小康家庭累計」
         const sumRes = await client.query(`
+            WITH consumed AS (
+                SELECT
+                    a.subsidy_subtype,
+                    CASE
+                        WHEN pd.total_amount IS NOT NULL THEN pd.total_amount
+                        WHEN a.status = '4' THEN COALESCE(a.approved_amount, 0)
+                        ELSE 0
+                    END AS amount
+                FROM applications a
+                LEFT JOIN LATERAL (
+                    SELECT SUM(amount) AS total_amount
+                    FROM payment_disbursements pd
+                    WHERE pd.application_id = a.id
+                      AND pd.review_stage IS DISTINCT FROM 'X'
+                ) pd ON TRUE
+                WHERE a.applicant_id = $1
+                  AND a.status IN ('3', '4')
+            )
             SELECT
-                COALESCE(SUM(approved_amount), 0) AS total_approved,
-                COALESCE(SUM(approved_amount) FILTER (WHERE subsidy_subtype = '1'), 0) AS total_approved_1,
-                COALESCE(SUM(approved_amount) FILTER (WHERE subsidy_subtype = '2'), 0) AS total_approved_2
-            FROM applications
-            WHERE applicant_id = $1 AND status = '4'
+                COALESCE(SUM(amount), 0) AS total_approved,
+                COALESCE(SUM(amount) FILTER (WHERE subsidy_subtype = '1'), 0) AS total_approved_1,
+                COALESCE(SUM(amount) FILTER (WHERE subsidy_subtype = '2'), 0) AS total_approved_2
+            FROM consumed
+            WHERE amount > 0
         `, [matchedUserId]);
 
         const totalApprovedAmount    = parseInt(sumRes.rows[0].total_approved   || '0', 10);
@@ -450,14 +468,41 @@ export async function fetchCaseSummaries(
                 FROM applications a
                 WHERE a.home_visit_assignee_id = $1::bigint
             ),
-            ` : 'WITH '}user_stats AS (
+            ` : 'WITH '}consumed_amounts AS (
+                SELECT
+                    a.applicant_id,
+                    a.subsidy_subtype,
+                    CASE
+                        WHEN pd.total_amount IS NOT NULL THEN pd.total_amount
+                        WHEN a.status = '4' THEN COALESCE(a.approved_amount, 0)
+                        ELSE 0
+                    END AS amount
+                FROM applications a
+                LEFT JOIN LATERAL (
+                    SELECT SUM(amount) AS total_amount
+                    FROM payment_disbursements pd
+                    WHERE pd.application_id = a.id
+                      AND pd.review_stage IS DISTINCT FROM 'X'
+                ) pd ON TRUE
+                WHERE a.status IN ('3', '4')
+                ${useVolunteerFilter ? 'AND a.applicant_id IN (SELECT applicant_id FROM applicants_for_volunteer)' : ''}
+            ),
+            consumed_stats AS (
                 SELECT
                     applicant_id,
-                    COUNT(*) as app_count,
-                    SUM(COALESCE(approved_amount, 0)) FILTER (WHERE status = '4' AND approved_amount IS NOT NULL AND approved_amount > 0) as total_approved
-                FROM applications
-                ${useVolunteerFilter ? 'WHERE applicant_id IN (SELECT applicant_id FROM applicants_for_volunteer)' : ''}
+                    COALESCE(SUM(amount) FILTER (WHERE amount > 0), 0) as total_approved
+                FROM consumed_amounts
                 GROUP BY applicant_id
+            ),
+            user_stats AS (
+                SELECT
+                    a.applicant_id,
+                    COUNT(*) as app_count,
+                    COALESCE(cs.total_approved, 0) as total_approved
+                FROM applications a
+                LEFT JOIN consumed_stats cs ON cs.applicant_id = a.applicant_id
+                ${useVolunteerFilter ? 'WHERE a.applicant_id IN (SELECT applicant_id FROM applicants_for_volunteer)' : ''}
+                GROUP BY a.applicant_id, cs.total_approved
             ),
             latest_apps AS (
                 SELECT DISTINCT ON (applicant_id)

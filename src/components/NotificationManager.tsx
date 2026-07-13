@@ -379,29 +379,35 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
 
     const loadData = useCallback(async () => {
         setLoading(true);
-        const [chRes, tplRes, schRes, autoRuleRes] = await Promise.all([
-            fetchChannels(),
-            fetchTemplates(),
-            fetchSchedules(),
-            fetchAutoNotificationRules(),
-        ]);
-        if (chRes.success && chRes.data) setChannels(chRes.data);
-        if (tplRes.success && tplRes.data) setTemplates(tplRes.data);
-        if (schRes.success && schRes.data) setSchedules(schRes.data);
-        if (autoRuleRes.success && autoRuleRes.data) {
-            setAutoRules(autoRuleRes.data);
-            setAutoRuleDrafts(Object.fromEntries(autoRuleRes.data.map(rule => [
-                rule.id,
-                {
-                    is_enabled: rule.is_enabled,
-                    channels: rule.channels,
-                    email_template_id: rule.email_template_id,
-                    line_template_id: rule.line_template_id,
-                },
-            ])));
+        try {
+            const [chRes, tplRes, schRes, autoRuleRes] = await Promise.all([
+                fetchChannels(),
+                fetchTemplates(),
+                fetchSchedules(),
+                fetchAutoNotificationRules(),
+            ]);
+            if (chRes.success && chRes.data) setChannels(chRes.data);
+            if (tplRes.success && tplRes.data) setTemplates(tplRes.data);
+            if (schRes.success && schRes.data) setSchedules(schRes.data);
+            if (autoRuleRes.success && autoRuleRes.data) {
+                setAutoRules(autoRuleRes.data);
+                setAutoRuleDrafts(Object.fromEntries(autoRuleRes.data.map(rule => [
+                    rule.id,
+                    {
+                        is_enabled: rule.is_enabled,
+                        channels: rule.channels,
+                        email_template_id: rule.email_template_id,
+                        line_template_id: rule.line_template_id,
+                    },
+                ])));
+            }
+        } catch (err: any) {
+            console.error('NotificationManager loadData error:', err);
+            pushToast({ type: 'error', msg: err?.message ? `通知管理載入失敗：${err.message}` : '通知管理載入失敗' });
+        } finally {
+            setLoading(false);
         }
-        setLoading(false);
-    }, []);
+    }, [pushToast]);
 
     useEffect(() => { loadData(); }, [loadData]);
 

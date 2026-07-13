@@ -35,10 +35,16 @@ export function ReferralUnitManager({ operatorUserId }: ReferralUnitManagerProps
 
     const load = useCallback(async (silent = false) => {
         if (!silent) setLoading(true);
+        try {
         const res = await fetchAllReferralUnits();
         if (res.success && res.data) setUnits(res.data);
         else pushToast({ type: 'error', msg: res.error ?? '載入失敗' });
+        } catch (err: any) {
+            console.error('ReferralUnitManager load error:', err);
+            pushToast({ type: 'error', msg: err?.message ? `載入轉介單位失敗：${err.message}` : '載入轉介單位失敗' });
+        } finally {
         if (!silent) setLoading(false);
+        }
     }, [pushToast]);
 
     useEffect(() => { void load(); }, [load]);

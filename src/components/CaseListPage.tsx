@@ -611,7 +611,7 @@ export function CaseListPage({
                                                 ?? Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2'])}
                                             onToggle={() => toggleOne(c.applicationId)}
                                             onClick={() => {
-                                                if (isMyTurnCase && !isOwnOfficerCase && onSelectApplication) {
+                                                if (onSelectApplication) {
                                                     onSelectApplication(c.applicationId);
                                                     return;
                                                 }

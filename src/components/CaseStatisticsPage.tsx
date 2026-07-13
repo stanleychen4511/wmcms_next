@@ -56,10 +56,17 @@ export function CaseStatisticsPage({ operatorUserId, username, onGoHome, onLogou
     const loadStats = useCallback(async () => {
         setLoading(true);
         setError('');
-        const res = await fetchCaseStatistics(operatorUserId, fromDate, toDate);
-        setLoading(false);
-        if (res.success) setStats(res.data);
-        else { setError(res.error); setStats(null); }
+        try {
+            const res = await fetchCaseStatistics(operatorUserId, fromDate, toDate);
+            if (res.success) setStats(res.data);
+            else { setError(res.error); setStats(null); }
+        } catch (err: any) {
+            console.error('CaseStatisticsPage loadStats error:', err);
+            setError(err?.message ?? '載入統計失敗');
+            setStats(null);
+        } finally {
+            setLoading(false);
+        }
     }, [operatorUserId, fromDate, toDate]);
 
     // 首次自動載入

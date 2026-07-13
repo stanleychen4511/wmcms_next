@@ -115,14 +115,29 @@ export async function queryApplicantEligibility(
         // 跨年度累計核准金額；依子類型分開。
         // status='3' 已通過進入核銷、status='4' 已結案，兩者都算已核定額度。
         const sumRes = await client.query(
-            `SELECT
-                COALESCE(SUM(CASE WHEN subsidy_subtype = '1' THEN approved_amount END), 0) AS econ_total,
-                COALESCE(SUM(CASE WHEN subsidy_subtype = '2' THEN approved_amount END), 0) AS mid_total
-             FROM applications
-             WHERE applicant_id = $1
-               AND status IN ('3', '4')
-               AND approved_amount IS NOT NULL
-               AND approved_amount > 0`,
+            `WITH consumed AS (
+                SELECT
+                    a.subsidy_subtype,
+                    CASE
+                        WHEN pd.total_amount IS NOT NULL THEN pd.total_amount
+                        WHEN a.status = '4' THEN COALESCE(a.approved_amount, 0)
+                        ELSE 0
+                    END AS amount
+                FROM applications a
+                LEFT JOIN LATERAL (
+                    SELECT SUM(amount) AS total_amount
+                    FROM payment_disbursements pd
+                    WHERE pd.application_id = a.id
+                      AND pd.review_stage IS DISTINCT FROM 'X'
+                ) pd ON TRUE
+                WHERE a.applicant_id = $1
+                  AND a.status IN ('3', '4')
+             )
+             SELECT
+                COALESCE(SUM(amount) FILTER (WHERE subsidy_subtype = '1'), 0) AS econ_total,
+                COALESCE(SUM(amount) FILTER (WHERE subsidy_subtype = '2'), 0) AS mid_total
+             FROM consumed
+             WHERE amount > 0`,
             [matchedUserId]
         );
         const econUsed = Number(sumRes.rows[0].econ_total || 0);
@@ -587,15 +602,30 @@ export async function fetchApplicantQuota(idNumber: string): Promise<ApplicantQu
         // 跨年度合計：依 subsidy_subtype 分開 SUM。
         // status='3' 已通過進入核銷、status='4' 已結案，兩者都算已核定額度。
         const sumRes = await client.query(
-            `SELECT
-                COALESCE(SUM(CASE WHEN subsidy_subtype = '1' THEN approved_amount END), 0) AS econ_total,
-                COALESCE(SUM(CASE WHEN subsidy_subtype = '2' THEN approved_amount END), 0) AS mid_total,
-                COALESCE(SUM(approved_amount), 0) AS overall_total
-             FROM applications
-             WHERE applicant_id = $1
-               AND status IN ('3', '4')
-               AND approved_amount IS NOT NULL
-               AND approved_amount > 0`,
+            `WITH consumed AS (
+                SELECT
+                    a.subsidy_subtype,
+                    CASE
+                        WHEN pd.total_amount IS NOT NULL THEN pd.total_amount
+                        WHEN a.status = '4' THEN COALESCE(a.approved_amount, 0)
+                        ELSE 0
+                    END AS amount
+                FROM applications a
+                LEFT JOIN LATERAL (
+                    SELECT SUM(amount) AS total_amount
+                    FROM payment_disbursements pd
+                    WHERE pd.application_id = a.id
+                      AND pd.review_stage IS DISTINCT FROM 'X'
+                ) pd ON TRUE
+                WHERE a.applicant_id = $1
+                  AND a.status IN ('3', '4')
+             )
+             SELECT
+                COALESCE(SUM(amount) FILTER (WHERE subsidy_subtype = '1'), 0) AS econ_total,
+                COALESCE(SUM(amount) FILTER (WHERE subsidy_subtype = '2'), 0) AS mid_total,
+                COALESCE(SUM(amount), 0) AS overall_total
+             FROM consumed
+             WHERE amount > 0`,
             [matchedUserId]
         );
         const econUsed = Number(sumRes.rows[0].econ_total || 0);

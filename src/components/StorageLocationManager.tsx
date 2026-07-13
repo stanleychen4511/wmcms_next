@@ -344,17 +344,23 @@ export function StorageLocationManager() {
 
     const loadData = useCallback(async () => {
         setLoading(true);
-        const res = await fetchAllStorageLocations();
-        if (res.success && res.data) {
-            setFlatAll(res.data);
-            const t = buildTree(res.data);
-            setTree(t);
-            // Expand all by default
-            const allIds = new Set<number>(res.data.map(n => n.id));
-            setExpanded(allIds);
+        try {
+            const res = await fetchAllStorageLocations();
+            if (res.success && res.data) {
+                setFlatAll(res.data);
+                const t = buildTree(res.data);
+                setTree(t);
+                // Expand all by default
+                const allIds = new Set<number>(res.data.map(n => n.id));
+                setExpanded(allIds);
+            }
+        } catch (err: any) {
+            console.error('StorageLocationManager loadData error:', err);
+            pushToast({ type: 'error', msg: err?.message ? `載入存放位置失敗：${err.message}` : '載入存放位置失敗' });
+        } finally {
+            setLoading(false);
         }
-        setLoading(false);
-    }, []);
+    }, [pushToast]);
 
     useEffect(() => { loadData(); }, [loadData]);
 

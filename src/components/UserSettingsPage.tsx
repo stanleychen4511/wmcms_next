@@ -43,20 +43,26 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
 
     const load = useCallback(async () => {
         setLoading(true);
-        const [res, atId, prefs] = await Promise.all([
-            fetchLineLinkStatus(userId),
-            fetchSetting('line_official_account_id', ''),
-            fetchUserNotificationChannels(userId),
-        ]);
-        if (res.success && res.data) setStatus(res.data); else pushToast({ type: 'error', msg: res.error ?? '載入失敗' });
-        setBotAtId(atId ?? '');
-        if (prefs.success && prefs.data) {
-            const set = new Set(prefs.data.channels);
-            setChannels(set);
-            setInitialChannels(new Set(set));
+        try {
+            const [res, atId, prefs] = await Promise.all([
+                fetchLineLinkStatus(userId),
+                fetchSetting('line_official_account_id', ''),
+                fetchUserNotificationChannels(userId),
+            ]);
+            if (res.success && res.data) setStatus(res.data); else pushToast({ type: 'error', msg: res.error ?? '載入失敗' });
+            setBotAtId(atId ?? '');
+            if (prefs.success && prefs.data) {
+                const set = new Set(prefs.data.channels);
+                setChannels(set);
+                setInitialChannels(new Set(set));
+            }
+        } catch (err: any) {
+            console.error('UserSettingsPage load error:', err);
+            pushToast({ type: 'error', msg: err?.message ? `通知設定載入失敗：${err.message}` : '通知設定載入失敗' });
+        } finally {
+            setLoading(false);
         }
-        setLoading(false);
-    }, [userId]);
+    }, [userId, pushToast]);
 
     useEffect(() => { void load(); }, [load]);
 

@@ -66,6 +66,9 @@ import { getNotificationTemplateLabel } from '../lib/systemTemplates';
 
 interface Props {
     applicationId: string;
+    caseNumber?: string | null;
+    applyAmount?: number | null;
+    approvedAmount?: number | null;
     applicantId?: string;        // 用於 accountant 查看該申請人歷史醫療收據
     operatorUserId: string;
     operatorRoles: Role[];
@@ -92,7 +95,7 @@ function canActOnStage(roles: Role[], stage: ReviewStage): boolean {
 
 // ─── 主元件 ──────────────────────────────────────────────────────────
 
-export function DisbursementPanel({ applicationId, applicantId, operatorUserId, operatorRoles, applicantPhone, applicantAddress, onCaseDataChanged, onCanCloseChange }: Props) {
+export function DisbursementPanel({ applicationId, caseNumber, applyAmount, approvedAmount, applicantId, operatorUserId, operatorRoles, applicantPhone, applicantAddress, onCaseDataChanged, onCanCloseChange }: Props) {
     const { push: pushToast } = useToast();
     const [summary, setSummary] = useState<DisbursementSummary | null>(null);
     const [loading, setLoading] = useState(true);
@@ -122,13 +125,19 @@ export function DisbursementPanel({ applicationId, applicantId, operatorUserId, 
     const load = useCallback(async (silent: boolean = false) => {
         if (!silent) setLoading(true);
         setError('');
-        const res = await fetchDisbursements(operatorUserId, applicationId);
-        if (!silent) setLoading(false);
-        if (res.success) {
-            setSummary(res.data);
-            onCanCloseChange?.(res.data.canCloseCase, res.data.closeCaseBlockReason);
-        } else {
-            setError(res.error);
+        try {
+            const res = await fetchDisbursements(operatorUserId, applicationId);
+            if (res.success) {
+                setSummary(res.data);
+                onCanCloseChange?.(res.data.canCloseCase, res.data.closeCaseBlockReason);
+            } else {
+                setError(res.error);
+            }
+        } catch (err: any) {
+            console.error('DisbursementPanel load error:', err);
+            setError(err?.message ?? '載入撥款紀錄失敗');
+        } finally {
+            if (!silent) setLoading(false);
         }
     }, [operatorUserId, applicationId, onCanCloseChange]);
 
@@ -311,6 +320,9 @@ export function DisbursementPanel({ applicationId, applicantId, operatorUserId, 
                                 disbursement={d}
                                 isFinalDisbursement={isFinalDisbursement(d)}
                                 applicationId={applicationId}
+                                caseNumber={caseNumber}
+                                applyAmount={applyAmount}
+                                approvedAmount={approvedAmount ?? summary.approvedAmount}
                                 operatorUserId={operatorUserId}
                                 operatorRoles={operatorRoles}
                                 applicantPhone={applicantPhone}
@@ -656,6 +668,9 @@ interface RowProps {
     disbursement: PaymentDisbursement;
     isFinalDisbursement: boolean;
     applicationId: string;
+    caseNumber?: string | null;
+    applyAmount?: number | null;
+    approvedAmount?: number | null;
     operatorUserId: string;
     operatorRoles: Role[];
     applicantPhone?: string | null;
@@ -673,7 +688,7 @@ const STAGE_COLORS: Record<ReviewStage, string> = {
     'X': 'bg-slate-200 text-slate-500',
 };
 
-function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicationId, operatorUserId, operatorRoles, applicantPhone, applicantAddress, onCaseDataChanged, onChanged }: RowProps) {
+function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicationId, caseNumber, applyAmount, approvedAmount, operatorUserId, operatorRoles, applicantPhone, applicantAddress, onCaseDataChanged, onChanged }: RowProps) {
     const { push: pushToast } = useToast();
     // 編輯領款收據資料的 inline form 狀態（涵蓋所有 PDF 用到的欄位）
     const [showEditReceipt, setShowEditReceipt] = useState(false);
@@ -2300,6 +2315,9 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                 <DisbursementEmailDialog
                     kind={emailDialogKind}
                     applicationId={applicationId}
+                    caseNumber={caseNumber}
+                    applyAmount={applyAmount}
+                    approvedAmount={approvedAmount}
                     disbursement={d}
                     operatorUserId={operatorUserId}
                     onPreviewReceipt={() => {
@@ -2323,6 +2341,9 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
 function DisbursementEmailDialog({
     kind,
     applicationId,
+    caseNumber,
+    applyAmount,
+    approvedAmount,
     disbursement,
     operatorUserId,
     onPreviewReceipt,
@@ -2331,6 +2352,9 @@ function DisbursementEmailDialog({
 }: {
     kind: DisbursementNotificationKind;
     applicationId: string;
+    caseNumber?: string | null;
+    applyAmount?: number | null;
+    approvedAmount?: number | null;
     disbursement: PaymentDisbursement;
     operatorUserId: string;
     onPreviewReceipt: () => void;
@@ -2354,13 +2378,29 @@ function DisbursementEmailDialog({
 
     const title = kind === 'approval' ? '寄送通過通知' : '寄送領據通知';
     const amountText = `NT$ ${disbursement.amount.toLocaleString()}`;
+    const amountValue = disbursement.amount.toLocaleString();
+    const applyAmountValue = (applyAmount ?? disbursement.amount).toLocaleString();
+    const approvedAmountValue = (approvedAmount ?? disbursement.amount).toLocaleString();
+    const applyAmountText = `NT$ ${applyAmountValue}`;
+    const approvedAmountText = `NT$ ${approvedAmountValue}`;
+    const receiptCode = disbursement.externalCode || disbursement.receiptNumber;
+    const templateCaseNumber = caseNumber?.trim() || applicationId;
     const defaultSubject = kind === 'approval' ? '萬美基金會申請通過通知' : '萬美基金會領據通知';
     const buildTemplateVars = (applicantName: string) => ({
         '申請人': applicantName,
-        '撥款金額': amountText,
-        '本次撥款金額': amountText,
-        '領據編號': disbursement.externalCode || disbursement.receiptNumber,
-        '撥款單號': disbursement.externalCode || disbursement.receiptNumber,
+        '姓名': applicantName,
+        '案號': templateCaseNumber,
+        '案件編號': templateCaseNumber,
+        '申請金額': applyAmountValue,
+        '核定金額': approvedAmountValue,
+        '本次撥款金額': amountValue,
+        '撥款金額': amountValue,
+        '申請金額含幣別': applyAmountText,
+        '核定金額含幣別': approvedAmountText,
+        '本次撥款金額含幣別': amountText,
+        '撥款金額含幣別': amountText,
+        '領據編號': receiptCode,
+        '撥款單號': receiptCode,
     });
     const defaultBody = (applicantName: string) => kind === 'approval'
         ? `${applicantName} 您好：\n\n您所申請的補助案件已通過董事審核，特此通知。\n\n本次撥款金額：${amountText}\n\n後續撥款流程將由基金會人員協助辦理。\n\n財團法人萬美社會福利慈善事業基金會`
@@ -2398,7 +2438,7 @@ function DisbursementEmailDialog({
             setLoading(false);
         })();
         return () => { active = false; };
-    }, [applicationId, amountText, kind]);
+    }, [applicationId, amountText, applyAmountValue, approvedAmountValue, templateCaseNumber, receiptCode, kind]);
 
     const addCustomRecipient = () => {
         const name = customName.trim();

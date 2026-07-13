@@ -76,13 +76,18 @@ export function DocumentTypeManager() {
     const dropHandledRef = useRef(false);
 
     const load = useCallback(async () => {
-        const [cfgs, locsRes] = await Promise.all([
-            fetchDocumentTypeConfigs(),
-            fetchAllStorageLocations(),
-        ]);
-        setConfigs(cfgs);
-        setLocations((locsRes.data ?? []).filter((l: StorageLocation) => l.status === 1));
-    }, []);
+        try {
+            const [cfgs, locsRes] = await Promise.all([
+                fetchDocumentTypeConfigs(),
+                fetchAllStorageLocations(),
+            ]);
+            setConfigs(cfgs);
+            setLocations((locsRes.data ?? []).filter((l: StorageLocation) => l.status === 1));
+        } catch (err: any) {
+            console.error('DocumentTypeManager load error:', err);
+            pushToast({ type: 'error', msg: err?.message ? `文件類型載入失敗：${err.message}` : '文件類型載入失敗' });
+        }
+    }, [pushToast]);
 
     useEffect(() => { void load(); }, [load]);
 

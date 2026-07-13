@@ -316,19 +316,25 @@ function App() {
     const [selectedNotificationLog, setSelectedNotificationLog] = useState<NotificationLog | null>(null);
 
     const loadNotifLogs = useCallback(async (appId: string) => {
-        const res = await fetchNotificationLogs(appId);
-        if (res.success && res.data) {
-            setNotifLogs(res.data);
-            setShowNotificationLogsDialog(false);
-            setSelectedNotificationLog(null);
+        try {
+            const res = await fetchNotificationLogs(appId);
+            if (res.success && res.data) {
+                setNotifLogs(res.data);
+                setShowNotificationLogsDialog(false);
+                setSelectedNotificationLog(null);
+            }
+        } catch (err) {
+            console.error('fetchNotificationLogs error:', err);
         }
     }, []);
 
     // DB-driven application detail (loaded when entering detail view)
     const [appDetail, setAppDetail] = useState<ApplicationDetail | null>(null);
     const [detailLoading, setDetailLoading] = useState(false);
+    const [detailError, setDetailError] = useState<string | null>(null);
     const [dbDocs, setDbDocs] = useState<DocumentEntry[]>([]);
     const [documentReloadKey, setDocumentReloadKey] = useState(0);
+    const detailLoadSeqRef = useRef(0);
 
     /** 當前案件適用的上限：依 appDetail.subsidySubtype 對應；未指定子類型時取兩者較大值。 */
     const maxApplyAmount = (() => {
@@ -373,15 +379,29 @@ function App() {
     }, [adminReviewApplyCap]);
 
     const loadAppDetail = useCallback(async (id: string, silent = false) => {
+        const seq = ++detailLoadSeqRef.current;
         if (!silent) setDetailLoading(true);
+        if (!silent) {
+            setDetailError(null);
+            setAppDetail(null);
+            setDbDocs([]);
+        }
         const scrollY = silent ? window.scrollY : 0;
         try {
-            const [detail, docs] = await Promise.all([
-                fetchApplicationDetail(id),
-                fetchApplicationDocuments(id),
-            ]);
+            const detail = await fetchApplicationDetail(id);
+            if (seq !== detailLoadSeqRef.current) return;
             setAppDetail(detail);
-            setDbDocs(docs);
+
+            try {
+                const docs = await fetchApplicationDocuments(id);
+                if (seq !== detailLoadSeqRef.current) return;
+                setDbDocs(docs);
+            } catch (docErr) {
+                if (seq !== detailLoadSeqRef.current) return;
+                console.error('fetchApplicationDocuments error:', docErr);
+                setDbDocs([]);
+                pushToast({ type: 'error', msg: '文件清單載入失敗，案件資料已先載入。' });
+            }
             if (detail) {
                 // 同步 selectedPersonId — 從首頁未補件 / 輪到我處理 / 未派案 modal 進入流程頁時
                 // 只設定了 selectedAppId，這裡補上 applicantId，避免「返回歷史紀錄」變空白。
@@ -405,7 +425,15 @@ function App() {
                     });
                 }
             }
+        } catch (err: any) {
+            if (seq !== detailLoadSeqRef.current) return;
+            console.error('loadAppDetail error:', err);
+            setAppDetail(null);
+            setDbDocs([]);
+            setDetailError('申請流程載入失敗，請稍後再試或重新整理。');
+            pushToast({ type: 'error', msg: err?.message ? `申請流程載入失敗：${err.message}` : '申請流程載入失敗' });
         } finally {
+            if (seq !== detailLoadSeqRef.current) return;
             if (!silent) {
                 setDetailLoading(false);
             } else {
@@ -413,16 +441,21 @@ function App() {
                 requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' as ScrollBehavior }));
             }
         }
-    }, []);
+    }, [pushToast]);
 
     // Per-application pending-doc reminder counter (for detail-view banner)
     const [reminderStatus, setReminderStatus] = useState<{ count: number; threshold: number; lastReminderAt: string | null } | null>(null);
     // (threshold-close modal 已合併到 CloseCaseModal；此處狀態整批移除)
 
     const loadReminderStatus = useCallback(async (appId: string) => {
-        const res = await fetchPendingDocReminderStatus(appId);
-        if (res.success && res.data) setReminderStatus(res.data);
-        else setReminderStatus(null);
+        try {
+            const res = await fetchPendingDocReminderStatus(appId);
+            if (res.success && res.data) setReminderStatus(res.data);
+            else setReminderStatus(null);
+        } catch (err) {
+            console.error('fetchPendingDocReminderStatus error:', err);
+            setReminderStatus(null);
+        }
     }, []);
 
     // Edit-case-basics modal state
@@ -611,16 +644,25 @@ function App() {
     );
 
     useEffect(() => {
+        if (view !== 'detail') {
+            detailLoadSeqRef.current += 1;
+            setDetailLoading(false);
+            setDetailError(null);
+            return;
+        }
         if (view === 'detail' && selectedAppId) {
-            loadAppDetail(selectedAppId);
-            loadNotifLogs(selectedAppId);
-            loadReminderStatus(selectedAppId);
+            const timer = window.setTimeout(() => {
+                loadAppDetail(selectedAppId);
+                loadNotifLogs(selectedAppId);
+                loadReminderStatus(selectedAppId);
+            }, 0);
             // 重新抓 stage-dependent 設定，避免 admin 改完設定後其他頁面 keep 舊值
             // （app-mount 只抓一次，使用者在 SettingsPanel 改完後不會自動同步到這裡）
             fetchSettingFresh('board_opinion_min_chars', '50').then(v => {
                 const n = Number(v);
                 setBoardOpinionMinChars(Number.isFinite(n) && n >= 0 ? n : 50);
             });
+            return () => window.clearTimeout(timer);
         }
     }, [view, selectedAppId, loadAppDetail, loadNotifLogs, loadReminderStatus]);
 
@@ -1048,6 +1090,43 @@ function App() {
         return (
             <div className="min-h-screen flex items-center justify-center bg-gray-50">
                 <LoadingSpinner />
+            </div>
+        );
+    }
+
+    if (view === 'detail' && detailError && !appDetail) {
+        return (
+            <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
+                <AppHeader
+                    username={loggedInUser?.username ?? ''}
+                    onGoHome={() => setView('home')}
+                    onLogout={handleLogout}
+                />
+                <main className="flex-1 container mx-auto px-4 sm:px-6 py-8">
+                    <button
+                        type="button"
+                        onClick={() => setView(detailReturnView)}
+                        className="text-sm text-slate-500 hover:text-blue-600 font-medium mb-4"
+                    >
+                        ← 返回上一頁
+                    </button>
+                    <div className="bg-white border border-red-200 rounded-lg shadow-sm p-6">
+                        <div className="flex items-start gap-3 text-red-700">
+                            <AlertTriangle className="w-5 h-5 mt-0.5 shrink-0" />
+                            <div>
+                                <h2 className="font-bold text-lg">申請流程載入失敗</h2>
+                                <p className="text-sm mt-1">{detailError}</p>
+                                <button
+                                    type="button"
+                                    onClick={() => selectedAppId && loadAppDetail(selectedAppId)}
+                                    className="mt-4 px-4 py-2 rounded-md bg-blue-600 text-white text-sm font-medium hover:bg-blue-700"
+                                >
+                                    重新載入
+                                </button>
+                            </div>
+                        </div>
+                    </div>
+                </main>
             </div>
         );
     }
@@ -2351,6 +2430,9 @@ function App() {
                         ) && (
                             <DisbursementPanel
                                 applicationId={selectedAppId}
+                                caseNumber={appDetail?.caseNumber ?? ''}
+                                applyAmount={appDetail?.applyAmount ?? null}
+                                approvedAmount={appDetail?.approvedAmount ?? null}
                                 applicantId={appDetail?.applicantId ?? undefined}
                                 operatorUserId={loggedInUser.id}
                                 operatorRoles={loggedInUser.roles as Role[]}

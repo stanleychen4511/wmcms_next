@@ -45,12 +45,18 @@ export function BoardGroupManager({ operatorUserId }: Props) {
 
     const load = useCallback(async (silent = false) => {
         if (!silent) setLoading(true);
-        const [gRes, cRes] = await Promise.all([fetchAllBoardGroups(), fetchBoardMemberCandidates()]);
-        if (gRes.success && gRes.data) setGroups(gRes.data);
-        else pushToast({ type: 'error', msg: gRes.error ?? '載入組別失敗' });
-        if (cRes.success && cRes.data) setCandidates(cRes.data);
-        if (!silent) setLoading(false);
-    }, []);
+        try {
+            const [gRes, cRes] = await Promise.all([fetchAllBoardGroups(), fetchBoardMemberCandidates()]);
+            if (gRes.success && gRes.data) setGroups(gRes.data);
+            else pushToast({ type: 'error', msg: gRes.error ?? '載入組別失敗' });
+            if (cRes.success && cRes.data) setCandidates(cRes.data);
+        } catch (err: any) {
+            console.error('BoardGroupManager load error:', err);
+            pushToast({ type: 'error', msg: err?.message ? `載入組別失敗：${err.message}` : '載入組別失敗' });
+        } finally {
+            if (!silent) setLoading(false);
+        }
+    }, [pushToast]);
 
     useEffect(() => { void load(); }, [load]);
 

@@ -88,6 +88,7 @@ export function SettingsPanel({ userId }: SettingsPanelProps) {
 
     const load = useCallback(async () => {
         setLoading(true);
+        try {
         await ensureDefaultSettings();
         const res = await fetchAllSettings();
         if (res.success && res.data) {
@@ -98,7 +99,12 @@ export function SettingsPanel({ userId }: SettingsPanelProps) {
             filtered.forEach(s => { init[s.key] = s.value; });
             setEditValues(init);
         }
+        } catch (err: any) {
+            console.error('SettingsPanel load error:', err);
+            setToasts(prev => ({ ...prev, __load: { type: 'error', msg: err?.message ?? '載入系統設定失敗' } }));
+        } finally {
         setLoading(false);
+        }
     }, []);
 
     useEffect(() => { load(); }, [load]);

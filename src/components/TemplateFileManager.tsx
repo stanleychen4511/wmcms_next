@@ -245,13 +245,19 @@ export function TemplateFileManager({ userId }: TemplateFileManagerProps) {
 
     const loadData = useCallback(async () => {
         setLoading(true);
-        const [catRes, fileRes] = await Promise.all([
-            fetchAllCategories(),
-            fetchAllTemplateFiles(),
-        ]);
-        if (catRes.success && catRes.data) setCategories(catRes.data);
-        if (fileRes.success && fileRes.data) setFiles(fileRes.data);
-        setLoading(false);
+        try {
+            const [catRes, fileRes] = await Promise.all([
+                fetchAllCategories(),
+                fetchAllTemplateFiles(),
+            ]);
+            if (catRes.success && catRes.data) setCategories(catRes.data);
+            if (fileRes.success && fileRes.data) setFiles(fileRes.data);
+        } catch (err: any) {
+            console.error('TemplateFileManager loadData error:', err);
+            setActionError(err?.message ?? '載入範本檔案失敗');
+        } finally {
+            setLoading(false);
+        }
     }, []);
 
     useEffect(() => { loadData(); }, [loadData]);

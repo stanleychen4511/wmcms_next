@@ -436,14 +436,9 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                       AND al.target_id = a.id::text
                       AND al.action = 'application.request_supervisor_review_board'
                 )) AS supervisor_review_pending,
-                (SELECT COALESCE(SUM(a2.approved_amount), 0) FROM applications a2
-                 WHERE a2.applicant_id = a.applicant_id AND a2.status = '4') AS total_approved_amount,
-                (SELECT COALESCE(SUM(a2.approved_amount), 0) FROM applications a2
-                 WHERE a2.applicant_id = a.applicant_id AND a2.status = '4'
-                   AND a2.subsidy_subtype = '1') AS total_approved_subtype1,
-                (SELECT COALESCE(SUM(a2.approved_amount), 0) FROM applications a2
-                 WHERE a2.applicant_id = a.applicant_id AND a2.status = '4'
-                   AND a2.subsidy_subtype = '2') AS total_approved_subtype2,
+                totals.total_approved_amount,
+                totals.total_approved_subtype1,
+                totals.total_approved_subtype2,
                 a.age, a.moveable_property, a.immoveable_property,
                 a.annual_income, a.marital_status, a.has_children, a.underage_children_count, a.adult_children_count,
                 a.apply_amount, a.approved_amount, a.board_review_comments,
@@ -533,6 +528,31 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 ORDER BY requested_at DESC, id DESC
                 LIMIT 1
             ) br ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT
+                    COALESCE(SUM(amount), 0) AS total_approved_amount,
+                    COALESCE(SUM(amount) FILTER (WHERE subsidy_subtype = '1'), 0) AS total_approved_subtype1,
+                    COALESCE(SUM(amount) FILTER (WHERE subsidy_subtype = '2'), 0) AS total_approved_subtype2
+                FROM (
+                    SELECT
+                        a2.subsidy_subtype,
+                        CASE
+                            WHEN pd.total_amount IS NOT NULL THEN pd.total_amount
+                            WHEN a2.status = '4' THEN COALESCE(a2.approved_amount, 0)
+                            ELSE 0
+                        END AS amount
+                    FROM applications a2
+                    LEFT JOIN LATERAL (
+                        SELECT SUM(amount) AS total_amount
+                        FROM payment_disbursements pd
+                        WHERE pd.application_id = a2.id
+                          AND pd.review_stage IS DISTINCT FROM 'X'
+                    ) pd ON TRUE
+                    WHERE a2.applicant_id = a.applicant_id
+                      AND a2.status IN ('3', '4')
+                ) consumed
+                WHERE amount > 0
+            ) totals ON TRUE
             LEFT JOIN users u_app ON u_app.id = a.applicant_id
             LEFT JOIN users u_off ON u_off.id = a.officer_id
             LEFT JOIN users u_hva ON u_hva.id = a.home_visit_assignee_id
