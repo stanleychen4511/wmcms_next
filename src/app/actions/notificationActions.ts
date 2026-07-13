@@ -314,7 +314,8 @@ export async function fetchEmailRecipients(): Promise<{ success: boolean; data?:
  * Returns null if the applicant has no email on record.
  */
 export async function fetchApplicantRecipient(
-    applicationId: string
+    applicationId: string,
+    options: { preferReferralForEconomicWeak?: boolean } = {}
 ): Promise<{ success: boolean; data?: NotificationRecipient | null; error?: string }> {
     const client = await pool.connect();
     try {
@@ -329,7 +330,7 @@ export async function fetchApplicantRecipient(
         );
         if (res.rows.length === 0) return { success: true, data: null };
         const r = res.rows[0];
-        if (r.subsidy_subtype === '1') {
+        if (options.preferReferralForEconomicWeak !== false && r.subsidy_subtype === '1') {
             return {
                 success: true,
                 data: r.referral_contact_email

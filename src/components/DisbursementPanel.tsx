@@ -47,6 +47,7 @@ import {
 } from '../app/actions/paymentDisbursementActions';
 import {
     fetchApplicantRecipient,
+    fetchReferralRecipient,
     fetchActiveTemplates,
     type NotificationRecipient,
     type NotificationTemplate,
@@ -97,6 +98,7 @@ function canActOnStage(roles: Role[], stage: ReviewStage): boolean {
 
 export function DisbursementPanel({ applicationId, caseNumber, applyAmount, approvedAmount, applicantId, operatorUserId, operatorRoles, applicantPhone, applicantAddress, onCaseDataChanged, onCanCloseChange }: Props) {
     const { push: pushToast } = useToast();
+    const onCanCloseChangeRef = useRef(onCanCloseChange);
     const [summary, setSummary] = useState<DisbursementSummary | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string>('');
@@ -121,6 +123,10 @@ export function DisbursementPanel({ applicationId, caseNumber, applyAmount, appr
     const [sentAt, setSentAt] = useState('');
     const [notes, setNotes] = useState('');
 
+    useEffect(() => {
+        onCanCloseChangeRef.current = onCanCloseChange;
+    }, [onCanCloseChange]);
+
     /** silent=true 時不切 loading，背景刷新避免 unmount 整個面板（CLAUDE.md UI 規則） */
     const load = useCallback(async (silent: boolean = false) => {
         if (!silent) setLoading(true);
@@ -129,7 +135,7 @@ export function DisbursementPanel({ applicationId, caseNumber, applyAmount, appr
             const res = await fetchDisbursements(operatorUserId, applicationId);
             if (res.success) {
                 setSummary(res.data);
-                onCanCloseChange?.(res.data.canCloseCase, res.data.closeCaseBlockReason);
+                onCanCloseChangeRef.current?.(res.data.canCloseCase, res.data.closeCaseBlockReason);
             } else {
                 setError(res.error);
             }
@@ -139,7 +145,7 @@ export function DisbursementPanel({ applicationId, caseNumber, applyAmount, appr
         } finally {
             if (!silent) setLoading(false);
         }
-    }, [operatorUserId, applicationId, onCanCloseChange]);
+    }, [operatorUserId, applicationId]);
 
     const reload = useCallback(() => load(true), [load]);
 
@@ -2365,6 +2371,8 @@ function DisbursementEmailDialog({
     const { push: pushToast } = useToast();
     const [loading, setLoading] = useState(true);
     const [applicant, setApplicant] = useState<NotificationRecipient | null>(null);
+    const [selectableRecipients, setSelectableRecipients] = useState<NotificationRecipient[]>([]);
+    const [selectedRecipientIds, setSelectedRecipientIds] = useState<Set<string>>(new Set());
     const [subject, setSubject] = useState('');
     const [body, setBody] = useState('');
     const [customName, setCustomName] = useState('');
@@ -2418,16 +2426,26 @@ function DisbursementEmailDialog({
         let active = true;
         (async () => {
             setLoading(true);
-            const [res, templateRes] = await Promise.all([
-                fetchApplicantRecipient(applicationId),
+            const [res, referralRes, templateRes] = await Promise.all([
+                fetchApplicantRecipient(applicationId, { preferReferralForEconomicWeak: false }),
+                fetchReferralRecipient(applicationId),
                 fetchActiveTemplates(),
             ]);
             if (!active) return;
             const applicantRecipient = res.success ? (res.data ?? null) : null;
+            const referralRecipient = referralRes.success ? (referralRes.data ?? null) : null;
+            const uniqueRecipients = [applicantRecipient, referralRecipient]
+                .filter((r): r is NotificationRecipient => !!r)
+                .filter((recipient, index, list) => {
+                    const email = recipient.email.trim().toLowerCase();
+                    return list.findIndex(r => r.email.trim().toLowerCase() === email) === index;
+                });
             const emailTemplates = templateRes.success
                 ? (templateRes.data ?? []).filter(t => t.channel === 'email')
                 : [];
             setApplicant(applicantRecipient);
+            setSelectableRecipients(uniqueRecipients);
+            setSelectedRecipientIds(new Set(applicantRecipient ? [applicantRecipient.user_id] : uniqueRecipients.slice(0, 1).map(r => r.user_id)));
             setTemplates(emailTemplates);
             const applicantName = applicantRecipient?.name || '申請人';
             const preferredName = kind === 'approval'
@@ -2452,7 +2470,7 @@ function DisbursementEmailDialog({
             setError('請輸入有效的 Email');
             return;
         }
-        const all = [...(applicant ? [applicant] : []), ...customRecipients];
+        const all = [...selectableRecipients, ...customRecipients];
         if (all.some(r => r.email.trim().toLowerCase() === email)) {
             setError('此 Email 已在收件人清單中');
             return;
@@ -2485,10 +2503,18 @@ function DisbursementEmailDialog({
         });
     };
 
+    const toggleSelectableRecipient = (userId: string) => {
+        setSelectedRecipientIds(prev => {
+            const next = new Set(prev);
+            next.has(userId) ? next.delete(userId) : next.add(userId);
+            return next;
+        });
+    };
+
     const handleSend = async () => {
         setError('');
-        if (!applicant) {
-            setError('申請人沒有可寄送的 Email');
+        if (selectableRecipients.length === 0 && customRecipients.length === 0) {
+            setError('此案件沒有可寄送的 Email，請先新增其他收件人');
             return;
         }
         if (!subject.trim()) {
@@ -2500,10 +2526,20 @@ function DisbursementEmailDialog({
             return;
         }
         setSending(true);
+        const selectedRecipients = selectableRecipients.filter(r => selectedRecipientIds.has(r.user_id));
         const recipients = [
-            { ...applicant, is_applicant: true, is_bcc: false },
+            ...selectedRecipients.map(r => ({
+                ...r,
+                is_applicant: !!r.is_applicant && !r.is_referral,
+                is_bcc: false,
+            })),
             ...customRecipients.map(r => ({ ...r, is_applicant: false, is_bcc: bccRecipients.has(r.user_id) })),
         ];
+        if (recipients.length === 0) {
+            setSending(false);
+            setError('請至少選擇或新增一位收件人');
+            return;
+        }
         const res = await sendDisbursementNotificationEmail(
             operatorUserId,
             disbursement.id,
@@ -2539,16 +2575,25 @@ function DisbursementEmailDialog({
                 ) : (
                     <div className="flex-1 overflow-y-auto px-6 py-5 space-y-5">
                         <div className="border border-amber-200 rounded-lg overflow-hidden">
-                            <div className="px-4 py-2 bg-amber-50 text-xs font-semibold text-amber-700">固定收件人</div>
-                            {applicant ? (
-                                <div className="flex items-center gap-3 px-4 py-3">
-                                    <CheckCircle className="w-4 h-4 text-emerald-600 shrink-0" />
-                                    <span className="text-sm font-medium text-slate-800">{applicant.name}</span>
-                                    <span className="text-xs text-slate-500 ml-auto">{applicant.email}</span>
-                                    <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold">申請人</span>
-                                </div>
+                            <div className="px-4 py-2 bg-amber-50 text-xs font-semibold text-amber-700">可選收件人</div>
+                            {selectableRecipients.length > 0 ? (
+                                selectableRecipients.map(r => (
+                                    <label key={r.user_id} className="flex items-center gap-3 px-4 py-3 border-t border-amber-100 first:border-t-0 cursor-pointer hover:bg-amber-50/50">
+                                        <input
+                                            type="checkbox"
+                                            checked={selectedRecipientIds.has(r.user_id)}
+                                            onChange={() => toggleSelectableRecipient(r.user_id)}
+                                            className="w-4 h-4 accent-blue-600"
+                                        />
+                                        <span className="text-sm font-medium text-slate-800">{r.name}</span>
+                                        <span className="text-xs text-slate-500 ml-auto">{r.email}</span>
+                                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-amber-100 text-amber-700 font-semibold">
+                                            {r.is_referral ? '轉介人' : '申請人'}
+                                        </span>
+                                    </label>
+                                ))
                             ) : (
-                                <div className="px-4 py-3 text-sm text-rose-600">申請人沒有 Email，無法寄送。</div>
+                                <div className="px-4 py-3 text-sm text-slate-500">此案件尚無申請人或轉介人 Email，可於下方新增其他收件人。</div>
                             )}
                         </div>
 
@@ -2655,7 +2700,7 @@ function DisbursementEmailDialog({
                     <button
                         type="button"
                         onClick={handleSend}
-                        disabled={loading || sending || !applicant}
+                        disabled={loading || sending || (selectableRecipients.length === 0 && customRecipients.length === 0)}
                         className="inline-flex items-center gap-1.5 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
                     >
                         {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}
