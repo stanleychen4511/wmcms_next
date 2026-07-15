@@ -30,6 +30,7 @@ next-env.d.ts
 # /public/intake/    ← 外部收件上傳的檔案（個資）
 /public/uploads/
 /public/intake/
+/public/notification-attachments/
 
 # ─── Temp scripts / one-shot diagnostics ────────────────────
 /tmp/

@@ -36,6 +36,7 @@ import {
     updateDisbursementRemittanceSlip,
     generateDisbursementPaymentReceipt,
     sendDisbursementNotificationEmail,
+    cleanupDisbursementNotificationAttachments,
     fetchLastPrintMeta,
     fetchCaseAuxiliaryData,
     fetchApplicantHistoricalMedicalReceipts,
@@ -55,7 +56,7 @@ import {
 import { InfoSheetModal, type InfoSection } from './InfoSheetModal';
 import { REVIEW_STAGE_LABEL, type ReviewStage } from '../lib/paymentDisbursementConstants';
 import { linkApplicationDocumentByUrl } from '../app/actions/documentActions';
-import { uploadFileToBlob } from '../lib/uploadClient';
+import { uploadFileToBlob, type UploadedBlob } from '../lib/uploadClient';
 import { Role } from '../types';
 import { useToast } from './FloatingToast';
 import { useModalDismiss } from '../hooks/useModalDismiss';
@@ -64,6 +65,11 @@ import { DateInput } from './DateInput';
 import { todayDateOnly } from '../lib/dateOnly';
 import { applyPlaceholders } from '../lib/notificationUtils';
 import { getNotificationTemplateLabel } from '../lib/systemTemplates';
+import {
+    mapNotificationAttachmentsConcurrently,
+    NOTIFICATION_ATTACHMENT_ACCEPT,
+    validateNotificationAttachments,
+} from '../lib/notificationAttachments';
 
 interface Props {
     applicationId: string;
@@ -2344,6 +2350,12 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
 
 // ─── 進度條 ───────────────────────────────────────────────────────────
 
+interface PreuploadedReceiptAttachment {
+    id: string;
+    file: File;
+    uploaded: UploadedBlob | null;
+}
+
 function DisbursementEmailDialog({
     kind,
     applicationId,
@@ -2367,7 +2379,6 @@ function DisbursementEmailDialog({
     onClose: () => void;
     onSent: () => void;
 }) {
-    useModalDismiss(onClose);
     const { push: pushToast } = useToast();
     const [loading, setLoading] = useState(true);
     const [applicant, setApplicant] = useState<NotificationRecipient | null>(null);
@@ -2383,6 +2394,11 @@ function DisbursementEmailDialog({
     const [selectedTemplateId, setSelectedTemplateId] = useState('');
     const [error, setError] = useState('');
     const [sending, setSending] = useState(false);
+    const [customAttachments, setCustomAttachments] = useState<PreuploadedReceiptAttachment[]>([]);
+    const customAttachmentBytes = customAttachments.reduce((sum, item) => sum + item.file.size, 0);
+    const preuploadingAttachments = customAttachments.some(item => item.uploaded === null);
+    const closedRef = useRef(false);
+    const closingRef = useRef(false);
 
     const title = kind === 'approval' ? '寄送通過通知' : '寄送領據通知';
     const amountText = `NT$ ${disbursement.amount.toLocaleString()}`;
@@ -2511,6 +2527,103 @@ function DisbursementEmailDialog({
         });
     };
 
+    const cleanupUploadedAttachments = useCallback(async (uploaded: readonly UploadedBlob[]) => {
+        if (uploaded.length === 0) return;
+        await cleanupDisbursementNotificationAttachments(
+            operatorUserId,
+            applicationId,
+            disbursement.id,
+            uploaded.map(file => file.url),
+        );
+    }, [applicationId, disbursement.id, operatorUserId]);
+
+    const handleClose = useCallback(async () => {
+        if (sending || closingRef.current) return;
+        closingRef.current = true;
+        closedRef.current = true;
+        try {
+            await cleanupUploadedAttachments(
+                customAttachments.flatMap(item => item.uploaded ? [item.uploaded] : []),
+            );
+        } finally {
+            onClose();
+        }
+    }, [cleanupUploadedAttachments, customAttachments, onClose, sending]);
+
+    useModalDismiss(handleClose);
+
+    const addAttachments = async (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+        const seen = new Set(customAttachments.map(item => item.id));
+        const additions = Array.from(files).filter(file => {
+            const id = `${file.name}-${file.size}-${file.lastModified}`;
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+        });
+        if (additions.length === 0) return;
+
+        const nextFiles = [...customAttachments.map(item => item.file), ...additions];
+        const validationError = validateNotificationAttachments(nextFiles);
+        if (validationError) {
+            setError(validationError);
+            return;
+        }
+
+        const batch = additions.map(file => ({
+            id: `${file.name}-${file.size}-${file.lastModified}`,
+            file,
+            uploaded: null,
+        } satisfies PreuploadedReceiptAttachment));
+        const batchIds = new Set(batch.map(item => item.id));
+        const completedUploads: UploadedBlob[] = [];
+        const uploadStartedAt = performance.now();
+        setError('');
+        setCustomAttachments(current => [...current, ...batch]);
+
+        try {
+            const orderedUploads = await mapNotificationAttachmentsConcurrently(additions, async file => {
+                const uploaded = await uploadFileToBlob(file, {
+                    pathPrefix: `notification-attachments/${applicationId}/${disbursement.id}`,
+                });
+                completedUploads.push(uploaded);
+                return uploaded;
+            });
+            if (closedRef.current) {
+                await cleanupUploadedAttachments(orderedUploads);
+                return;
+            }
+            const uploadsById = new Map(batch.map((item, index) => [item.id, orderedUploads[index]]));
+            setCustomAttachments(current => current.map(item => (
+                uploadsById.has(item.id) ? { ...item, uploaded: uploadsById.get(item.id)! } : item
+            )));
+        } catch (uploadError) {
+            await cleanupUploadedAttachments(completedUploads).catch(() => {});
+            if (!closedRef.current) {
+                setCustomAttachments(current => current.filter(item => !batchIds.has(item.id)));
+                setError(uploadError instanceof Error ? uploadError.message : '附件預先上傳失敗');
+            }
+        } finally {
+            console.info('[receipt-email-timing:preupload]', {
+                attachmentCount: additions.length,
+                attachmentBytes: additions.reduce((sum, file) => sum + file.size, 0),
+                completedCount: completedUploads.length,
+                uploadMs: Math.round(performance.now() - uploadStartedAt),
+            });
+        }
+    };
+
+    const removeAttachment = async (id: string) => {
+        const item = customAttachments.find(attachment => attachment.id === id);
+        if (!item || !item.uploaded) return;
+        setCustomAttachments(current => current.filter(attachment => attachment.id !== id));
+        try {
+            await cleanupUploadedAttachments([item.uploaded]);
+        } catch {
+            setError(`${item.file.name}：暫存附件清除失敗`);
+        }
+    };
+
     const handleSend = async () => {
         setError('');
         if (selectableRecipients.length === 0 && customRecipients.length === 0) {
@@ -2523,6 +2636,10 @@ function DisbursementEmailDialog({
         }
         if (!body.trim()) {
             setError('請輸入通知內容');
+            return;
+        }
+        if (preuploadingAttachments) {
+            setError('附件仍在預先上傳，請稍候再送出');
             return;
         }
         setSending(true);
@@ -2540,33 +2657,59 @@ function DisbursementEmailDialog({
             setError('請至少選擇或新增一位收件人');
             return;
         }
-        const res = await sendDisbursementNotificationEmail(
-            operatorUserId,
-            disbursement.id,
-            kind,
-            recipients,
-            subject,
-            body,
-            selectedTemplateId ? Number(selectedTemplateId) : null,
-        );
-        setSending(false);
-        if (res.success) {
-            pushToast({ type: 'success', msg: kind === 'approval' ? '已寄送通過通知' : '已寄送領據通知' });
-            onSent();
-        } else {
-            setError(res.error ?? '通知寄送失敗');
+        const uploadedAttachments = kind === 'receipt'
+            ? customAttachments.flatMap(item => item.uploaded ? [item.uploaded] : [])
+            : [];
+        const sendStartedAt = performance.now();
+        const serverActionStartedAt = performance.now();
+        try {
+            const res = await sendDisbursementNotificationEmail(
+                operatorUserId,
+                disbursement.id,
+                kind,
+                recipients,
+                subject,
+                body,
+                selectedTemplateId ? Number(selectedTemplateId) : null,
+                uploadedAttachments,
+            );
+            if (res.success) {
+                pushToast({ type: 'success', msg: kind === 'approval' ? '已寄送通過通知' : '已寄送領據通知' });
+                onSent();
+            } else {
+                await cleanupUploadedAttachments(uploadedAttachments).catch(() => {});
+                setCustomAttachments([]);
+                setError(`${res.error ?? '通知寄送失敗'}${uploadedAttachments.length > 0 ? '；請重新選擇附件後再送出' : ''}`);
+            }
+        } catch (err) {
+            await cleanupUploadedAttachments(uploadedAttachments).catch(() => {});
+            setCustomAttachments([]);
+            const message = err instanceof Error ? err.message : '通知寄送失敗';
+            setError(`${message}${uploadedAttachments.length > 0 ? '；請重新選擇附件後再送出' : ''}`);
+        } finally {
+            if (kind === 'receipt') {
+                const finishedAt = performance.now();
+                console.info('[receipt-email-timing:client]', {
+                    customAttachmentCount: customAttachments.length,
+                    customAttachmentBytes,
+                    preuploaded: true,
+                    serverActionMs: Math.round(finishedAt - serverActionStartedAt),
+                    totalMs: Math.round(finishedAt - sendStartedAt),
+                });
+            }
+            setSending(false);
         }
     };
 
     return (
-        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={onClose}>
+        <div className="fixed inset-0 z-50 bg-black/40 flex items-center justify-center p-4" onClick={handleClose}>
             <div className="w-full max-w-2xl max-h-[90vh] bg-white rounded-2xl shadow-xl flex flex-col" onClick={e => e.stopPropagation()}>
                 <div className="px-6 py-4 border-b border-slate-200 flex items-center justify-between shrink-0">
                     <h3 className="text-base font-bold text-slate-800 flex items-center gap-2">
                         <Send className="w-4 h-4 text-blue-600" />
                         {title}
                     </h3>
-                    <button type="button" onClick={onClose} className="text-slate-400 hover:text-slate-600">
+                    <button type="button" onClick={handleClose} disabled={sending} className="text-slate-400 hover:text-slate-600 disabled:opacity-50">
                         <X className="w-5 h-5" />
                     </button>
                 </div>
@@ -2673,17 +2816,72 @@ function DisbursementEmailDialog({
                             />
                         </label>
                         {kind === 'receipt' && (
-                            <div className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 flex flex-wrap items-center justify-between gap-2">
-                                <span>送出時會附上目前這筆撥款的領款收據 PDF。</span>
-                                <button
-                                    type="button"
-                                    onClick={onPreviewReceipt}
-                                    disabled={!disbursement.receiptFilePath}
-                                    className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-blue-200 bg-white text-blue-700 hover:bg-blue-50 disabled:opacity-50"
-                                >
-                                    <Eye className="w-3.5 h-3.5" />
-                                    檢視領款收據
-                                </button>
+                            <div className="space-y-3">
+                                <div className="border border-slate-200 rounded-lg p-3">
+                                    <div className="flex flex-wrap items-center justify-between gap-2">
+                                        <div>
+                                            <div className="text-sm font-medium text-slate-700">其他附件（選填）</div>
+                                            <div className="text-xs text-slate-500 mt-0.5">
+                                                PDF、Word、Excel、JPG、PNG、GIF、WebP、BMP；合計不可超過 18 MB
+                                            </div>
+                                        </div>
+                                        <label className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 cursor-pointer">
+                                            {preuploadingAttachments
+                                                ? <Loader2 className="w-4 h-4 animate-spin" />
+                                                : <Upload className="w-4 h-4" />}
+                                            {preuploadingAttachments ? '上傳中…' : '選擇檔案'}
+                                            <input
+                                                type="file"
+                                                multiple
+                                                accept={NOTIFICATION_ATTACHMENT_ACCEPT}
+                                                disabled={sending || preuploadingAttachments}
+                                                className="hidden"
+                                                onChange={event => {
+                                                    void addAttachments(event.target.files);
+                                                    event.target.value = '';
+                                                }}
+                                            />
+                                        </label>
+                                    </div>
+                                    {customAttachments.length > 0 && (
+                                        <div className="mt-3 space-y-2">
+                                            <div className="text-xs text-slate-500 text-right">
+                                                已選 {customAttachments.length} 個檔案，共 {(customAttachmentBytes / 1024 / 1024).toFixed(2)} MB
+                                                {preuploadingAttachments ? '；上傳中' : ''}
+                                            </div>
+                                            {customAttachments.map(item => (
+                                                <div key={item.id} className="flex items-center gap-2 rounded-md bg-slate-50 px-3 py-2 text-xs">
+                                                    <FileText className="w-4 h-4 text-slate-500 shrink-0" />
+                                                    <span className="text-slate-700 truncate" title={item.file.name}>{item.file.name}</span>
+                                                    <span className="text-slate-400 ml-auto shrink-0">
+                                                        {item.uploaded ? `${Math.ceil(item.file.size / 1024)} KB` : '上傳中…'}
+                                                    </span>
+                                                    <button
+                                                        type="button"
+                                                        onClick={() => { void removeAttachment(item.id); }}
+                                                        disabled={sending || !item.uploaded}
+                                                        className="p-1 text-slate-400 hover:text-rose-600 disabled:opacity-50"
+                                                        aria-label={`移除附件 ${item.file.name}`}
+                                                    >
+                                                        <Trash2 className="w-3.5 h-3.5" />
+                                                    </button>
+                                                </div>
+                                            ))}
+                                        </div>
+                                    )}
+                                </div>
+                                <div className="text-xs text-blue-700 bg-blue-50 border border-blue-100 rounded-lg px-3 py-2 flex flex-wrap items-center justify-between gap-2">
+                                    <span>送出時會附上目前這筆撥款的領款收據 PDF。</span>
+                                    <button
+                                        type="button"
+                                        onClick={onPreviewReceipt}
+                                        disabled={!disbursement.receiptFilePath}
+                                        className="inline-flex items-center gap-1 px-2 py-1 rounded-md border border-blue-200 bg-white text-blue-700 hover:bg-blue-50 disabled:opacity-50"
+                                    >
+                                        <Eye className="w-3.5 h-3.5" />
+                                        檢視領款收據
+                                    </button>
+                                </div>
                             </div>
                         )}
                         {error && (
@@ -2694,13 +2892,13 @@ function DisbursementEmailDialog({
                     </div>
                 )}
                 <div className="px-6 py-4 border-t border-slate-200 flex justify-end gap-2 shrink-0">
-                    <button type="button" onClick={onClose} disabled={sending} className="px-4 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50">
+                    <button type="button" onClick={handleClose} disabled={sending} className="px-4 py-2 text-sm border border-slate-300 rounded-lg hover:bg-slate-50 disabled:opacity-50">
                         取消
                     </button>
                     <button
                         type="button"
                         onClick={handleSend}
-                        disabled={loading || sending || (selectableRecipients.length === 0 && customRecipients.length === 0)}
+                        disabled={loading || sending || preuploadingAttachments || (selectableRecipients.length === 0 && customRecipients.length === 0)}
                         className="inline-flex items-center gap-1.5 px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg disabled:opacity-50"
                     >
                         {sending ? <Loader2 className="w-4 h-4 animate-spin" /> : <Send className="w-4 h-4" />}

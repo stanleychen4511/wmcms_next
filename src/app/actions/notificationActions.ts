@@ -437,6 +437,7 @@ export async function sendNotificationEmail(
         : (applicantRecipients.length > 0 ? staffRecipients : []);
     const formatAddresses = (items: NotificationRecipient[]) =>
         items.map(r => `"${r.name}" <${r.email}>`).join(', ');
+    const smtpStartedAt = Date.now();
     try {
         const nodemailer = await import('nodemailer');
         const transporter = nodemailer.default.createTransport({
@@ -460,6 +461,14 @@ export async function sendNotificationEmail(
     } catch (err: any) {
         console.error('sendNotificationEmail SMTP error:', err);
         sendError = err.message ?? '發送失敗';
+    }
+
+    if (attachments && attachments.length > 0) {
+        console.info('[receipt-email-timing:smtp]', {
+            attachmentCount: attachments.length,
+            attachmentBytes: attachments.reduce((sum, attachment) => sum + attachment.content.length, 0),
+            smtpMs: Date.now() - smtpStartedAt,
+        });
     }
 
     // 3. Write notification_logs

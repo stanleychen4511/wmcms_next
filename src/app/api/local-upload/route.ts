@@ -18,9 +18,13 @@ const ALLOWED_MIME = [
     'application/pdf',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'application/vnd.ms-excel',
+    'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
     'image/jpeg',
     'image/png',
+    'image/gif',
     'image/webp',
+    'image/bmp',
 ];
 const MAX_BYTES = 30 * 1024 * 1024;
 

@@ -17,10 +17,18 @@
 
 import { pool } from '../../lib/db';
 import * as crypto from 'crypto';
+import { after } from 'next/server';
 import { writeAuditLog } from './auditActions';
 // 'use server' 檔案不可 export 非 async function；常數與型別搬到 lib/paymentDisbursementConstants.ts
 import { REVIEW_STAGE_LABEL, type ReviewStage } from '../../lib/paymentDisbursementConstants';
 import { formatDateOnly } from '../../lib/dateOnly';
+import {
+    getNotificationAttachmentContentType,
+    hasValidNotificationAttachmentContent,
+    isNotificationAttachmentUrlFor,
+    mapNotificationAttachmentsConcurrently,
+    validateNotificationAttachments,
+} from '../../lib/notificationAttachments';
 
 export interface PaymentDisbursement {
     id: string;
@@ -1336,6 +1344,13 @@ export interface DisbursementEmailRecipientInput {
     roles?: string[];
 }
 
+export interface DisbursementEmailAttachmentInput {
+    url: string;
+    originalName: string;
+    mimeType: string;
+    size: number;
+}
+
 export async function sendDisbursementNotificationEmail(
     operatorUserId: string,
     disbursementId: string,
@@ -1344,12 +1359,20 @@ export async function sendDisbursementNotificationEmail(
     subject: string,
     body: string,
     templateIdInput?: number | null,
+    customAttachments: DisbursementEmailAttachmentInput[] = [],
 ): Promise<ActionResult> {
     if (!/^\d+$/.test(disbursementId)) return { success: false, error: '無效的撥款 ID' };
     if (kind !== 'approval' && kind !== 'receipt') return { success: false, error: '不正確的通知類型' };
+    if (!Array.isArray(customAttachments)) return { success: false, error: '附件資料格式不正確' };
     if (!(await hasAnyRole(operatorUserId, ['case_officer']))) {
         return { success: false, error: '僅個管師可寄送撥款階段通知' };
     }
+    customAttachments = customAttachments.map(file => ({
+        url: String(file?.url ?? ''),
+        originalName: String(file?.originalName ?? ''),
+        mimeType: String(file?.mimeType ?? ''),
+        size: Number(file?.size),
+    }));
     const cleanRecipients = recipients
         .map(r => ({
             user_id: String(r.user_id ?? '').trim(),
@@ -1366,6 +1389,21 @@ export async function sendDisbursementNotificationEmail(
     const trimmedBody = body.trim();
     if (!trimmedSubject) return { success: false, error: '請輸入主旨' };
     if (!trimmedBody) return { success: false, error: '請輸入通知內容' };
+
+    if (kind !== 'receipt' && customAttachments.length > 0) {
+        return { success: false, error: '自選附件僅可用於領據通知' };
+    }
+    const attachmentError = validateNotificationAttachments(customAttachments.map(file => ({
+        name: String(file.originalName ?? ''),
+        type: String(file.mimeType ?? ''),
+        size: Number(file.size),
+    })));
+    if (attachmentError) return { success: false, error: attachmentError };
+
+    const timingStartedAt = Date.now();
+    let receiptPdfMs = 0;
+    let receiptPdfBytes = 0;
+    let blobReadMs = 0;
 
     const client = await pool.connect();
     let applicationId = '';
@@ -1405,91 +1443,173 @@ export async function sendDisbursementNotificationEmail(
         client.release();
     }
 
-    if (kind === 'receipt' && !hasReceiptPdf) {
-        return { success: false, error: '請先產生領款收據 PDF，再寄送領據通知' };
+    if (customAttachments.some(file => !isNotificationAttachmentUrlFor(file.url, applicationId, disbursementId))) {
+        return { success: false, error: '附件暫存位置無效' };
     }
 
-    const templateName = kind === 'receipt'
-        ? 'email_case_payment_receipt_to_applicant'
-        : 'email_case_disbursement_approval_to_applicant';
-    let templateId: number | null = null;
-    const templateClient = await pool.connect();
     try {
-        const tr = templateIdInput
-            ? await templateClient.query(
-                `SELECT id FROM notification_templates WHERE id = $1 AND channel = 'email' AND status = 1 LIMIT 1`,
-                [templateIdInput],
-              )
-            : await templateClient.query(
-                `SELECT id FROM notification_templates WHERE name = $1 AND status = 1 LIMIT 1`,
-                [templateName],
-              );
-        if (templateIdInput && tr.rowCount === 0) return { success: false, error: '通知範本不存在或已停用' };
-        templateId = tr.rows[0]?.id ?? null;
-    } finally {
-        templateClient.release();
-    }
-
-    let attachments: import('./notificationActions').EmailAttachment[] | undefined;
-    if (kind === 'receipt') {
-        const adminClient = await pool.connect();
-        let adminUserId = '';
-        try {
-            const ar = await adminClient.query(
-                `SELECT u.id::text AS id
-                 FROM users u
-                 JOIN user_roles ur ON ur.user_id = u.id
-                 JOIN roles r ON r.id = ur.role_id
-                 WHERE r.code = 'admin' AND u.is_active = TRUE
-                 ORDER BY u.id ASC LIMIT 1`,
-            );
-            adminUserId = ar.rows[0]?.id ?? '';
-        } finally {
-            adminClient.release();
+        if (kind === 'receipt' && !hasReceiptPdf) {
+            return { success: false, error: '請先產生領款收據 PDF，再寄送領據通知' };
         }
-        if (!adminUserId) return { success: false, error: '系統找不到可產生領據 PDF 的 admin 帳號' };
-        const { generateDisbursementPaymentReceiptPdf } = await import('../../lib/pdf/generateDisbursementPaymentReceiptPdf');
-        const pdfBuffer = await generateDisbursementPaymentReceiptPdf(applicationId, adminUserId, overrides ?? undefined);
-        attachments = [{
-            filename: `領款收據_${caseNumber}.pdf`,
-            content: pdfBuffer,
-            contentType: 'application/pdf',
-        }];
-    }
 
-    try {
-        const { sendNotificationEmail } = await import('./notificationActions');
-        const res = await sendNotificationEmail(
-            applicationId,
-            cleanRecipients,
-            trimmedSubject,
-            trimmedBody,
-            templateId,
-            operatorUserId,
-            false,
-            attachments,
-            kind === 'receipt' ? disbursementId : null,
-        );
-        if (!res.success) return { success: false, error: res.error ?? '通知寄送失敗' };
+        const templateName = kind === 'receipt'
+            ? 'email_case_payment_receipt_to_applicant'
+            : 'email_case_disbursement_approval_to_applicant';
+        let templateId: number | null = null;
+        const templateClient = await pool.connect();
+        try {
+            const tr = templateIdInput
+                ? await templateClient.query(
+                    `SELECT id FROM notification_templates WHERE id = $1 AND channel = 'email' AND status = 1 LIMIT 1`,
+                    [templateIdInput],
+                  )
+                : await templateClient.query(
+                    `SELECT id FROM notification_templates WHERE name = $1 AND status = 1 LIMIT 1`,
+                    [templateName],
+                  );
+            if (templateIdInput && tr.rowCount === 0) return { success: false, error: '通知範本不存在或已停用' };
+            templateId = tr.rows[0]?.id ?? null;
+        } finally {
+            templateClient.release();
+        }
 
-        void writeAuditLog({
-            userId: operatorUserId,
-            action: kind === 'receipt'
-                ? 'payment_disbursement.receipt_email_sent'
-                : 'payment_disbursement.approval_email_sent',
-            targetType: 'payment_disbursement',
-            targetId: disbursementId,
-            detail: {
+        let attachments: import('./notificationActions').EmailAttachment[] | undefined;
+        if (kind === 'receipt') {
+            const adminClient = await pool.connect();
+            let adminUserId = '';
+            try {
+                const ar = await adminClient.query(
+                    `SELECT u.id::text AS id
+                     FROM users u
+                     JOIN user_roles ur ON ur.user_id = u.id
+                     JOIN roles r ON r.id = ur.role_id
+                     WHERE r.code = 'admin' AND u.is_active = TRUE
+                     ORDER BY u.id ASC LIMIT 1`,
+                );
+                adminUserId = ar.rows[0]?.id ?? '';
+            } finally {
+                adminClient.release();
+            }
+            if (!adminUserId) return { success: false, error: '系統找不到可產生領據 PDF 的 admin 帳號' };
+            const { generateDisbursementPaymentReceiptPdf } = await import('../../lib/pdf/generateDisbursementPaymentReceiptPdf');
+            const receiptPdfStartedAt = Date.now();
+            const pdfBuffer = await generateDisbursementPaymentReceiptPdf(applicationId, adminUserId, overrides ?? undefined);
+            receiptPdfMs = Date.now() - receiptPdfStartedAt;
+            receiptPdfBytes = pdfBuffer.length;
+            const receiptFilename = `領款收據_${caseNumber}.pdf`;
+            const combinedSizeError = validateNotificationAttachments([{
+                name: receiptFilename,
+                type: 'application/pdf',
+                size: pdfBuffer.length,
+            }, ...customAttachments.map(file => ({
+                name: file.originalName,
+                type: file.mimeType,
+                size: file.size,
+            }))]);
+            if (combinedSizeError) return { success: false, error: combinedSizeError };
+
+            attachments = [{
+                filename: receiptFilename,
+                content: pdfBuffer,
+                contentType: 'application/pdf',
+            }];
+            const { readFile } = await import('../../lib/storage');
+            const blobReadStartedAt = Date.now();
+            const customEmailAttachments = await mapNotificationAttachmentsConcurrently(customAttachments, async file => {
+                const content = await readFile(file.url);
+                if (content.length !== file.size || !hasValidNotificationAttachmentContent(file.originalName, content)) {
+                    return null;
+                }
+                return {
+                    filename: file.originalName,
+                    content,
+                    contentType: getNotificationAttachmentContentType(file.originalName)!,
+                };
+            });
+            blobReadMs = Date.now() - blobReadStartedAt;
+            const invalidAttachmentIndex = customEmailAttachments.findIndex(attachment => attachment === null);
+            if (invalidAttachmentIndex >= 0) {
+                return { success: false, error: `${customAttachments[invalidAttachmentIndex].originalName}：檔案內容與格式不符` };
+            }
+            attachments.push(...customEmailAttachments.filter(attachment => attachment !== null));
+        }
+
+        const notificationStartedAt = Date.now();
+        try {
+            const { sendNotificationEmail } = await import('./notificationActions');
+            const res = await sendNotificationEmail(
                 applicationId,
-                recipients: cleanRecipients.map(r => ({ email: r.email, is_bcc: r.is_bcc })),
-                notification_kind: kind,
-            },
-        });
-        return { success: true, data: undefined };
-    } catch (err: any) {
-        console.error('sendDisbursementNotificationEmail error:', err);
-        return { success: false, error: err.message ?? '通知寄送失敗' };
+                cleanRecipients,
+                trimmedSubject,
+                trimmedBody,
+                templateId,
+                operatorUserId,
+                false,
+                attachments,
+                kind === 'receipt' ? disbursementId : null,
+            );
+            if (!res.success) return { success: false, error: res.error ?? '通知寄送失敗' };
+
+            void writeAuditLog({
+                userId: operatorUserId,
+                action: kind === 'receipt'
+                    ? 'payment_disbursement.receipt_email_sent'
+                    : 'payment_disbursement.approval_email_sent',
+                targetType: 'payment_disbursement',
+                targetId: disbursementId,
+                detail: {
+                    applicationId,
+                    recipients: cleanRecipients.map(r => ({ email: r.email, is_bcc: r.is_bcc })),
+                    notification_kind: kind,
+                    custom_attachment_filenames: customAttachments.map(file => file.originalName),
+                },
+            });
+            return { success: true, data: undefined };
+        } catch (err: any) {
+            console.error('sendDisbursementNotificationEmail error:', err);
+            return { success: false, error: err.message ?? '通知寄送失敗' };
+        } finally {
+            if (kind === 'receipt') {
+                console.info('[receipt-email-timing:server]', {
+                    customAttachmentCount: customAttachments.length,
+                    customAttachmentBytes: customAttachments.reduce((sum, file) => sum + file.size, 0),
+                    receiptPdfBytes,
+                    receiptPdfMs,
+                    blobReadMs,
+                    notificationMs: Date.now() - notificationStartedAt,
+                    totalMs: Date.now() - timingStartedAt,
+                });
+            }
+        }
+    } finally {
+        if (customAttachments.length > 0) {
+            const urls = customAttachments.map(file => file.url);
+            after(async () => {
+                const { deleteFiles } = await import('../../lib/storage');
+                await deleteFiles(urls);
+            });
+        }
     }
+}
+
+export async function cleanupDisbursementNotificationAttachments(
+    operatorUserId: string,
+    applicationId: string,
+    disbursementId: string,
+    urls: string[],
+): Promise<ActionResult> {
+    if (!(await hasAnyRole(operatorUserId, ['case_officer']))) {
+        return { success: false, error: '僅個管師可清除通知暫存附件' };
+    }
+    if (!Array.isArray(urls) || urls.some(url => typeof url !== 'string')) {
+        return { success: false, error: '附件資料格式不正確' };
+    }
+    if (urls.some(url => !isNotificationAttachmentUrlFor(url, applicationId, disbursementId))) {
+        return { success: false, error: '附件暫存位置無效' };
+    }
+    const { deleteFiles } = await import('../../lib/storage');
+    await deleteFiles(urls);
+    return { success: true, data: undefined };
 }
 
 export async function sendDisbursementPaymentReceiptEmail(

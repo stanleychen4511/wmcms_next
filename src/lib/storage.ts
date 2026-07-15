@@ -28,7 +28,8 @@ export async function uploadFile(
 ): Promise<string> {
     if (USE_BLOB) {
         const { put } = await import('@vercel/blob');
-        const { url } = await put(blobKey, buffer, { access: 'public' });
+        // @vercel/blob 1.x 起不再預設加隨機 suffix；明確保留舊版行為，避免同名檔案衝突。
+        const { url } = await put(blobKey, buffer, { access: 'public', addRandomSuffix: true });
         return url;
     }
 
@@ -44,14 +45,21 @@ export async function uploadFile(
  * 本地：刪除磁碟檔案；Blob：呼叫 del()
  */
 export async function deleteFile(publicUrl: string): Promise<void> {
-    if (USE_BLOB || publicUrl.startsWith('https://')) {
-        const { del } = await import('@vercel/blob');
-        await del(publicUrl).catch(() => {});
-        return;
-    }
-    // Local
-    const absPath = path.join(process.cwd(), 'public', publicUrl);
-    await fs.unlink(absPath).catch(() => {});
+    await deleteFiles([publicUrl]);
+}
+
+export async function deleteFiles(publicUrls: readonly string[]): Promise<void> {
+    const blobTargets = publicUrls.filter(publicUrl => USE_BLOB || publicUrl.startsWith('https://'));
+    const localTargets = publicUrls.filter(publicUrl => !USE_BLOB && !publicUrl.startsWith('https://'));
+    await Promise.all([
+        blobTargets.length > 0
+            ? import('@vercel/blob').then(({ del }) => del([...blobTargets])).catch(() => {})
+            : Promise.resolve(),
+        ...localTargets.map(publicUrl => {
+            const absPath = path.join(process.cwd(), 'public', publicUrl);
+            return fs.unlink(absPath).catch(() => {});
+        }),
+    ]);
 }
 
 /**
