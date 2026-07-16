@@ -3,6 +3,14 @@ import { pool } from '../../lib/db';
 import { encryptAES, decryptAES } from '../../lib/crypto';
 import { writeAuditLog } from './auditActions';
 import { SYSTEM_TEMPLATE_NAMES } from '../../lib/systemTemplates';
+import { after } from 'next/server';
+import {
+    getNotificationAttachmentContentType,
+    hasValidNotificationAttachmentContent,
+    isManualNotificationAttachmentUrlFor,
+    mapNotificationAttachmentsConcurrently,
+    validateNotificationAttachments,
+} from '../../lib/notificationAttachments';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -403,6 +411,145 @@ export interface EmailAttachment {
     contentType: string;
 }
 
+export interface NotificationEmailAttachmentInput {
+    url: string;
+    originalName: string;
+    mimeType: string;
+    size: number;
+}
+
+async function canSendManualNotification(senderUserId: string, applicationId: string): Promise<boolean> {
+    if (!/^\d+$/.test(senderUserId) || !/^\d+$/.test(applicationId)) return false;
+    const client = await pool.connect();
+    try {
+        const res = await client.query<{ allowed: boolean }>(
+            `SELECT EXISTS (
+                SELECT 1
+                FROM users u
+                JOIN user_roles ur ON ur.user_id = u.id
+                JOIN roles r ON r.id = ur.role_id
+                JOIN applications a ON a.id = $2::bigint
+                WHERE u.id = $1::bigint
+                  AND u.is_active = TRUE
+                  AND r.code <> 'applicant'
+            ) AS allowed`,
+            [senderUserId, applicationId],
+        );
+        return !!res.rows[0]?.allowed;
+    } finally {
+        client.release();
+    }
+}
+
+export async function sendManualNotificationEmail(
+    applicationId: string,
+    recipients: NotificationRecipient[],
+    subject: string,
+    body: string,
+    templateId: number | null,
+    senderUserId: string,
+    isPendingDocReminder: boolean = false,
+    attachmentInputs: NotificationEmailAttachmentInput[] = [],
+): Promise<ActionResult> {
+    if (!Array.isArray(attachmentInputs)) return { success: false, error: '附件資料格式不正確' };
+    const attachments = attachmentInputs.map(file => ({
+        url: String(file?.url ?? ''),
+        originalName: String(file?.originalName ?? ''),
+        mimeType: String(file?.mimeType ?? ''),
+        size: Number(file?.size),
+    }));
+    if (!(await canSendManualNotification(senderUserId, applicationId))) {
+        return { success: false, error: '無權限寄送此案件通知' };
+    }
+    if (attachments.some(file => !isManualNotificationAttachmentUrlFor(file.url, applicationId))) {
+        return { success: false, error: '附件暫存位置無效' };
+    }
+
+    try {
+        const attachmentError = validateNotificationAttachments(attachments.map(file => ({
+            name: file.originalName,
+            type: file.mimeType,
+            size: file.size,
+        })));
+        if (attachmentError) return { success: false, error: attachmentError };
+
+        const cleanRecipients = recipients
+            .map(recipient => ({
+                ...recipient,
+                user_id: String(recipient?.user_id ?? '').trim(),
+                name: String(recipient?.name ?? '').trim(),
+                email: String(recipient?.email ?? '').trim(),
+                is_bcc: !!recipient?.is_bcc,
+            }))
+            .filter(recipient => recipient.user_id
+                && recipient.name
+                && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(recipient.email));
+        if (cleanRecipients.length === 0) return { success: false, error: '請至少設定一位有效收件人' };
+        const trimmedSubject = subject.trim();
+        const trimmedBody = body.trim();
+        if (!trimmedSubject) return { success: false, error: '請輸入主旨' };
+        if (!trimmedBody) return { success: false, error: '請輸入通知內容' };
+
+        const { readFile } = await import('../../lib/storage');
+        const emailAttachments = await mapNotificationAttachmentsConcurrently(attachments, async file => {
+            const content = await readFile(file.url);
+            if (content.length !== file.size || !hasValidNotificationAttachmentContent(file.originalName, content)) {
+                return null;
+            }
+            return {
+                filename: file.originalName,
+                content,
+                contentType: getNotificationAttachmentContentType(file.originalName)!,
+            };
+        });
+        const invalidAttachmentIndex = emailAttachments.findIndex(attachment => attachment === null);
+        if (invalidAttachmentIndex >= 0) {
+            return { success: false, error: `${attachments[invalidAttachmentIndex].originalName}：檔案內容與格式不符` };
+        }
+
+        return await sendNotificationEmail(
+            applicationId,
+            cleanRecipients,
+            trimmedSubject,
+            trimmedBody,
+            templateId,
+            senderUserId,
+            isPendingDocReminder,
+            emailAttachments.filter(attachment => attachment !== null),
+        );
+    } catch (err: unknown) {
+        console.error('sendManualNotificationEmail error:', err);
+        return { success: false, error: err instanceof Error ? err.message : '通知寄送失敗' };
+    } finally {
+        if (attachments.length > 0) {
+            const urls = attachments.map(file => file.url);
+            after(async () => {
+                const { deleteFiles } = await import('../../lib/storage');
+                await deleteFiles(urls);
+            });
+        }
+    }
+}
+
+export async function cleanupManualNotificationAttachments(
+    senderUserId: string,
+    applicationId: string,
+    urls: string[],
+): Promise<ActionResult> {
+    if (!(await canSendManualNotification(senderUserId, applicationId))) {
+        return { success: false, error: '無權限清除此案件的通知暫存附件' };
+    }
+    if (!Array.isArray(urls) || urls.some(url => typeof url !== 'string')) {
+        return { success: false, error: '附件資料格式不正確' };
+    }
+    if (urls.some(url => !isManualNotificationAttachmentUrlFor(url, applicationId))) {
+        return { success: false, error: '附件暫存位置無效' };
+    }
+    const { deleteFiles } = await import('../../lib/storage');
+    await deleteFiles(urls);
+    return { success: true };
+}
+
 export async function sendNotificationEmail(
     applicationId: string,
     recipients: NotificationRecipient[],
@@ -464,7 +611,7 @@ export async function sendNotificationEmail(
     }
 
     if (attachments && attachments.length > 0) {
-        console.info('[receipt-email-timing:smtp]', {
+        console.info('[notification-email-timing:smtp]', {
             attachmentCount: attachments.length,
             attachmentBytes: attachments.reduce((sum, attachment) => sum + attachment.content.length, 0),
             smtpMs: Date.now() - smtpStartedAt,

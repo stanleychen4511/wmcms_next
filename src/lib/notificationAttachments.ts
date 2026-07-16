@@ -144,7 +144,7 @@ export function validateNotificationAttachments(files: readonly AttachmentMetada
         if (!Number.isFinite(file.size) || file.size <= 0) return `${file.name}：檔案大小無效`;
         totalBytes += file.size;
         if (totalBytes > MAX_NOTIFICATION_ATTACHMENT_BYTES) {
-            return '領款收據 PDF 與自選附件合計不可超過 18 MB';
+            return '附件合計不可超過 18 MB';
         }
         if (file.type && file.type !== 'application/octet-stream' && !kind.mimeTypes.includes(file.type)) {
             return `${file.name}：副檔名與檔案格式不符`;
@@ -159,6 +159,18 @@ export function isNotificationAttachmentUrlFor(
     disbursementId: string,
 ): boolean {
     const expectedPrefix = `/notification-attachments/${applicationId}/${disbursementId}/`;
+    return isNotificationAttachmentUrlWithPrefix(value, expectedPrefix);
+}
+
+export function isManualNotificationAttachmentUrlFor(
+    value: string,
+    applicationId: string,
+): boolean {
+    const expectedPrefix = `/notification-attachments/${applicationId}/manual/`;
+    return isNotificationAttachmentUrlWithPrefix(value, expectedPrefix);
+}
+
+function isNotificationAttachmentUrlWithPrefix(value: string, expectedPrefix: string): boolean {
     const hasExpectedPath = (pathname: string) => {
         let decoded: string;
         try {

@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
-import { X, Send, Users, FileText, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, UserCircle, ClipboardList, Plus, Trash2 } from 'lucide-react';
+import { X, Send, Users, FileText, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, UserCircle, ClipboardList, Plus, Trash2, Upload, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
     NotificationTemplate,
@@ -9,12 +9,19 @@ import {
     fetchEmailRecipients,
     fetchApplicantRecipient,
     fetchReferralRecipient,
-    sendNotificationEmail,
+    cleanupManualNotificationAttachments,
+    sendManualNotificationEmail,
 } from '../app/actions/notificationActions';
 import { applyPlaceholders } from '../lib/notificationUtils';
 import { getNotificationTemplateLabel } from '../lib/systemTemplates';
 import { isApplicationInPendingDocState } from '../app/actions/pendingDocAlertActions';
 import { useModalDismiss } from '../hooks/useModalDismiss';
+import { uploadFileToBlob, type UploadedBlob } from '../lib/uploadClient';
+import {
+    mapNotificationAttachmentsConcurrently,
+    NOTIFICATION_ATTACHMENT_ACCEPT,
+    validateNotificationAttachments,
+} from '../lib/notificationAttachments';
 
 // ─── Role display helpers ──────────────────────────────────────────────────────
 
@@ -78,6 +85,12 @@ interface SendNotificationModalProps {
     onSent: () => void;
 }
 
+interface PreuploadedNotificationAttachment {
+    id: string;
+    file: File;
+    uploaded: UploadedBlob | null;
+}
+
 // ─── Component ─────────────────────────────────────────────────────────────────
 
 export function SendNotificationModal({
@@ -88,7 +101,6 @@ export function SendNotificationModal({
     onClose,
     onSent,
 }: SendNotificationModalProps) {
-    useModalDismiss(onClose);
     const [templates, setTemplates] = useState<NotificationTemplate[]>([]);
     const [staffRecipients, setStaffRecipients] = useState<NotificationRecipient[]>([]);
     const [applicantRecipient, setApplicantRecipient] = useState<NotificationRecipient | null>(null);
@@ -109,6 +121,11 @@ export function SendNotificationModal({
     const [customRecipientEmail, setCustomRecipientEmail] = useState('');
     const [customRecipients, setCustomRecipients] = useState<NotificationRecipient[]>([]);
     const [customRecipientError, setCustomRecipientError] = useState('');
+    const [customAttachments, setCustomAttachments] = useState<PreuploadedNotificationAttachment[]>([]);
+    const customAttachmentBytes = customAttachments.reduce((sum, item) => sum + item.file.size, 0);
+    const preuploadingAttachments = customAttachments.some(item => item.uploaded === null);
+    const closedRef = useRef(false);
+    const closingRef = useRef(false);
 
     const bodyRef = useRef<HTMLTextAreaElement>(null);
 
@@ -302,10 +319,104 @@ export function SendNotificationModal({
         });
     };
 
+    const cleanupUploadedAttachments = useCallback(async (uploaded: readonly UploadedBlob[]) => {
+        if (uploaded.length === 0) return;
+        await cleanupManualNotificationAttachments(
+            senderUserId,
+            applicationId,
+            uploaded.map(file => file.url),
+        );
+    }, [applicationId, senderUserId]);
+
+    const handleClose = useCallback(async () => {
+        if (sending || closingRef.current) return;
+        closingRef.current = true;
+        closedRef.current = true;
+        try {
+            await cleanupUploadedAttachments(
+                customAttachments.flatMap(item => item.uploaded ? [item.uploaded] : []),
+            );
+        } finally {
+            onClose();
+        }
+    }, [cleanupUploadedAttachments, customAttachments, onClose, sending]);
+
+    useModalDismiss(handleClose);
+
+    const addAttachments = async (files: FileList | null) => {
+        if (!files || files.length === 0) return;
+        const seen = new Set(customAttachments.map(item => item.id));
+        const additions = Array.from(files).filter(file => {
+            const id = `${file.name}-${file.size}-${file.lastModified}`;
+            if (seen.has(id)) return false;
+            seen.add(id);
+            return true;
+        });
+        if (additions.length === 0) return;
+
+        const validationError = validateNotificationAttachments([
+            ...customAttachments.map(item => item.file),
+            ...additions,
+        ]);
+        if (validationError) {
+            setResult({ type: 'error', msg: validationError });
+            return;
+        }
+
+        const batch = additions.map(file => ({
+            id: `${file.name}-${file.size}-${file.lastModified}`,
+            file,
+            uploaded: null,
+        } satisfies PreuploadedNotificationAttachment));
+        const batchIds = new Set(batch.map(item => item.id));
+        const completedUploads: UploadedBlob[] = [];
+        setResult(null);
+        setCustomAttachments(current => [...current, ...batch]);
+
+        try {
+            const orderedUploads = await mapNotificationAttachmentsConcurrently(additions, async file => {
+                const uploaded = await uploadFileToBlob(file, {
+                    pathPrefix: `notification-attachments/${applicationId}/manual`,
+                });
+                completedUploads.push(uploaded);
+                return uploaded;
+            });
+            if (closedRef.current) {
+                await cleanupUploadedAttachments(orderedUploads);
+                return;
+            }
+            const uploadsById = new Map(batch.map((item, index) => [item.id, orderedUploads[index]]));
+            setCustomAttachments(current => current.map(item => (
+                uploadsById.has(item.id) ? { ...item, uploaded: uploadsById.get(item.id)! } : item
+            )));
+        } catch (uploadError) {
+            await cleanupUploadedAttachments(completedUploads).catch(() => {});
+            if (!closedRef.current) {
+                setCustomAttachments(current => current.filter(item => !batchIds.has(item.id)));
+                setResult({
+                    type: 'error',
+                    msg: uploadError instanceof Error ? uploadError.message : '附件上傳失敗',
+                });
+            }
+        }
+    };
+
+    const removeAttachment = async (id: string) => {
+        const item = customAttachments.find(attachment => attachment.id === id);
+        if (!item || !item.uploaded) return;
+        setCustomAttachments(current => current.filter(attachment => attachment.id !== id));
+        try {
+            await cleanupUploadedAttachments([item.uploaded]);
+        } catch {
+            setResult({ type: 'error', msg: `${item.file.name}：暫存附件清除失敗` });
+        }
+    };
+
     const handleSend = async () => {
         if (selectedRecipients.size === 0) { setResult({ type: 'error', msg: '請至少選擇一位收件人。' }); return; }
         if (!subject.trim()) { setResult({ type: 'error', msg: '請填寫主旨。' }); return; }
         if (!body.trim()) { setResult({ type: 'error', msg: '請填寫內文。' }); return; }
+        if (preuploadingAttachments) { setResult({ type: 'error', msg: '附件仍在上傳，請稍候再送出。' }); return; }
 
         setSending(true);
         setResult(null);
@@ -313,22 +424,40 @@ export function SendNotificationModal({
         const recipients = allRecipients
             .filter(r => selectedRecipients.has(r.user_id))
             .map(r => ({ ...r, is_bcc: bccRecipients.has(r.user_id) }));
-        const res = await sendNotificationEmail(
-            applicationId,
-            recipients,
-            subject,
-            body,
-            selectedTemplateId,
-            senderUserId,
-            isPendingDocReminder,
-        );
-
-        setSending(false);
-        if (res.success) {
-            setResult({ type: 'success', msg: `已成功發送至 ${recipients.length} 位收件人。` });
-            onSent();
-        } else {
-            setResult({ type: 'error', msg: res.error ?? '發送失敗，請確認 SMTP 設定。' });
+        const uploadedAttachments = customAttachments.flatMap(item => item.uploaded ? [item.uploaded] : []);
+        try {
+            const res = await sendManualNotificationEmail(
+                applicationId,
+                recipients,
+                subject,
+                body,
+                selectedTemplateId,
+                senderUserId,
+                isPendingDocReminder,
+                uploadedAttachments,
+            );
+            if (res.success) {
+                setCustomAttachments([]);
+                setResult({ type: 'success', msg: `已成功發送至 ${recipients.length} 位收件人。` });
+                onSent();
+            } else {
+                await cleanupUploadedAttachments(uploadedAttachments).catch(() => {});
+                setCustomAttachments([]);
+                setResult({
+                    type: 'error',
+                    msg: `${res.error ?? '發送失敗，請確認 SMTP 設定。'}${uploadedAttachments.length > 0 ? '；請重新選擇附件後再送出' : ''}`,
+                });
+            }
+        } catch (error) {
+            await cleanupUploadedAttachments(uploadedAttachments).catch(() => {});
+            setCustomAttachments([]);
+            const message = error instanceof Error ? error.message : '發送失敗，請確認 SMTP 設定。';
+            setResult({
+                type: 'error',
+                msg: `${message}${uploadedAttachments.length > 0 ? '；請重新選擇附件後再送出' : ''}`,
+            });
+        } finally {
+            setSending(false);
         }
     };
 
@@ -337,7 +466,7 @@ export function SendNotificationModal({
     const staffGroups = groupByRole(staffRecipients);
 
     return (
-        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={onClose}>
+        <div className="fixed inset-0 bg-black/40 flex items-center justify-center z-50 p-4" onClick={handleClose}>
             <div className="bg-white rounded-2xl shadow-xl w-full max-w-2xl max-h-[90vh] flex flex-col" onClick={e => e.stopPropagation()}>
 
                 {/* Header */}
@@ -346,7 +475,7 @@ export function SendNotificationModal({
                         <Send className="w-4 h-4 text-blue-600" />
                         發送通知
                     </h3>
-                    <button onClick={onClose} className="text-slate-400 hover:text-slate-600">
+                    <button onClick={handleClose} disabled={sending} className="text-slate-400 hover:text-slate-600 disabled:opacity-50">
                         <X className="w-5 h-5" />
                     </button>
                 </div>
@@ -682,6 +811,61 @@ export function SendNotificationModal({
                             />
                         </div>
 
+                        {/* Attachments */}
+                        <div className="border border-slate-200 rounded-lg p-3">
+                            <div className="flex flex-wrap items-center justify-between gap-2">
+                                <div>
+                                    <div className="text-sm font-medium text-slate-700">其他附件（選填）</div>
+                                    <div className="text-xs text-slate-500 mt-0.5">
+                                        PDF、Word、Excel、JPG、PNG、GIF、WebP、BMP；合計不可超過 18 MB
+                                    </div>
+                                </div>
+                                <label className="inline-flex items-center gap-1.5 px-3 py-2 text-sm border border-blue-300 text-blue-700 rounded-lg hover:bg-blue-50 cursor-pointer">
+                                    {preuploadingAttachments
+                                        ? <Loader2 className="w-4 h-4 animate-spin" />
+                                        : <Upload className="w-4 h-4" />}
+                                    {preuploadingAttachments ? '上傳中…' : '選擇檔案'}
+                                    <input
+                                        type="file"
+                                        multiple
+                                        accept={NOTIFICATION_ATTACHMENT_ACCEPT}
+                                        disabled={sending || preuploadingAttachments}
+                                        className="hidden"
+                                        onChange={event => {
+                                            void addAttachments(event.target.files);
+                                            event.target.value = '';
+                                        }}
+                                    />
+                                </label>
+                            </div>
+                            {customAttachments.length > 0 && (
+                                <div className="mt-3 space-y-2">
+                                    <div className="text-xs text-slate-500 text-right">
+                                        已選 {customAttachments.length} 個檔案，共 {(customAttachmentBytes / 1024 / 1024).toFixed(2)} MB
+                                        {preuploadingAttachments ? '；上傳中' : ''}
+                                    </div>
+                                    {customAttachments.map(item => (
+                                        <div key={item.id} className="flex items-center gap-2 rounded-md bg-slate-50 px-3 py-2 text-xs">
+                                            <FileText className="w-4 h-4 text-slate-500 shrink-0" />
+                                            <span className="text-slate-700 truncate" title={item.file.name}>{item.file.name}</span>
+                                            <span className="text-slate-400 ml-auto shrink-0">
+                                                {item.uploaded ? `${Math.ceil(item.file.size / 1024)} KB` : '上傳中…'}
+                                            </span>
+                                            <button
+                                                type="button"
+                                                onClick={() => { void removeAttachment(item.id); }}
+                                                disabled={sending || !item.uploaded}
+                                                className="p-1 text-slate-400 hover:text-rose-600 disabled:opacity-50"
+                                                aria-label={`移除附件 ${item.file.name}`}
+                                            >
+                                                <Trash2 className="w-3.5 h-3.5" />
+                                            </button>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+
                         {/* Result message */}
                         {result && (
                             <div className={clsx(
@@ -701,13 +885,13 @@ export function SendNotificationModal({
 
                 {/* Footer */}
                 <div className="flex gap-3 px-6 py-4 border-t border-slate-100 justify-end shrink-0">
-                    <button onClick={onClose} className="px-4 py-2 rounded-lg border border-slate-300 text-sm text-slate-600 hover:bg-slate-50 transition">
+                    <button onClick={handleClose} disabled={sending} className="px-4 py-2 rounded-lg border border-slate-300 text-sm text-slate-600 hover:bg-slate-50 disabled:opacity-50 transition">
                         {result?.type === 'success' ? '關閉' : '取消'}
                     </button>
                     {result?.type !== 'success' && (
                         <button
                             onClick={handleSend}
-                            disabled={sending || loadingInit}
+                            disabled={sending || loadingInit || preuploadingAttachments}
                             className="px-4 py-2 rounded-lg bg-blue-600 text-white text-sm font-medium hover:bg-blue-700 disabled:opacity-50 transition flex items-center gap-2"
                         >
                             {sending ? (

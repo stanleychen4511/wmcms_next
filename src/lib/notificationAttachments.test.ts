@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
     hasValidNotificationAttachmentContent,
+    isManualNotificationAttachmentUrlFor,
     isNotificationAttachmentUrlFor,
     mapNotificationAttachmentsConcurrently,
     validateNotificationAttachments,
@@ -51,7 +52,15 @@ describe('notification attachment validation', () => {
         expect(isNotificationAttachmentUrlFor('/notification-attachments/12/34/../99/file.pdf', '12', '34')).toBe(false);
     });
 
-    it('processes at most four attachments concurrently and preserves their order', async () => {
+    it('only accepts manual notification attachment URLs for the matching application', () => {
+        const remote = 'https://store.public.blob.vercel-storage.com/notification-attachments/12/manual/file-random.pdf';
+        expect(isManualNotificationAttachmentUrlFor(remote, '12')).toBe(true);
+        expect(isManualNotificationAttachmentUrlFor(remote, '99')).toBe(false);
+        expect(isManualNotificationAttachmentUrlFor('/notification-attachments/12/manual/file.pdf', '12')).toBe(true);
+        expect(isManualNotificationAttachmentUrlFor('/notification-attachments/12/manual/../99/file.pdf', '12')).toBe(false);
+    });
+
+    it('processes at most six attachments concurrently and preserves their order', async () => {
         let active = 0;
         let maxActive = 0;
         let release!: () => void;
