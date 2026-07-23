@@ -30,6 +30,7 @@ import { Role } from '../types';
 import { AppHeader } from './AppHeader';
 import { ModalEscapeListener } from '../hooks/useModalDismiss';
 import { ContactSearchModal } from './ContactSearchModal';
+import { canManageNotifications } from '../lib/notificationPermissions';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -417,7 +418,7 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                                     link.action === 'new_application' ? (userRoles.includes('case_officer') || userRoles.includes('admin')) :
                                     link.action === 'admin' ? (userRoles.includes('admin') || userRoles.includes('chairman' as Role)) :
                                     link.action === 'stats' ? canViewStats :
-                                    link.action === 'notifications' ? !isActingAsVolunteer :
+                                    link.action === 'notifications' ? canManageNotifications(userRoles) :
                                     link.action === 'external_intake' ? !isActingAsVolunteer :
                                     link.action === 'contact_records' ? canUseContactRecords :
                                     link.action === 'rejected_archive' ? (

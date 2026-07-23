@@ -2,7 +2,7 @@
 
 import crypto from 'node:crypto';
 import { pool } from '../../lib/db';
-import { loadSmtpConfig } from './notificationActions';
+import { loadSmtpConfigForDelivery } from './notificationActions';
 
 export type EmailVerificationPurpose = 'applicant_application' | 'referral_application';
 
@@ -38,7 +38,7 @@ export async function requestEmailVerificationCode(
         return { success: false, error: '請填寫有效的 Email 地址' };
     }
 
-    const cfgRes = await loadSmtpConfig();
+    const cfgRes = await loadSmtpConfigForDelivery();
     if (!cfgRes.success || !cfgRes.data || !cfgRes.data.host || !cfgRes.data.user) {
         return { success: false, error: 'SMTP 設定尚未完成，無法寄送 Email 驗證碼' };
     }

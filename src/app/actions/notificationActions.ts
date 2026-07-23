@@ -3,6 +3,7 @@ import { pool } from '../../lib/db';
 import { encryptAES, decryptAES } from '../../lib/crypto';
 import { writeAuditLog } from './auditActions';
 import { SYSTEM_TEMPLATE_NAMES } from '../../lib/systemTemplates';
+import { NOTIFICATION_MANAGER_ROLES } from '../../lib/notificationPermissions';
 import { after } from 'next/server';
 import {
     getNotificationAttachmentContentType,
@@ -74,9 +75,26 @@ interface ActionResult {
     error?: string;
 }
 
+const NOTIFICATION_PERMISSION_ERROR = '僅管理員、主管或執行長可管理通知設定';
+
+async function canManageNotificationSettings(operatorUserId: string): Promise<boolean> {
+    if (!/^\d+$/.test(operatorUserId)) return false;
+    const res = await pool.query(
+        `SELECT 1
+         FROM user_roles ur
+         JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1::bigint
+           AND r.code = ANY($2::text[])
+         LIMIT 1`,
+        [operatorUserId, [...NOTIFICATION_MANAGER_ROLES]],
+    );
+    return (res.rowCount ?? 0) > 0;
+}
+
 // ─── Channel Actions ──────────────────────────────────────────────────────────
 
-export async function fetchChannels(): Promise<{ success: boolean; data?: NotificationChannel[]; error?: string }> {
+export async function fetchChannels(operatorUserId: string): Promise<{ success: boolean; data?: NotificationChannel[]; error?: string }> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
     const client = await pool.connect();
     try {
         const res = await client.query<NotificationChannel>(
@@ -91,7 +109,8 @@ export async function fetchChannels(): Promise<{ success: boolean; data?: Notifi
     }
 }
 
-export async function updateChannelEnabled(channel: string, isEnabled: boolean): Promise<ActionResult> {
+export async function updateChannelEnabled(operatorUserId: string, channel: string, isEnabled: boolean): Promise<ActionResult> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
     const client = await pool.connect();
     try {
         await client.query(
@@ -107,7 +126,8 @@ export async function updateChannelEnabled(channel: string, isEnabled: boolean):
     }
 }
 
-export async function saveSmtpConfig(config: SmtpConfig): Promise<ActionResult> {
+export async function saveSmtpConfig(operatorUserId: string, config: SmtpConfig): Promise<ActionResult> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
     const client = await pool.connect();
     try {
         // Encrypt password before storing (convert Buffers to hex strings for JSON)
@@ -135,8 +155,8 @@ export async function saveSmtpConfig(config: SmtpConfig): Promise<ActionResult> 
     }
 }
 
-/** Load SMTP config with decrypted password */
-export async function loadSmtpConfig(): Promise<{ success: boolean; data?: SmtpConfig; error?: string }> {
+/** Load SMTP config with decrypted password for server-side delivery. */
+async function readSmtpConfig(): Promise<{ success: boolean; data?: SmtpConfig; error?: string }> {
     const client = await pool.connect();
     try {
         const res = await client.query(
@@ -169,9 +189,19 @@ export async function loadSmtpConfig(): Promise<{ success: boolean; data?: SmtpC
     }
 }
 
+export async function loadSmtpConfig(operatorUserId: string): Promise<{ success: boolean; data?: SmtpConfig; error?: string }> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
+    return readSmtpConfig();
+}
+
+export async function loadSmtpConfigForDelivery(): Promise<{ success: boolean; data?: SmtpConfig; error?: string }> {
+    return readSmtpConfig();
+}
+
 // ─── Template Actions ─────────────────────────────────────────────────────────
 
-export async function fetchTemplates(): Promise<{ success: boolean; data?: NotificationTemplate[]; error?: string }> {
+export async function fetchTemplates(operatorUserId: string): Promise<{ success: boolean; data?: NotificationTemplate[]; error?: string }> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
     const client = await pool.connect();
     try {
         const res = await client.query<NotificationTemplate>(
@@ -207,15 +237,16 @@ export async function fetchActiveTemplates(): Promise<{ success: boolean; data?:
 }
 
 export async function addTemplate(
-    name: string, channel: string, subject: string | null,
-    body: string, description: string | null, sortOrder: number, createdBy: string
+    operatorUserId: string, name: string, channel: string, subject: string | null,
+    body: string, description: string | null, sortOrder: number
 ): Promise<ActionResult> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
     const client = await pool.connect();
     try {
         await client.query(
             `INSERT INTO notification_templates (name, channel, subject, body, description, sort_order, created_by)
              VALUES ($1, $2, $3, $4, $5, $6, $7::bigint)`,
-            [name, channel, subject || null, body, description || null, sortOrder, createdBy]
+            [name, channel, subject || null, body, description || null, sortOrder, operatorUserId]
         );
         return { success: true };
     } catch (err: any) {
@@ -227,9 +258,10 @@ export async function addTemplate(
 }
 
 export async function updateTemplate(
-    id: number, name: string, channel: string, subject: string | null,
+    operatorUserId: string, id: number, name: string, channel: string, subject: string | null,
     body: string, description: string | null, sortOrder: number
 ): Promise<ActionResult> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
     const client = await pool.connect();
     try {
         // Guard: system templates cannot be renamed (dispatcher looks up by name)
@@ -253,7 +285,8 @@ export async function updateTemplate(
     }
 }
 
-export async function toggleTemplateStatus(id: number, status: 0 | 1): Promise<ActionResult> {
+export async function toggleTemplateStatus(operatorUserId: string, id: number, status: 0 | 1): Promise<ActionResult> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
     const client = await pool.connect();
     try {
         // Guard: disabling a system template would break the dispatcher
@@ -563,7 +596,7 @@ export async function sendNotificationEmail(
     disbursementId?: string | null,
 ): Promise<ActionResult> {
     // 1. Load SMTP config
-    const cfgRes = await loadSmtpConfig();
+    const cfgRes = await loadSmtpConfigForDelivery();
     if (!cfgRes.success || !cfgRes.data) {
         return { success: false, error: 'SMTP 設定尚未完成，請至「通知管理」設定 Email 渠道。' };
     }
@@ -679,7 +712,7 @@ async function sendScheduledEmail(opts: {
     subject: string;
     html: string;
 }): Promise<{ success: boolean; error?: string }> {
-    const cfgRes = await loadSmtpConfig();
+    const cfgRes = await loadSmtpConfigForDelivery();
     if (!cfgRes.success || !cfgRes.data) {
         return { success: false, error: 'SMTP 設定尚未完成' };
     }
@@ -723,7 +756,7 @@ export interface NotificationSchedule {
     created_at: string;
 }
 
-export async function fetchSchedules(): Promise<{ success: boolean; data?: NotificationSchedule[]; error?: string }> {
+async function readSchedules(): Promise<{ success: boolean; data?: NotificationSchedule[]; error?: string }> {
     const client = await pool.connect();
     try {
         const res = await client.query(`
@@ -742,7 +775,16 @@ export async function fetchSchedules(): Promise<{ success: boolean; data?: Notif
     }
 }
 
-export async function saveSchedule(data: {
+export async function fetchSchedules(operatorUserId: string): Promise<{ success: boolean; data?: NotificationSchedule[]; error?: string }> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
+    return readSchedules();
+}
+
+export async function fetchSchedulesForCron(): Promise<{ success: boolean; data?: NotificationSchedule[]; error?: string }> {
+    return readSchedules();
+}
+
+export async function saveSchedule(operatorUserId: string, data: {
     id?: number;
     name: string;
     template_id: number | null;
@@ -752,6 +794,7 @@ export async function saveSchedule(data: {
     day_of_week: number | null;
     is_active: boolean;
 }): Promise<{ success: boolean; error?: string }> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
     const client = await pool.connect();
     try {
         if (data.id) {
@@ -780,7 +823,8 @@ export async function saveSchedule(data: {
     }
 }
 
-export async function deleteSchedule(id: number): Promise<{ success: boolean; error?: string }> {
+export async function deleteSchedule(operatorUserId: string, id: number): Promise<{ success: boolean; error?: string }> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
     const client = await pool.connect();
     try {
         await client.query(`DELETE FROM notification_schedules WHERE id = $1`, [id]);
@@ -792,7 +836,8 @@ export async function deleteSchedule(id: number): Promise<{ success: boolean; er
     }
 }
 
-export async function toggleScheduleActive(id: number, isActive: boolean): Promise<{ success: boolean; error?: string }> {
+export async function toggleScheduleActive(operatorUserId: string, id: number, isActive: boolean): Promise<{ success: boolean; error?: string }> {
+    if (!(await canManageNotificationSettings(operatorUserId))) return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
     const client = await pool.connect();
     try {
         await client.query(`UPDATE notification_schedules SET is_active=$1, updated_at=NOW() WHERE id=$2`, [isActive, id]);
@@ -822,22 +867,8 @@ export interface AutoNotificationRule {
     updated_at: string;
 }
 
-async function canManageAutoNotificationRules(operatorUserId: string): Promise<boolean> {
-    if (!/^\d+$/.test(operatorUserId)) return false;
-    const res = await pool.query(
-        `SELECT 1
-         FROM user_roles ur
-         JOIN roles r ON r.id = ur.role_id
-         WHERE ur.user_id = $1::bigint
-           AND r.code IN ('admin', 'supervisor', 'executive')
-         LIMIT 1`,
-        [operatorUserId],
-    );
-    return (res.rowCount ?? 0) > 0;
-}
-
 export async function fetchAutoNotificationRules(operatorUserId: string): Promise<{ success: boolean; data?: AutoNotificationRule[]; error?: string }> {
-    if (!(await canManageAutoNotificationRules(operatorUserId))) {
+    if (!(await canManageNotificationSettings(operatorUserId))) {
         return { success: false, error: '僅管理員、主管或執行長可查看自動通知設定' };
     }
     const client = await pool.connect();
@@ -883,7 +914,7 @@ export async function saveAutoNotificationRule(operatorUserId: string, data: {
     email_template_id: number | null;
     line_template_id: number | null;
 }): Promise<{ success: boolean; error?: string }> {
-    if (!(await canManageAutoNotificationRules(operatorUserId))) {
+    if (!(await canManageNotificationSettings(operatorUserId))) {
         return { success: false, error: '僅管理員、主管或執行長可修改自動通知設定' };
     }
     if (!/^\d+$/.test(data.id)) return { success: false, error: '規則 ID 格式錯誤' };
@@ -948,6 +979,22 @@ export async function saveAutoNotificationRule(operatorUserId: string, data: {
 }
 
 export async function executeSchedule(
+    operatorUserId: string,
+    scheduleId: number,
+): Promise<{ success: boolean; sent: number; failed: number; error?: string }> {
+    if (!(await canManageNotificationSettings(operatorUserId))) {
+        return { success: false, sent: 0, failed: 0, error: NOTIFICATION_PERMISSION_ERROR };
+    }
+    return executeScheduleInternal(scheduleId, 'manual');
+}
+
+export async function executeScheduleForCron(
+    scheduleId: number,
+): Promise<{ success: boolean; sent: number; failed: number; error?: string }> {
+    return executeScheduleInternal(scheduleId, 'cron');
+}
+
+async function executeScheduleInternal(
     scheduleId: number,
     triggeredBy: 'cron' | 'manual' = 'manual'
 ): Promise<{ success: boolean; sent: number; failed: number; error?: string }> {

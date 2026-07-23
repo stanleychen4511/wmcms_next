@@ -1,5 +1,5 @@
 import { NextRequest, NextResponse } from 'next/server';
-import { fetchSchedules, executeSchedule } from '../../../actions/notificationActions';
+import { fetchSchedulesForCron, executeScheduleForCron } from '../../../actions/notificationActions';
 
 export async function GET(req: NextRequest) {
     // Verify Vercel cron secret
@@ -11,7 +11,7 @@ export async function GET(req: NextRequest) {
     const today = new Date();
     const dayOfWeek = today.getDay(); // 0=Sun, 1=Mon...6=Sat
 
-    const schedulesRes = await fetchSchedules();
+    const schedulesRes = await fetchSchedulesForCron();
     if (!schedulesRes.success || !schedulesRes.data) {
         return NextResponse.json({ error: 'Failed to load schedules' }, { status: 500 });
     }
@@ -31,7 +31,7 @@ export async function GET(req: NextRequest) {
 
         if (!shouldRun) continue;
 
-        const result = await executeSchedule(schedule.id, 'cron');
+        const result = await executeScheduleForCron(schedule.id);
         results.push({ id: schedule.id, name: schedule.name, sent: result.sent, failed: result.failed });
     }
 

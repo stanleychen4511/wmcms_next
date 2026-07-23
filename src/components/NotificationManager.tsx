@@ -21,6 +21,7 @@ import { SYSTEM_TEMPLATE_NAMES, getNotificationTemplateLabel } from '../lib/syst
 import { formatTaipeiDateTime } from '../lib/dateOnly';
 import { useToast } from './FloatingToast';
 import type { Role } from '../types';
+import { canManageNotifications } from '../lib/notificationPermissions';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -51,7 +52,7 @@ function SmtpForm({ userId, onSaved }: SmtpFormProps) {
     const [success, setSuccess] = useState(false);
 
     useEffect(() => {
-        loadSmtpConfig().then(res => {
+        loadSmtpConfig(userId).then(res => {
             if (res.success && res.data) setCfg(res.data);
         });
     }, []);
@@ -62,7 +63,7 @@ function SmtpForm({ userId, onSaved }: SmtpFormProps) {
             return;
         }
         setSaving(true); setError(''); setSuccess(false);
-        const res = await saveSmtpConfig(cfg);
+        const res = await saveSmtpConfig(userId, cfg);
         setSaving(false);
         if (res.success) { setSuccess(true); onSaved(); }
         else setError(res.error ?? '儲存失敗');
@@ -154,8 +155,8 @@ function TemplateModal({ mode, tpl, userId, onClose, onSaved }: TplModalProps) {
         if (!body.trim()) { setError('請填寫內文'); return; }
         setSaving(true); setError('');
         const res = mode === 'add'
-            ? await addTemplate(name, channel, subject || null, body, description || null, sortOrder, userId)
-            : await updateTemplate(tpl!.id, name, channel, subject || null, body, description || null, sortOrder);
+            ? await addTemplate(userId, name, channel, subject || null, body, description || null, sortOrder)
+            : await updateTemplate(userId, tpl!.id, name, channel, subject || null, body, description || null, sortOrder);
         setSaving(false);
         if (res.success) { onSaved(); onClose(); }
         else setError(res.error ?? '操作失敗');
@@ -234,13 +235,14 @@ const DAY_OF_WEEK: Record<number, string> = {
 // ─── Schedule Form Modal ──────────────────────────────────────────────────────
 
 interface ScheduleFormProps {
+    userId: string;
     schedule: Partial<NotificationSchedule> | null;
     templates: NotificationTemplate[];
     onClose: () => void;
     onSaved: () => void;
 }
 
-function ScheduleFormModal({ schedule, templates, onClose, onSaved }: ScheduleFormProps) {
+function ScheduleFormModal({ userId, schedule, templates, onClose, onSaved }: ScheduleFormProps) {
     useModalDismiss(onClose);
     const [name, setName] = useState(schedule?.name ?? '');
     const [templateId, setTemplateId] = useState<number | null>(schedule?.template_id ?? null);
@@ -256,7 +258,7 @@ function ScheduleFormModal({ schedule, templates, onClose, onSaved }: ScheduleFo
     const handleSubmit = async () => {
         if (!name.trim()) { setError('請填寫排程名稱'); return; }
         setSaving(true); setError('');
-        const res = await saveSchedule({
+        const res = await saveSchedule(userId, {
             id: schedule?.id,
             name,
             template_id: templateId,
@@ -366,7 +368,7 @@ interface NotificationManagerProps {
 
 export function NotificationManager({ userId, userRoles, onBack, username, onLogout }: NotificationManagerProps) {
     const { push: pushToast } = useToast();
-    const canManageAutoRules = userRoles.some(role => role === 'admin' || role === 'supervisor' || role === 'executive');
+    const canManageAutoRules = canManageNotifications(userRoles);
     const [activeTab, setActiveTab] = useState<Tab>('channels');
     const [channels, setChannels] = useState<NotificationChannel[]>([]);
     const [templates, setTemplates] = useState<NotificationTemplate[]>([]);
@@ -385,9 +387,9 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
         setLoading(true);
         try {
             const [chRes, tplRes, schRes, autoRuleRes] = await Promise.all([
-                fetchChannels(),
-                fetchTemplates(),
-                fetchSchedules(),
+                fetchChannels(userId),
+                fetchTemplates(userId),
+                fetchSchedules(userId),
                 canManageAutoRules ? fetchAutoNotificationRules(userId) : Promise.resolve(undefined),
             ]);
             if (chRes.success && chRes.data) setChannels(chRes.data);
@@ -420,33 +422,33 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
             pushToast({ type: 'info', msg: 'SMS 渠道尚未開通，請等待後續整合。' });
             return;
         }
-        const res = await updateChannelEnabled(ch.channel, !ch.is_enabled);
+        const res = await updateChannelEnabled(userId, ch.channel, !ch.is_enabled);
         if (!res.success) pushToast({ type: 'error', msg: res.error ?? '操作失敗' });
         else await loadData();
     };
 
     const handleToggleTemplate = async (tpl: NotificationTemplate) => {
-        const res = await toggleTemplateStatus(tpl.id, tpl.status === 1 ? 0 : 1);
+        const res = await toggleTemplateStatus(userId, tpl.id, tpl.status === 1 ? 0 : 1);
         if (!res.success) pushToast({ type: 'error', msg: res.error ?? '操作失敗' });
         else await loadData();
     };
 
     const handleToggleSchedule = async (sch: NotificationSchedule) => {
-        const res = await toggleScheduleActive(sch.id, !sch.is_active);
+        const res = await toggleScheduleActive(userId, sch.id, !sch.is_active);
         if (!res.success) pushToast({ type: 'error', msg: res.error ?? '操作失敗' });
         else await loadData();
     };
 
     const handleDeleteSchedule = async (id: number) => {
         if (!confirm('確定刪除此排程？')) return;
-        const res = await deleteSchedule(id);
+        const res = await deleteSchedule(userId, id);
         if (!res.success) pushToast({ type: 'error', msg: res.error ?? '刪除失敗' });
         else await loadData();
     };
 
     const handleExecuteSchedule = async (id: number) => {
         setScheduleExecuting(id);
-        const res = await executeSchedule(id, 'manual');
+        const res = await executeSchedule(userId, id);
         setScheduleExecuting(null);
         if (res.success) {
             pushToast({ type: 'success', msg: `執行完成：成功 ${res.sent} 封，失敗 ${res.failed} 封。` });
@@ -493,6 +495,19 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
     const emailChannel = channels.find(c => c.channel === 'email');
     const emailTemplates = templates.filter(t => t.channel === 'email' && t.status === 1);
     const lineTemplates = templates.filter(t => t.channel === 'line' && t.status === 1);
+
+    if (!canManageAutoRules) {
+        return (
+            <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
+                <AppHeader username={username} onGoHome={onBack} onLogout={onLogout} />
+                <main className="flex-1 container mx-auto px-4 py-8 max-w-4xl">
+                    <p className="rounded-lg border border-rose-200 bg-rose-50 px-4 py-3 text-sm text-rose-700">
+                        僅主管、執行長或系統管理員可管理通知設定。
+                    </p>
+                </main>
+            </div>
+        );
+    }
 
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
@@ -934,6 +949,7 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
 
             {showScheduleForm && (
                 <ScheduleFormModal
+                    userId={userId}
                     schedule={editingSchedule}
                     templates={templates}
                     onClose={() => { setShowScheduleForm(false); setEditingSchedule(null); }}
