@@ -10,6 +10,7 @@ export type AuditAction =
     | 'application.officer_assign'
     | 'application.reassign_officer'
     | 'application.close'
+    | 'application.close_early'
     | 'application.reopen'
     | 'application.update_amount'
     | 'application.request_supervisor_review_board'

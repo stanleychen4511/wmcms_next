@@ -31,6 +31,7 @@ export interface CaseSummary {
     subsidySubtype?: '1' | '2' | null;
     /** DB applications.status：'1'=審核中, '2'=審核未通過, '3'=待核銷, '4'=核銷完成 */
     statusCode?: string | null;
+    isEarlyClosed?: boolean;
 }
 
 export type ApplicationStatus = 'active' | 'closed';

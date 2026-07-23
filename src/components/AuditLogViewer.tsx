@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback } from 'react';
 import { Search, Filter, Clock, ChevronLeft, ChevronRight } from 'lucide-react';
 import { fetchAuditLogs, AuditLogEntry, AuditAction, AuditTargetType } from '../app/actions/auditActions';
 import { DateInput } from './DateInput';
+import { formatTaipeiDateTime, todayDateOnly } from '../lib/dateOnly';
 
 // ── Chinese label maps ────────────────────────────────────────────────────────
 
@@ -61,16 +62,8 @@ const ACTION_COLORS: Record<string, string> = {
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
-function today(): string {
-    const now = new Date();
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${now.getFullYear()}-${pad(now.getMonth() + 1)}-${pad(now.getDate())}`;
-}
-
 function formatDateTime(iso: string): string {
-    const d = new Date(iso);
-    const pad = (n: number) => String(n).padStart(2, '0');
-    return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())} ${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())}`;
+    return formatTaipeiDateTime(iso) ?? iso;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────
@@ -78,7 +71,7 @@ function formatDateTime(iso: string): string {
 const PAGE_SIZE_OPTIONS = [10, 50, 100];
 
 export function AuditLogViewer() {
-    const t = today();
+    const t = todayDateOnly();
 
     // Filters
     const [userAccount, setUserAccount] = useState('');

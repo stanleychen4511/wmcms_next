@@ -95,6 +95,7 @@ import { fetchActiveBanners, Banner } from './app/actions/bannerActions';
 import { fetchHomeAnnouncements, Announcement } from './app/actions/announcementActions';
 
 import { STATUS_TO_STAGE, STAGE_TO_STATUS } from './lib/stageMaps';
+import { formatDateOnly, formatTaipeiDateTime } from './lib/dateOnly';
 
 import { LoadingSpinner } from './components/LoadingSpinner';
 import { CaseSummary, ApplicationRecord, WorkflowStage, Role } from './types';
@@ -311,6 +312,7 @@ function App() {
         prefillNote?: string;
         titleSuffix?: string;
     }>(null);
+    const [showEarlyCloseModal, setShowEarlyCloseModal] = useState(false);
     const [notifLogs, setNotifLogs] = useState<NotificationLog[]>([]);
     const [showNotificationLogsDialog, setShowNotificationLogsDialog] = useState(false);
     const [selectedNotificationLog, setSelectedNotificationLog] = useState<NotificationLog | null>(null);
@@ -510,6 +512,7 @@ function App() {
     // 核銷階段：撥款是否已全部回收（DisbursementPanel callback 設定），決定能否結案
     const [canCloseCase, setCanCloseCase] = useState(false);
     const [closeCaseBlockReason, setCloseCaseBlockReason] = useState<string | null>(null);
+    const [hasInFlightDisbursement, setHasInFlightDisbursement] = useState(false);
     // Bump this after reassign / save / anything that invalidates board card caches
     const [boardRefreshKey, setBoardRefreshKey] = useState(0);
     /** 董事審核：當前作用中的 member tab（signer_user_id 字串）；null = 尚未決定 */
@@ -1007,6 +1010,7 @@ function App() {
         return (
             <NotificationManager
                 userId={loggedInUser.id}
+                userRoles={loggedInUser.roles as Role[]}
                 onBack={() => setView('home')}
                 username={loggedInUser.username}
                 onLogout={handleLogout}
@@ -1588,7 +1592,7 @@ function App() {
                     </div>
                     {round.completedAt && (
                         <span className="text-xs text-slate-500">
-                            {new Date(round.completedAt).toLocaleString('zh-TW')}
+                            {formatTaipeiDateTime(round.completedAt)}
                         </span>
                     )}
                 </div>
@@ -2439,9 +2443,10 @@ function App() {
                                 applicantPhone={appDetail?.applicantPhone ?? null}
                                 applicantAddress={appDetail?.applicantAddress ?? null}
                                 onCaseDataChanged={() => { if (selectedAppId) loadAppDetail(selectedAppId, true); }}
-                                onCanCloseChange={(canClose, blockReason) => {
+                                onCanCloseChange={(canClose, blockReason, hasInFlight) => {
                                     setCanCloseCase(canClose);
                                     setCloseCaseBlockReason(blockReason ?? null);
+                                    setHasInFlightDisbursement(!!hasInFlight);
                                 }}
                             />
                         )}
@@ -2642,6 +2647,27 @@ function App() {
                                 </button>
                             );
                         })()}
+                        {!isCaseClosed && (appDetail?.status === '1' || appDetail?.status === '3') && (() => {
+                            const canClose = !!loggedInUser && (
+                                (loggedInUser.roles as Role[]).includes('admin')
+                                || (loggedInUser.roles as Role[]).includes('supervisor')
+                                || String(loggedInUser.id) === String(appDetail.officerId ?? '')
+                            );
+                            const blockedByInFlight = appDetail.status === '3' && hasInFlightDisbursement;
+                            if (!canClose) return null;
+                            return (
+                                <button
+                                    type="button"
+                                    onClick={() => setShowEarlyCloseModal(true)}
+                                    disabled={blockedByInFlight}
+                                    className="mt-2 w-full inline-flex items-center justify-center gap-1.5 px-3 py-2 bg-amber-50 hover:bg-amber-100 border border-amber-300 text-amber-800 text-xs font-medium rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                                    title={blockedByInFlight ? '請先完成或退回審核中的撥款' : '任何進行中階段皆可中途結案；原因必填，案件會歸類為通過結案'}
+                                >
+                                    <AlertTriangle className="w-3.5 h-3.5" />
+                                    中途結案
+                                </button>
+                            );
+                        })()}
                     </div>
 
                     {/* 主管雙閘門面板已整併到下方「Flow Controls」中（user feedback）：
@@ -2678,7 +2704,7 @@ function App() {
                                 <div className="space-y-2 max-h-52 overflow-y-auto">
                                     {notifLogs.map(log => {
                                         const recipients = Array.isArray(log.recipients) ? log.recipients : [];
-                                        const sentAt = log.sent_at?.slice(0, 16).replace('T', ' ') || '—';
+                                        const sentAt = formatTaipeiDateTime(log.sent_at) ?? '—';
 
                                         return (
                                             <button key={log.id} type="button" onClick={() => {
@@ -2703,6 +2729,9 @@ function App() {
                                                     <p className="text-slate-600 truncate">{log.subject}</p>
                                                 )}
                                                 <p className="text-slate-400 truncate">收件人：{recipients.map(r => r.name || r.email).join('、') || '—'}</p>
+                                                {log.attachment_filenames.length > 0 && (
+                                                    <p className="text-slate-400 truncate">附件：{log.attachment_filenames.join('、')}</p>
+                                                )}
                                                 {log.sender_name && (
                                                     <p className="text-slate-400">發送者：{log.sender_name}</p>
                                                 )}
@@ -2817,7 +2846,7 @@ function App() {
                                     )}
                                 </div>
                                 {appDetail.applicationWay === '2' && (
-                                    appDetail.referralContactName || appDetail.referralContactTitle || appDetail.referralContactPhone
+                                    appDetail.referralContactName || appDetail.referralContactTitle || appDetail.referralContactPhone || appDetail.referralContactEmail
                                 ) && (
                                     <div className="flex flex-wrap items-center gap-x-4 gap-y-1 text-xs text-slate-600 border-t border-slate-100 pt-2">
                                         <span className="font-semibold text-slate-500">轉介承辦人：</span>
@@ -2827,6 +2856,11 @@ function App() {
                                             <a href={`tel:${appDetail.referralContactPhone.replace(/[^0-9+]/g, '')}`}
                                                 className="text-blue-600 hover:underline">
                                                 {appDetail.referralContactPhone}
+                                            </a>
+                                        )}
+                                        {appDetail.referralContactEmail && (
+                                            <a href={`mailto:${appDetail.referralContactEmail}`} className="text-blue-600 hover:underline">
+                                                {appDetail.referralContactEmail}
                                             </a>
                                         )}
                                     </div>
@@ -2881,6 +2915,15 @@ function App() {
                             )}
                         </div>
                     )}
+                    {appDetail?.status === '4' && appDetail.earlyCloseReason && (
+                        <div className="flex items-start gap-2 rounded-lg px-4 py-2.5 text-sm border bg-amber-50 border-amber-200 text-amber-800">
+                            <span className="text-base">⚠️</span>
+                            <div>
+                                <span className="font-semibold">此通過案件已中途結案，未撥餘額不再處理。</span>
+                                <p className="mt-1 text-amber-700">原因：{appDetail.earlyCloseReason}</p>
+                            </div>
+                        </div>
+                    )}
 
                     {/* Read-only banner */}
                     {isViewingPastStep && !isCaseClosed && (
@@ -2905,7 +2948,7 @@ function App() {
                             <div className="text-xs text-slate-500 px-1">
                                 未補件提醒已發送 <strong className="text-slate-700">{reminderStatus.count}</strong> / {reminderStatus.threshold} 次
                                 {reminderStatus.lastReminderAt && (
-                                    <span className="ml-2 text-slate-400">最近一次：{new Date(reminderStatus.lastReminderAt).toLocaleDateString('zh-TW')}</span>
+                                    <span className="ml-2 text-slate-400">最近一次：{formatDateOnly(reminderStatus.lastReminderAt)}</span>
                                 )}
                             </div>
                             {reminderStatus.count >= reminderStatus.threshold && (
@@ -3456,7 +3499,7 @@ function App() {
                                 const recipientText = recipients
                                     .map(r => `${r.name || r.email}${r.email ? ` <${r.email}>` : ''}${r.is_bcc ? '（密件）' : ''}`)
                                     .join('、') || '—';
-                                const sentAt = log.sent_at?.slice(0, 16).replace('T', ' ') || '—';
+                                const sentAt = formatTaipeiDateTime(log.sent_at) ?? '—';
 
                                 return (
                                     <article key={log.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -3486,6 +3529,14 @@ function App() {
                                                     {log.body || '—'}
                                                 </div>
                                             </div>
+                                            {log.attachment_filenames.length > 0 && (
+                                                <div>
+                                                    <p className="mb-1 font-semibold text-slate-500">附件</p>
+                                                    <ul className="rounded-lg bg-slate-50 px-3 py-2 text-slate-800">
+                                                        {log.attachment_filenames.map((filename, index) => <li key={`${log.id}-${index}`} className="break-all">{filename}</li>)}
+                                                    </ul>
+                                                </div>
+                                            )}
                                             <div>
                                                 <p className="mb-1 font-semibold text-slate-500">寄送時間</p>
                                                 <p className="rounded-lg bg-slate-50 px-3 py-2 text-slate-800">{sentAt}</p>
@@ -3562,6 +3613,7 @@ function App() {
                         referralContactName: appDetail.referralContactName ?? null,
                         referralContactTitle: appDetail.referralContactTitle ?? null,
                         referralContactPhone: appDetail.referralContactPhone ?? null,
+                        referralContactEmail: appDetail.referralContactEmail ?? null,
                     }}
                     onClose={() => setShowEditBasicsModal(false)}
                     onSaved={async () => {
@@ -3585,6 +3637,19 @@ function App() {
                         setCloseCaseModalProps(null);
                         await loadAppDetail(selectedAppId, true);
                         if (loggedInUser) await loadPendingAlerts(loggedInUser.id);
+                    }}
+                />
+            )}
+            {showEarlyCloseModal && selectedAppId && loggedInUser && (
+                <CloseCaseModal
+                    applicationId={selectedAppId}
+                    operatorUserId={loggedInUser.id}
+                    stage={appDetail?.stage}
+                    mode="early"
+                    onClose={() => setShowEarlyCloseModal(false)}
+                    onClosed={async () => {
+                        setShowEarlyCloseModal(false);
+                        await loadAppDetail(selectedAppId, true);
                     }}
                 />
             )}

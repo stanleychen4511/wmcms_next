@@ -512,6 +512,7 @@ export async function fetchCaseSummaries(
                     a.officer_id,
                     a.apply_at,
                     a.status,
+                    a.early_close_reason,
                     a.subsidy_subtype,
                     a.applicant_phone,
                     u_off.name_enc as off_name_enc, u_off.name_iv as off_name_iv,
@@ -540,6 +541,7 @@ export async function fetchCaseSummaries(
                 l.officer_id,
                 l.apply_at,
                 l.status,
+                l.early_close_reason,
                 l.wf_stage,
                 l.off_name_enc,
                 l.off_name_iv,
@@ -593,6 +595,7 @@ export async function fetchCaseSummaries(
                 subsidySubtype: (row.subsidy_subtype === '1' || row.subsidy_subtype === '2')
                     ? row.subsidy_subtype : null,
                 statusCode: dbStatus,
+                isEarlyClosed: dbStatus === '4' && !!row.early_close_reason?.trim(),
             };
         });
     } catch (err) {
@@ -939,6 +942,7 @@ export interface UpdateApplicationBasicsPatch {
     referralContactName?: string | null;
     referralContactTitle?: string | null;
     referralContactPhone?: string | null;
+    referralContactEmail?: string | null;
 }
 
 export async function checkApplicationBasicsEditBlock(
@@ -1000,7 +1004,7 @@ export async function updateApplicationBasics(
             `SELECT a.status, a.officer_id, a.applicant_id,
                     a.application_type, a.application_way, a.referral_unit_id,
                     a.referral_unit_name, a.referral_contact_name,
-                    a.referral_contact_title, a.referral_contact_phone,
+                    a.referral_contact_title, a.referral_contact_phone, a.referral_contact_email,
                     a.applicant_phone, a.applicant_address, a.applicant_dob, a.cancer_type, a.cancer_stage,
                     a.application_form, a.treatment_phase,
                     u_app.email AS applicant_email,
@@ -1153,6 +1157,18 @@ export async function updateApplicationBasics(
             if (normalizedEmail !== (row.applicant_email ?? null)) {
                 emailActuallyChanged = true;
                 nextEmail = normalizedEmail;
+            }
+        }
+
+        if (patch.referralContactEmail !== undefined) {
+            const newReferralEmail = (patch.referralContactEmail ?? '').trim();
+            if (newReferralEmail.length > 255) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '轉介人 Email 長度不可超過 255 字' };
+            }
+            if (newReferralEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(newReferralEmail)) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '請輸入有效的轉介人 Email 格式' };
             }
         }
 
@@ -1328,6 +1344,7 @@ export async function updateApplicationBasics(
             { col: 'referral_contact_name',  key: 'referralContactName',  cur: row.referral_contact_name ?? null,  next: norm(patch.referralContactName) },
             { col: 'referral_contact_title', key: 'referralContactTitle', cur: row.referral_contact_title ?? null, next: norm(patch.referralContactTitle) },
             { col: 'referral_contact_phone', key: 'referralContactPhone', cur: row.referral_contact_phone ?? null, next: norm(patch.referralContactPhone) },
+            { col: 'referral_contact_email', key: 'referralContactEmail', cur: row.referral_contact_email ?? null, next: norm(patch.referralContactEmail) },
         ];
         const referralColUpdates: { col: string; val: string | null }[] = [];
         for (const f of nextReferralFields) {

@@ -95,6 +95,8 @@ export interface ApplicationDetail {
     // Board review fields
     applyAmount?: number | null;
     approvedAmount?: number | null;
+    /** 通過案件未全額撥款即結案時的原因；NULL 表示正常核銷結案 */
+    earlyCloseReason?: string | null;
     boardReviewComments?: string | null;
     boardReviewRounds?: BoardReviewRound[];
     boardReconsideration?: BoardReconsiderationRequest | null;
@@ -121,6 +123,7 @@ export interface ApplicationDetail {
     referralContactName?: string | null;
     referralContactTitle?: string | null;
     referralContactPhone?: string | null;
+    referralContactEmail?: string | null;
     // 家訪指派（#11）
     homeVisitAssigneeId?: string | null;
     homeVisitAssigneeName?: string | null;
@@ -441,11 +444,11 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 totals.total_approved_subtype2,
                 a.age, a.moveable_property, a.immoveable_property,
                 a.annual_income, a.marital_status, a.has_children, a.underage_children_count, a.adult_children_count,
-                a.apply_amount, a.approved_amount, a.board_review_comments,
+                a.apply_amount, a.approved_amount, a.early_close_reason, a.board_review_comments,
                 a.application_way, a.referral_unit_id,
                 ru.name AS referral_unit_name_legacy,
                 a.referral_unit_name      AS referral_unit_name_text,
-                a.referral_contact_name, a.referral_contact_title, a.referral_contact_phone,
+                a.referral_contact_name, a.referral_contact_title, a.referral_contact_phone, a.referral_contact_email,
                 a.subsidy_subtype, a.econ_deposit, a.econ_monthly_income,
                 a.officer_case_summary,
                 a.home_visit_assignee_id,
@@ -720,6 +723,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             adultChildrenCount: row.adult_children_count != null ? Number(row.adult_children_count) : null,
             applyAmount: row.apply_amount != null ? Number(row.apply_amount) : null,
             approvedAmount: row.approved_amount != null ? Number(row.approved_amount) : null,
+            earlyCloseReason: row.early_close_reason ?? null,
             boardReviewComments,
             boardReviewRounds,
             boardReconsideration: boardReconsiderationHistory[0] ?? null,
@@ -739,6 +743,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             referralContactName: row.referral_contact_name ?? null,
             referralContactTitle: row.referral_contact_title ?? null,
             referralContactPhone: row.referral_contact_phone ?? null,
+            referralContactEmail: row.referral_contact_email ?? null,
             subsidySubtype: (row.subsidy_subtype === '1' || row.subsidy_subtype === '2')
                 ? row.subsidy_subtype : null,
             econDeposit: row.econ_deposit != null ? Number(row.econ_deposit) : null,
@@ -2177,6 +2182,123 @@ export async function closeCase(
         await client.query('ROLLBACK');
         console.error('closeCase error', err);
         return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+/**
+ * Close an active case early from any workflow stage.
+ * Completed payments remain unchanged; an in-flight payment must be completed or returned first.
+ */
+export async function closeCaseEarly(
+    applicationId: string,
+    reason: string,
+    operatorUserId: string,
+): Promise<{ success: boolean; error?: string }> {
+    if (!isValidDbId(applicationId)) return { success: false, error: '無效的案件 ID' };
+    if (!isValidDbId(operatorUserId)) return { success: false, error: '無效的操作人員 ID' };
+    const trimmedReason = reason.trim();
+    if (!trimmedReason) return { success: false, error: '請填寫中途結案原因' };
+    if (trimmedReason.length > 2_000) return { success: false, error: '中途結案原因不可超過 2,000 字' };
+
+    const client = await pool.connect();
+    try {
+        await client.query('BEGIN');
+        const appRes = await client.query<{ status: string; officer_id: string | null; stage: string | null; approved_amount: string | null }>(
+            `SELECT a.status, a.officer_id::text, a.approved_amount,
+                    (SELECT stage FROM application_workflow WHERE application_id = a.id ORDER BY id DESC LIMIT 1) AS stage
+             FROM applications a
+             WHERE a.id = $1::bigint
+             FOR UPDATE`,
+            [applicationId],
+        );
+        if ((appRes.rowCount ?? 0) === 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件不存在' };
+        }
+        const app = appRes.rows[0];
+        if (app.status !== '1' && app.status !== '3') {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件已結案，無法再次中途結案' };
+        }
+
+        const rolesRes = await client.query<{ code: string }>(
+            `SELECT r.code FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1::bigint`,
+            [operatorUserId],
+        );
+        const roles = new Set(rolesRes.rows.map(row => row.code));
+        const isAdminOrSupervisor = roles.has('admin') || roles.has('supervisor');
+        const isAssignedOfficer = roles.has('case_officer') && String(app.officer_id ?? '') === operatorUserId;
+        if (!isAdminOrSupervisor && !isAssignedOfficer) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '僅案件承辦人、主管或系統管理員可中途結案' };
+        }
+
+        const inFlight = await client.query<{ receipt_number: string }>(
+            `SELECT receipt_number FROM payment_disbursements
+             WHERE application_id = $1::bigint AND review_stage IN ('1', '2', '3', '4')
+             ORDER BY created_at ASC LIMIT 1`,
+            [applicationId],
+        );
+        if ((inFlight.rowCount ?? 0) > 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: `撥款單號${inFlight.rows[0].receipt_number}仍在審核中，請先完成或退回該筆撥款` };
+        }
+
+        const pendingOfficialReceiptConfirmation = await client.query<{ receipt_number: string; external_code: string | null }>(
+            `SELECT receipt_number, external_code FROM payment_disbursements
+             WHERE application_id = $1::bigint AND review_stage = '9'
+               AND official_receipt_replaced_at IS NOT NULL AND official_receipt_accountant_confirmed_at IS NULL
+             ORDER BY created_at ASC LIMIT 1`,
+            [applicationId],
+        );
+        if ((pendingOfficialReceiptConfirmation.rowCount ?? 0) > 0) {
+            await client.query('ROLLBACK');
+            const row = pendingOfficialReceiptConfirmation.rows[0];
+            return { success: false, error: `撥款單號${row.external_code || row.receipt_number}正式收據已更新，等待會計確認` };
+        }
+        const missingRemittance = await client.query<{ receipt_number: string }>(
+            `SELECT receipt_number FROM payment_disbursements
+             WHERE application_id = $1::bigint AND review_stage = '9'
+               AND NULLIF(TRIM(COALESCE(remittance_slip_file_path, '')), '') IS NULL
+             ORDER BY created_at ASC LIMIT 1`,
+            [applicationId],
+        );
+        if ((missingRemittance.rowCount ?? 0) > 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: `撥款單號${missingRemittance.rows[0].receipt_number}未上傳匯款單掃描檔` };
+        }
+
+        const paidRes = await client.query<{ total_disbursed: string }>(
+            `SELECT COALESCE(SUM(amount), 0) AS total_disbursed FROM payment_disbursements
+             WHERE application_id = $1::bigint AND review_stage = '9'`,
+            [applicationId],
+        );
+        const totalDisbursed = Number(paidRes.rows[0]?.total_disbursed ?? 0);
+        const approvedAmount = Number(app.approved_amount ?? 0);
+        await client.query(
+            `UPDATE applications SET status = '4', early_close_reason = $2, updated_at = NOW() WHERE id = $1::bigint`,
+            [applicationId, trimmedReason],
+        );
+        await client.query(
+            `INSERT INTO application_workflow (application_id, stage, reviewer_id, is_approved, comments, reviewed_at)
+             VALUES ($1::bigint, $2, $3::bigint, true, $4, NOW())`,
+            [applicationId, app.stage ?? 'admin_review', operatorUserId, `中途結案：${trimmedReason}`],
+        );
+        await client.query('COMMIT');
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: 'application.close_early',
+            targetType: 'application',
+            targetId: applicationId,
+            detail: { reason: trimmedReason, approvedAmount, totalDisbursed },
+        });
+        return { success: true };
+    } catch (err: any) {
+        await client.query('ROLLBACK');
+        console.error('closeCaseEarly error', err);
+        return { success: false, error: err.message ?? '中途結案失敗' };
     } finally {
         client.release();
     }

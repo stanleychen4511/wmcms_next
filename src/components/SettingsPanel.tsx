@@ -2,6 +2,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import { Settings, Save, RefreshCw, CheckCircle, AlertTriangle } from 'lucide-react';
 import { fetchAllSettings, updateSetting, ensureDefaultSettings, SystemSetting } from '../app/actions/settingsActions';
+import { formatDateOnly } from '../lib/dateOnly';
 
 const SETTING_LABEL: Record<string, string> = {
     pending_doc_alert_days: '未補件天數警示門檻',
@@ -164,7 +165,7 @@ export function SettingsPanel({ userId }: SettingsPanelProps) {
                                     </div>
                                     <span className="text-xs text-slate-400 shrink-0 mt-1">
                                         最後更新：{setting.updatedAt
-                                            ? new Date(setting.updatedAt).toLocaleDateString('zh-TW')
+                                            ? formatDateOnly(setting.updatedAt)
                                             : '—'}
                                     </span>
                                 </div>

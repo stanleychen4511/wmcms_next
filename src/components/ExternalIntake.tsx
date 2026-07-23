@@ -16,6 +16,7 @@ import { twIdError } from '../lib/validateTwId';
 import { fetchDocumentTypeConfigs, type DocumentTypeConfig } from '../app/actions/documentActions';
 import { uploadFileToBlob } from '../lib/uploadClient';
 import { EmailVerificationControl } from './EmailVerificationControl';
+import { isApplicantEmailRequired } from '../lib/applicationEmailRequirement';
 import { DateInput } from './DateInput';
 import { ModalEscapeListener } from '../hooks/useModalDismiss';
 
@@ -890,6 +891,8 @@ export function ExternalIntake() {
             !hasInflightUploads &&
             !hasFailedUploads;
         const isEconomicWeak = qualFormValues.subsidyType === '1';
+        const effectiveWay = isEconomicWeak ? '2' : applicationWay;
+        const applicantEmailRequired = isApplicantEmailRequired(effectiveWay);
 
         const handleSubmit = async () => {
             if (!canSubmit) return;
@@ -901,7 +904,7 @@ export function ExternalIntake() {
             // 申請人電話 / 出生年月日 / 癌別 / 期數 必填
             let formOk = true;
             const trimmedEmail = email.trim();
-            if (isEconomicWeak) {
+            if (!applicantEmailRequired) {
                 setErrorMsg('');
             } else if (!trimmedEmail) {
                 setErrorMsg('請填寫申請人 Email');
@@ -912,7 +915,7 @@ export function ExternalIntake() {
             } else {
                 setErrorMsg('');
             }
-            if (!isEconomicWeak && !emailVerificationToken) {
+            if (applicantEmailRequired && !emailVerificationToken) {
                 setErrorMsg('請先完成申請人 Email 驗證');
                 formOk = false;
             }
@@ -951,8 +954,8 @@ export function ExternalIntake() {
             const fd = new FormData();
             fd.append('name', name.trim());
             fd.append('idNumber', idNumber);
-            fd.append('email', isEconomicWeak ? '' : trimmedEmail);
-            fd.append('email_verification_token', isEconomicWeak ? '' : emailVerificationToken);
+            fd.append('email', applicantEmailRequired ? trimmedEmail : '');
+            fd.append('email_verification_token', applicantEmailRequired ? emailVerificationToken : '');
             fd.append('applicant_phone', applicantPhone.trim());
             fd.append('applicant_dob', applicantDob.trim());
             fd.append('cancer_type', cancerType.trim());
@@ -985,7 +988,6 @@ export function ExternalIntake() {
                 fd.append('econ_monthly_income', String(qualFormValues.econMonthlyIncome));
             }
             // 經濟弱勢強制 way='2'（user feedback #1）；小康依使用者選擇
-            const effectiveWay = qualFormValues.subsidyType === '1' ? '2' : applicationWay;
             fd.append('application_way', effectiveWay);
             if (effectiveWay === '2') {
                 fd.append('referral_unit_name', referralUnitName.trim());
@@ -1024,6 +1026,32 @@ export function ExternalIntake() {
             <div className="max-w-2xl mx-auto py-6 px-4">
                 <StepIndicator current={1} />
                 <div className="space-y-6">
+                    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
+                        <h3 className="text-base font-bold text-gray-800 mb-4">申請方式</h3>
+                        <div className="flex gap-2">
+                            <label className={clsx(
+                                'inline-flex items-center gap-1.5 px-3 py-2 rounded-md border cursor-pointer text-sm flex-1 justify-center',
+                                isEconomicWeak ? 'bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed'
+                                    : (applicationWay === '1' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-300 text-gray-600')
+                            )}>
+                                <input type="radio" checked={!isEconomicWeak && applicationWay === '1'}
+                                    disabled={isEconomicWeak}
+                                    onChange={() => !isEconomicWeak && setApplicationWay('1')}
+                                    className="accent-blue-600" />
+                                自行申請
+                            </label>
+                            <label className={clsx(
+                                'inline-flex items-center gap-1.5 px-3 py-2 rounded-md border cursor-pointer text-sm flex-1 justify-center',
+                                (isEconomicWeak || applicationWay === '2') ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-300 text-gray-600'
+                            )}>
+                                <input type="radio" checked={isEconomicWeak || applicationWay === '2'}
+                                    onChange={() => setApplicationWay('2')}
+                                    className="accent-blue-600" />
+                                轉介（社工/個管師等代為申請）
+                            </label>
+                        </div>
+                        {isEconomicWeak && <p className="text-xs text-rose-600 mt-2">經濟弱勢僅接受轉介。</p>}
+                    </div>
                     {/* Personal Info */}
                     <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-6">
                         <h3 className="text-base font-bold text-gray-800 mb-4">申請人基本資料</h3>
@@ -1051,7 +1079,7 @@ export function ExternalIntake() {
                                     className="w-full border border-gray-200 bg-gray-50 rounded-md px-3 py-2 text-sm font-mono text-gray-500 cursor-not-allowed"
                                 />
                             </div>
-                            {!isEconomicWeak && (
+                            {applicantEmailRequired && (
                                 <div className="md:col-span-2">
                                     <label className="block text-sm font-medium text-gray-700 mb-1">
                                         申請人 Email <span className="text-red-500">*</span>
@@ -1204,43 +1232,8 @@ export function ExternalIntake() {
                                     <option value="A">A 類－自費醫療補助</option>
                                 </select>
                             </div>
-                            {/* 申請方式 + 轉介窗口（user feedback #1 #6）
-                                經濟弱勢強制轉介；小康預設自提、可改轉介 */}
-                            {(() => {
-                                const isEcon = qualFormValues.subsidyType === '1';
-                                const showTransferForm = isEcon || applicationWay === '2';
-                                return (
-                                <div className="md:col-span-2 space-y-3">
-                                    <div>
-                                        <label className="block text-sm font-medium text-gray-700 mb-1">
-                                            申請方式 <span className="text-red-500">*</span>
-                                            {isEcon && <span className="text-xs text-rose-600 font-normal ml-2">（經濟弱勢僅接受轉介）</span>}
-                                        </label>
-                                        <div className="flex gap-2">
-                                            <label className={clsx(
-                                                'inline-flex items-center gap-1.5 px-3 py-2 rounded-md border cursor-pointer text-sm flex-1 justify-center',
-                                                isEcon ? 'bg-gray-50 border-gray-200 text-gray-300 cursor-not-allowed'
-                                                       : (applicationWay === '1' ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-300 text-gray-600')
-                                            )}>
-                                                <input type="radio" checked={!isEcon && applicationWay === '1'}
-                                                    disabled={isEcon}
-                                                    onChange={() => !isEcon && setApplicationWay('1')}
-                                                    className="accent-blue-600" />
-                                                自行申請
-                                            </label>
-                                            <label className={clsx(
-                                                'inline-flex items-center gap-1.5 px-3 py-2 rounded-md border cursor-pointer text-sm flex-1 justify-center',
-                                                (isEcon || applicationWay === '2') ? 'bg-blue-50 border-blue-300 text-blue-700' : 'bg-white border-gray-300 text-gray-600'
-                                            )}>
-                                                <input type="radio" checked={isEcon || applicationWay === '2'}
-                                                    onChange={() => setApplicationWay('2')}
-                                                    className="accent-blue-600" />
-                                                轉介（社工/個管師等代為申請)
-                                            </label>
-                                        </div>
-                                    </div>
-                                    {showTransferForm && (
-                                        <div className="bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-3">
+                            {effectiveWay === '2' && (
+                                <div className="md:col-span-2 bg-blue-50 border border-blue-200 rounded-lg p-3 space-y-3">
                                             <p className="text-xs text-blue-700 font-medium">
                                                 請填寫轉介窗口資訊（後續審核與通知會以下方資料聯繫）
                                             </p>
@@ -1317,11 +1310,8 @@ export function ExternalIntake() {
                                                     {referralErrors.email && <p className="text-xs text-red-500 mt-0.5">{referralErrors.email}</p>}
                                                 </div>
                                             </div>
-                                        </div>
-                                    )}
                                 </div>
-                                );
-                            })()}
+                            )}
                         </div>
                     </div>
 

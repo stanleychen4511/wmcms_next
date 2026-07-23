@@ -130,13 +130,14 @@ CREATE TABLE IF NOT EXISTS applications (
     applicant_id             BIGINT      NOT NULL REFERENCES users(id),
     officer_id               BIGINT      REFERENCES users(id) ON DELETE SET NULL,
     status                   CHAR(1)     NOT NULL DEFAULT '1',
-        -- '1'=審核中 '2'=審核未通過(結案) '3'=待核銷 '4'=核銷完成(結案)
+        -- '1'=審核中 '2'=審核未通過(結案) '3'=待核銷 '4'=通過後結案（核銷完成或中途結案）
     apply_at                 TIMESTAMPTZ,
     created_at               TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at               TIMESTAMPTZ,
     application_type         CHAR(1),    -- A/B/C/D
     apply_amount             NUMERIC(12,0),
     approved_amount          NUMERIC(12,0),
+    early_close_reason       TEXT,
     age                      INT,
     moveable_property        NUMERIC(12,0),
     immoveable_property      NUMERIC(12,0),
@@ -253,6 +254,7 @@ CREATE TABLE IF NOT EXISTS notification_logs (
     template_id     INT         REFERENCES notification_templates(id) ON DELETE SET NULL,
     status          TEXT        NOT NULL DEFAULT 'sent',  -- 'sent' | 'failed'
     error_message   TEXT,
+    attachment_filenames TEXT[] NOT NULL DEFAULT '{}',
     sent_at         TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
@@ -1061,6 +1063,9 @@ COMMENT ON COLUMN email_verification_codes.verification_token IS '驗證成功�
 ALTER TABLE notification_logs
     ADD COLUMN IF NOT EXISTS is_pending_doc_reminder BOOLEAN NOT NULL DEFAULT FALSE;
 
+ALTER TABLE notification_logs
+    ADD COLUMN IF NOT EXISTS attachment_filenames TEXT[] NOT NULL DEFAULT '{}';
+
 CREATE INDEX IF NOT EXISTS idx_notif_logs_pending_doc
     ON notification_logs (application_id, is_pending_doc_reminder, status);
 
@@ -1515,13 +1520,14 @@ COMMENT ON COLUMN applications.id                      IS '主鍵，自動遞增
 COMMENT ON COLUMN applications.case_number             IS '案號（唯一，人類可讀格式）';
 COMMENT ON COLUMN applications.applicant_id            IS '申請人使用者 ID，FK 至 users.id';
 COMMENT ON COLUMN applications.officer_id              IS '承辦人 ID，FK 至 users.id；NULL 代表尚未派案';
-COMMENT ON COLUMN applications.status                  IS '案件狀態：1=審核中 / 2=審核未通過（結案）/ 3=待核銷 / 4=核銷完成（結案）';
+COMMENT ON COLUMN applications.status                  IS '案件狀態：1=審核中 / 2=審核未通過（結案）/ 3=待核銷 / 4=通過後結案（核銷完成或中途結案）';
 COMMENT ON COLUMN applications.apply_at                IS '正式收件時間（作為補件警示的起算點）';
 COMMENT ON COLUMN applications.created_at              IS '資料建立時間';
 COMMENT ON COLUMN applications.updated_at              IS '最後更新時間';
 COMMENT ON COLUMN applications.application_type        IS '申請類別：A/B/C/D（依補助類型區分）';
 COMMENT ON COLUMN applications.apply_amount            IS '申請金額（元）';
 COMMENT ON COLUMN applications.approved_amount         IS '董事審核核准金額（元）；0 表示未通過';
+COMMENT ON COLUMN applications.early_close_reason      IS '案件中途結案時的必填原因；NULL 表示非中途結案';
 COMMENT ON COLUMN applications.age                     IS '申請人年齡（資格預審用）';
 COMMENT ON COLUMN applications.moveable_property       IS '動產金額（元）';
 COMMENT ON COLUMN applications.immoveable_property     IS '不動產金額（元）';
@@ -1684,6 +1690,7 @@ COMMENT ON COLUMN notification_logs.body                    IS '信件內文（�
 COMMENT ON COLUMN notification_logs.template_id             IS '使用的範本 ID，FK 至 notification_templates.id（手動寫的為 NULL）';
 COMMENT ON COLUMN notification_logs.status                  IS '寄送結果：sent / failed';
 COMMENT ON COLUMN notification_logs.error_message           IS '失敗原因（僅 status=failed 時有值）';
+COMMENT ON COLUMN notification_logs.attachment_filenames    IS '實際寄出的附件檔名；附件暫存檔不保留';
 COMMENT ON COLUMN notification_logs.sent_at                 IS '寄送時間';
 COMMENT ON COLUMN notification_logs.is_pending_doc_reminder IS '是否為未補件提醒：TRUE 會計入該案件的達門檻提醒次數';
 

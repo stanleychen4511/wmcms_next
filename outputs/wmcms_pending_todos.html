@@ -1,0 +1,262 @@
+<!doctype html>
+<html lang="zh-Hant-TW">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WMCMS 待處理事項清單</title>
+  <style>
+    :root { color-scheme: light; font-family: "Noto Sans TC", "Microsoft JhengHei", system-ui, sans-serif; color: #172033; background: #f5f7fb; }
+    body { margin: 0; padding: 32px; }
+    main { max-width: 1120px; margin: 0 auto; }
+    h1 { margin: 0 0 8px; font-size: 28px; letter-spacing: 0; }
+    .summary { margin: 0 0 24px; color: #5f6f89; line-height: 1.7; }
+    .todo-list { display: grid; gap: 14px; }
+    .todo-card { background: #fff; border: 1px solid #dfe6f1; border-radius: 8px; padding: 18px 20px; box-shadow: 0 1px 2px rgba(20, 35, 55, .06); }
+    .todo-meta { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; margin-bottom: 12px; }
+    .todo-no { font-weight: 800; color: #2563eb; }
+    .todo-feature { font-weight: 700; color: #172033; }
+    .todo-status { margin-left: auto; border-radius: 999px; padding: 4px 10px; background: #fff4d7; color: #925400; font-size: 13px; font-weight: 700; }
+    .todo-description { white-space: normal; line-height: 1.75; font-size: 15px; }
+    .todo-note { margin-top: 12px; padding-top: 12px; border-top: 1px solid #edf1f7; color: #53637a; line-height: 1.7; }
+    a { color: #2563eb; }
+    @media (max-width: 720px) { body { padding: 18px; } h1 { font-size: 24px; } .todo-status { margin-left: 0; } }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>WMCMS 待處理事項清單</h1>
+    <p class="summary">來源: <a href="https://docs.google.com/spreadsheets/d/17YSCa9NGbin4QOvdcUviR5EpXMu08heq_IrC5-EcmQs/edit?usp=sharing">Google Sheets</a><br>產出時間: 2026/6/11 11:48:11<br>共 23 項待處理.</p>
+    <div class="todo-list">
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#30</span>
+    <span class="todo-feature">首頁與導覽</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">#外部自行申請/登入頁中<br>1.小康家庭，請將「全戶之全國財產稅總歸戶財產查詢清單」移到「送出前必備文件」<br>2.經濟弱勢，可送出後補件，請新增 申請人存摺封面影本（請勿刪除存摺影本前的『申請人』，因不接受提供親友存摺）<br><br>＃外部自行申請/填寫資料頁 以及內部申請上傳資料頁<br>經濟弱勢，增加申請人存摺封面影本【可補件】。<br><br>＃外部自行申請/填寫資料頁<br>小康家庭，請將「全戶之全國財產稅總歸戶財產查詢清單」改為必備文件。下方紅字說明也請增加這個文件。</div>
+  <div class="todo-note"><strong>備註:</strong> 1. 已修改，未來若需要調整可到 &quot;後台管理工具/文件類型管理&quot; 中將 &quot;可補件&quot; 欄位設定為 &quot;須隨附&quot;<br>2. 已修改，未來若需要調整可到 &quot;後台管理工具/文件類型管理&quot; 中將直接修改檔案名稱</div>
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#31</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">【經濟弱勢申請】<br>1.外部申請入入口處，填寫身分證號及信箱區塊，入口處的信箱請刪除<br>2.請將轉轉介人信箱改為必填，實務上必須要聯繫</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#32</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">外部申請首頁<br>下方可否新增連結『申請文件下載處』<br>https://wan-mei.org/service/#self-paid-medical-subsidy</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#33</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">【新增申請案件】【資格預審】階段：<br>年齡部分改為可以依據出生年月日自動帶入，避免申請人算錯</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#34</span>
+    <span class="todo-feature">關懷紀錄</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">來電紀錄備註想要改成：<br>1.大家都可以新增追蹤摘要<br>2.每次新增都要按新增按鈕如同關懷紀錄新增媒體連結的按鈕<br>3.每次新增後面自動註記哪一位工作人員新增（因為來電紀錄可能不會一次資訊就完全，難以當下就辨識是否為同一位，或是會多次聯繫但不同人接聽，所以如果有這個功能真的會很方便，謝謝工程師大大）</div>
+  <div class="todo-note"><strong>備註:</strong> 左邊的感謝為同事希望可以轉達給您，我就保留了：）</div>
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#35</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">申請人按下申請送出後跳出的畫面『申請已成功送出，請記錄此案件編號...』這個下面可否增加萬美的LINE QR code（https://reurl.cc/N2Kqkq）與電話（02）2321-2777，方便聯絡</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#36</span>
+    <span class="todo-feature">其他</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">在申請人及轉介人email部分，不知道您可否加驗證系統，確保他有寫對信箱，信箱也是可以正常收信的？</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#37</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">請工程師大大評估以下這兩種方式是否可以擇一修改，感恩！<br>1.申請人如果重複查詢，能否可以看到他目前的申請進度？<br>受理中／文件審核中／需補件／案件審核中／撥款中／已結案...之類的<br>2.提交申請後會寄自動一封郵件說我們已經收到他的申請了</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#38</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">外部申請<br>申請人輸入資料後，目前會跳出不符合申請資格，因目前有進行中的申請案件。<br>不符合申請資格請改成「您已正在申請中／您申請額度已滿」</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#39</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">系統畫面https://reurl.cc/YDKe2O<br>治療階段，請改為『欲申請治療項目』<br>下方選項則改為『治療完成（三個月以內）』『治療未開始』『兩者皆有』</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#40</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">選擇申請類別，ＡＢＣＤ，因為目前僅有自費醫療，不知可否隱藏ＢＣＤ，待未來開發完成再顯示</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#41</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">系統畫面https://reurl.cc/9WmREa<br>請協助改為『轉介（社工/個管師等代為申請)』</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#42</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">外部申請，資格判定區塊<br>1.小康和經濟弱勢，若判定不符合的話，請於下方說明中新增：<br>建議您可以在另一補助類型輸入資料，可能您符合另一補助。<br>2.小康家庭，若判定不符合的話，請於下方說明中新增：<br>因治療可能影響工作，若您最新年度收入未達最低標準，可由近三年綜所稅中，任選一年有達標的年收入提出申請。<br>3.資格判定說明的聯絡方式，除電話外，新增 官方LINE</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#43</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">文件上傳<br>戶籍謄本，請改為（正本/影本）</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#44</span>
+    <span class="todo-feature">申請案件管理</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">系統畫面https://reurl.cc/Em51dR<br>請更改為承辦人都可以看到所有案的基礎畫面（如上系統畫面），但不屬於他的申請人，就只能在這個畫面，無法再點進去一層看資料</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#45</span>
+    <span class="todo-feature">申請案件管理</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">需請您新增快速功能區：增加一區「新增不通過歸檔」<br>會有紙本申請，一看就知道他年齡等條件不符，就不會新增案件與上傳電子檔，但是會輸入資料到不通過歸檔的部分。需要輸入的資料與報表的不通過歸檔一樣。</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#46</span>
+    <span class="todo-feature">新增案件</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">應繳文件檢核表<br>1.打開資料檢視時，有時會閃爍不穩定<br>2.【應備文件檢核表】<br>文件部分是否可以多件上傳？是否需要有多大檔案限制？因為有些項目可能不只一份，申請人有些也不太會合併文件？<br>上傳申請資料部分，是否可以滑過去會跳出該項文件的說明文字<br><br>（1）自費醫療補助申請表:<br><br>請於申請原因處，說明欲申請之治療項目，以及金額計算。例如，每次標靶費用＊＊元，申請＊月＊日與＊月＊日標靶治療，合計＊＊元。<br><br>（2）個資同意書：<br><br>請於本會官網下載。<br><br>（3）綜所稅清單＆財產清冊：<br><br>請提供最新年度，並具有浮水印／檢查碼為準<br><br>（4）全戶戶籍謄本：<br><br>請提供 3 個月內，勿省略記事（非戶口名簿）。<br><br>（5）診斷證明：<br><br>請包含下列三點：1.自費治療的必要性或建議原因2.病人不適用健保原因3.預計療程的時間或已完成療程的時間（可見官網範例）<br><br>（6）醫療收據（小康方案）：<br>若正本已提供保險部分給付，請與基金會洽詢確認。<br><br>（6）醫療收據（經濟弱勢方案）：<br><br>副本請提供醫院用印正式副本，非自行影印之影本</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#47</span>
+    <span class="todo-feature">家庭訪視</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">將家訪指派其他承辦，對方的申請案件管理或通知都沒有跳出來通知，且沒有可以撰寫的部分</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#48</span>
+    <span class="todo-feature">通知系統</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">1.希望可以回溯去看過去的發送通知紀錄<br>目前測試同時勾選承辦人及申請人，在申請人的信中會在副本處呈現承辦人的信箱<br>希望的調整方向：<br>(１)可以點擊看到完整內容<br>(２)可以預設密件副本給承辦人，不要讓申請人看到<br>2.希望可以新增新的收件人，因為有時候會遇到需要把資料轉寄給本人身邊的人</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#49</span>
+    <span class="todo-feature">董事審選</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">董事審核不通過後，若直接按結案，承辦人及主管都看不到所有的文件，希望可以調整<br>(1)如果誤按結案，是否讓管理者可逆協助恢復狀態。<br>(2)結案後所有資料顯示唯讀不可更改，但是承辦人及主管依然可以看到資料，讓承辦可以去跟申請人說明與發送不通過郵件。<br>(3)目前承辦人在核銷階段才看得到董事意見，若是不通過，希望也可以讓承辦人看到董事意見。</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#50</span>
+    <span class="todo-feature">董事審選</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">董事審核完畢，給承辦人核銷時，因為會有治療變更，需要退回請董事再次審核<br>系統畫面https://reurl.cc/2aRLmO<br>目前是由負責核銷階段的承辦人退回給董事，且董事看不到退回狀態與退回的訊息內容，希望可以改為：<br>1.仍是由承辦人退回給董事，增加主管一關，主管核准後退給董事。<br>2.退回的狀態、訊息和附件董事可以看得到，並且新增針對這次的單次審核訊息。並不會去覆蓋掉第一次的審核內容<br>3.退回的訊息欄中可以上傳資料（pdf或jpg檔），並且讓主管與審核董事看得到內容</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#51</span>
+    <span class="todo-feature">核銷撥款</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">醫院的醫療收據上傳<br>1.目前這個工作在會計，請移到承辦人<br>2.上傳的領據，希望可以是pdf檔，並且新增下方可勾選為正式收據或是未繳款領據，若是勾選未繳款領據，則提醒承辦人及會計，尚未收到正式收據。<br>3.依據個別申請狀態不同，有可能承辦人寄出收據的信件與申請通過通知是不同的信件，需要請您幫忙領據的信件就是單獨講領據的事。且讓承辦人可以手動發送申請通過通知信件</div>
+  
+</section>
+
+<section class="todo-card">
+  <div class="todo-meta">
+    <span class="todo-no">#52</span>
+    <span class="todo-feature">核銷撥款</span>
+    <span class="todo-status">待處理</span>
+  </div>
+  <div class="todo-description">新增讓個管師在撥款完成後，可以上傳匯款單的掃描檔案到該筆撥款</div>
+  
+</section>
+    </div>
+  </main>
+</body>
+</html>

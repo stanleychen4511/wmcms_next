@@ -62,7 +62,7 @@ import { useToast } from './FloatingToast';
 import { useModalDismiss } from '../hooks/useModalDismiss';
 import { clsx } from 'clsx';
 import { DateInput } from './DateInput';
-import { todayDateOnly } from '../lib/dateOnly';
+import { formatTaipeiDateTime, todayDateOnly } from '../lib/dateOnly';
 import { applyPlaceholders } from '../lib/notificationUtils';
 import { getNotificationTemplateLabel } from '../lib/systemTemplates';
 import {
@@ -85,7 +85,7 @@ interface Props {
     applicantAddress?: string | null;
     /** 編輯收據資料儲存後通知 caller refresh appDetail */
     onCaseDataChanged?: () => void;
-    onCanCloseChange?: (canClose: boolean, blockReason?: string | null) => void;
+    onCanCloseChange?: (canClose: boolean, blockReason?: string | null, hasInFlight?: boolean) => void;
 }
 
 // ─── 角色 → 可操作 stage 對照 ────────────────────────────────────────
@@ -141,7 +141,7 @@ export function DisbursementPanel({ applicationId, caseNumber, applyAmount, appr
             const res = await fetchDisbursements(operatorUserId, applicationId);
             if (res.success) {
                 setSummary(res.data);
-                onCanCloseChangeRef.current?.(res.data.canCloseCase, res.data.closeCaseBlockReason);
+                onCanCloseChangeRef.current?.(res.data.canCloseCase, res.data.closeCaseBlockReason, res.data.hasInFlight);
             } else {
                 setError(res.error);
             }
@@ -559,7 +559,7 @@ function HistoricalMedicalReceiptsModal({ rows, onClose, onPreview }: HistoryMod
                                             ${r.disbursementAmount.toLocaleString()}
                                         </td>
                                         <td className="px-2 py-2 text-xs text-slate-500">
-                                            {r.uploadedAt ? new Date(r.uploadedAt).toLocaleString('zh-TW') : '—'}
+                                            {r.uploadedAt ? formatTaipeiDateTime(r.uploadedAt) : '—'}
                                         </td>
                                         <td className="px-2 py-2 text-center">
                                             <button
@@ -1152,7 +1152,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
         if (printOperatorTooltip || !d.lastPrintedAt) return;
         const r = await fetchLastPrintMeta(operatorUserId, d.id);
         if (r.success && r.data) {
-            const t = r.data.printedAt ? new Date(r.data.printedAt).toLocaleString('zh-TW') : '';
+            const t = r.data.printedAt ? formatTaipeiDateTime(r.data.printedAt) : '';
             setPrintOperatorTooltip(`${t}　by ${r.data.operatorName ?? '—'}`);
         }
     };
@@ -1294,7 +1294,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                             <span
                                 className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded cursor-help"
                                 onMouseEnter={handlePrintTooltipHover}
-                                title={printOperatorTooltip || `已列印 ${new Date(d.lastPrintedAt).toLocaleString('zh-TW')}`}
+                                title={printOperatorTooltip || `已列印 ${formatTaipeiDateTime(d.lastPrintedAt)}`}
                             >
                                 📄 已列印
                             </span>
@@ -2193,10 +2193,10 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                     <div className="flex items-center gap-1 font-medium text-slate-600">
                         <History className="w-3 h-3" />簽核歷程
                     </div>
-                    {d.officerSignedAt    && <div>個管師送出：{new Date(d.officerSignedAt).toLocaleString('zh-TW')}</div>}
-                    {d.supervisorSignedAt && <div>主管送出：{new Date(d.supervisorSignedAt).toLocaleString('zh-TW')}</div>}
-                    {d.accountantSignedAt && <div>會計送出：{new Date(d.accountantSignedAt).toLocaleString('zh-TW')}</div>}
-                    {d.executiveSignedAt  && <div>執行長完成：{new Date(d.executiveSignedAt).toLocaleString('zh-TW')}</div>}
+                    {d.officerSignedAt    && <div>個管師送出：{formatTaipeiDateTime(d.officerSignedAt)}</div>}
+                    {d.supervisorSignedAt && <div>主管送出：{formatTaipeiDateTime(d.supervisorSignedAt)}</div>}
+                    {d.accountantSignedAt && <div>會計送出：{formatTaipeiDateTime(d.accountantSignedAt)}</div>}
+                    {d.executiveSignedAt  && <div>執行長完成：{formatTaipeiDateTime(d.executiveSignedAt)}</div>}
                 </div>
             )}
             {/* 紙本掃描檔預覽 modal — 與行政初審文件預覽相同機制（浮水印 + 防右鍵 + 防下載） */}
@@ -2286,7 +2286,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                 const formatAmount = (amount: number | null) =>
                     amount != null ? `NT$ ${amount.toLocaleString()}` : '未填寫';
                 const formatDate = (value: string | null) =>
-                    value ? new Date(value).toLocaleString('zh-TW') : '';
+                    value ? formatTaipeiDateTime(value) ?? '' : '';
                 const rounds = br.rounds.length > 0
                     ? br.rounds
                     : [{

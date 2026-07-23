@@ -9,6 +9,7 @@ import { Document, Page, View, Text, Image, StyleSheet } from '@react-pdf/render
 import type { ReviewOpinionPrintData } from '../../app/actions/printDocumentActions';
 import { CATEGORY_LABEL } from '../caseCategory';
 import { formatRocDate } from '../rocDate';
+import { formatTaipeiDateTime } from '../dateOnly';
 
 const FONT = 'NotoSansTC';
 
@@ -96,7 +97,7 @@ export function ReviewOpinionPdf({ data }: Props) {
                                 ? <Image style={s.sigImg} src={sig.signatureDataUrl} />
                                 : <Text style={{ fontSize: 9, color: '#94a3b8' }}>（無簽章圖檔）</Text>}
                             <Text style={s.sigDate}>
-                                {sig.signedAt ? new Date(sig.signedAt).toLocaleString('zh-TW') : ''}
+                                {sig.signedAt ? formatTaipeiDateTime(sig.signedAt) : ''}
                             </Text>
                         </View>
                     ))}

@@ -31,6 +31,7 @@ export interface EditCaseBasicsInitial {
     referralContactName?: string | null;
     referralContactTitle?: string | null;
     referralContactPhone?: string | null;
+    referralContactEmail?: string | null;
 }
 
 const TYPE_LABEL: Record<string, string> = {
@@ -77,13 +78,14 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
     const [referralContactName, setReferralContactName] = useState(initial.referralContactName ?? '');
     const [referralContactTitle, setReferralContactTitle] = useState(initial.referralContactTitle ?? '');
     const [referralContactPhone, setReferralContactPhone] = useState(initial.referralContactPhone ?? '');
+    const [referralContactEmail, setReferralContactEmail] = useState(initial.referralContactEmail ?? '');
 
     const [units, setUnits] = useState<{ id: string; name: string }[]>([]);
     const [unitsLoaded, setUnitsLoaded] = useState(false);
     const [nameError, setNameError] = useState('');
     const [referralError, setReferralError] = useState('');
     const [referralFieldErrors, setReferralFieldErrors] = useState<{
-        unit?: string; contactName?: string; title?: string; phone?: string;
+        unit?: string; contactName?: string; title?: string; phone?: string; email?: string;
     }>({});
     const [submitting, setSubmitting] = useState(false);
 
@@ -168,6 +170,9 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
             if (!referralContactName.trim())  errs.contactName = '承辦人姓名必填';
             if (!referralContactTitle.trim()) errs.title       = '承辦人職稱必填';
             if (!referralContactPhone.trim()) errs.phone       = '承辦人聯絡電話必填';
+            const trimmedReferralEmail = referralContactEmail.trim();
+            if (trimmedReferralEmail && !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(trimmedReferralEmail)) errs.email = '請輸入正確的 Email 格式';
+            else if (trimmedReferralEmail.length > 255) errs.email = 'Email 不可超過 255 字';
             setReferralFieldErrors(errs);
             if (Object.keys(errs).length > 0) ok = false;
         } else {
@@ -241,6 +246,7 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
                 patch.referralContactName  = referralContactName.trim();
                 patch.referralContactTitle = referralContactTitle.trim();
                 patch.referralContactPhone = referralContactPhone.trim();
+                patch.referralContactEmail = referralContactEmail.trim();
             }
             // 切回自提時不送 4 欄 → server 端保留原值，下次切回轉介可重用
 
@@ -615,6 +621,22 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
                                                 className={`w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ${referralFieldErrors.phone ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
                                             />
                                             {referralFieldErrors.phone && <p className="text-xs text-red-500 mt-0.5">{referralFieldErrors.phone}</p>}
+                                        </div>
+                                        <div>
+                                            <label className="block text-xs font-medium text-slate-600 mb-1">
+                                                轉介承辦人 Email
+                                            </label>
+                                            <input
+                                                type="email" maxLength={255}
+                                                value={referralContactEmail}
+                                                onChange={e => {
+                                                    setReferralContactEmail(e.target.value);
+                                                    setReferralFieldErrors(p => ({ ...p, email: undefined }));
+                                                }}
+                                                placeholder="name@example.com"
+                                                className={`w-full px-3 py-2 rounded-lg border text-sm focus:outline-none focus:ring-2 focus:ring-blue-200 focus:border-blue-400 ${referralFieldErrors.email ? 'border-red-400 bg-red-50' : 'border-gray-300'}`}
+                                            />
+                                            {referralFieldErrors.email && <p className="text-xs text-red-500 mt-0.5">{referralFieldErrors.email}</p>}
                                         </div>
                                     </div>
                                 </div>

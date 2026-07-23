@@ -2,6 +2,7 @@
 
 import { pool } from '../../lib/db';
 import { generateBlindIndex, encryptAES, generateSalt, hashPassword } from '../../lib/crypto';
+import { isApplicantEmailRequired } from '../../lib/applicationEmailRequirement';
 import { writeAuditLog } from './auditActions';
 import { verifyEmailVerificationToken } from './emailVerificationActions';
 // 註：檔案不再經 server function 上傳；client 直接 PUT 到 Vercel Blob，
@@ -247,6 +248,8 @@ export async function submitExternalApplication(
     const subsidySubtype: '1' | '2' | null =
         subsidySubtypeRaw === '1' || subsidySubtypeRaw === '2' ? subsidySubtypeRaw : null;
     const isEconomicWeak = subsidySubtype === '1';
+    // 經濟弱勢強制轉介；小康依申請人選擇。
+    const applicationWay: '1' | '2' = isEconomicWeak ? '2' : (wayRaw === '2' ? '2' : '1');
     // 經濟弱勢專屬（萬元）
     const econDeposit       = formData.get('econ_deposit')        ? Number(formData.get('econ_deposit'))        : null;
     const econMonthlyIncome = formData.get('econ_monthly_income') ? Number(formData.get('econ_monthly_income')) : null;
@@ -257,8 +260,7 @@ export async function submitExternalApplication(
     if (name.length > 50) {
         return { success: false, error: '申請人姓名不可超過 50 個字' };
     }
-    // 經濟弱勢主要聯繫轉介單位；申請人 Email 可空白。
-    if (!isEconomicWeak && (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
+    if (isApplicantEmailRequired(applicationWay) && (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email))) {
         return { success: false, error: '請填寫有效的 Email 地址' };
     }
     // 申請人聯絡電話必填
@@ -273,11 +275,6 @@ export async function submitExternalApplication(
     if (!cancerStageIn) return { success: false, error: '請填寫癌症期數' };
     if (!treatmentPhase) return { success: false, error: '請選擇欲申請治療項目（治療完成三個月以內／治療未開始／兩者皆有）' };
 
-    // 申請方式：經濟弱勢強制 way='2'；小康看送來的；其他預設 '1'
-    const subsidySubtypeForWay = ((formData.get('subsidy_subtype') as string | null) ?? '').trim();
-    const applicationWay: '1' | '2' = subsidySubtypeForWay === '1'
-        ? '2'
-        : (wayRaw === '2' ? '2' : '1');
     if (applicationWay === '2') {
         if (!referralUnitNameIn || !referralContactNameIn || !referralContactTitleIn || !referralContactPhoneIn) {
             return { success: false, error: '轉介申請須填寫轉介單位 / 轉介人姓名 / 職稱 / 聯絡電話' };
@@ -291,7 +288,7 @@ export async function submitExternalApplication(
     if (!subsidySubtype) {
         return { success: false, error: '請選擇補助子類型（經濟弱勢／小康家庭）' };
     }
-    if (!isEconomicWeak && !(await verifyEmailVerificationToken(email, 'applicant_application', emailVerificationToken))) {
+    if (isApplicantEmailRequired(applicationWay) && !(await verifyEmailVerificationToken(email, 'applicant_application', emailVerificationToken))) {
         return { success: false, error: '請先完成申請人 Email 驗證' };
     }
     if (applicationWay === '2' && !(await verifyEmailVerificationToken(referralContactEmailIn, 'referral_application', referralEmailVerificationToken))) {

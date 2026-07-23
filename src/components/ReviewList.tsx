@@ -17,6 +17,7 @@ import { DocumentEntry, linkApplicationDocumentByUrl, updateDocumentStatus, fetc
 import { uploadFileToBlob } from '../lib/uploadClient';
 import { writeAuditLog } from '../app/actions/auditActions';
 import { ModalEscapeListener } from '../hooks/useModalDismiss';
+import { formatDateOnly } from '../lib/dateOnly';
 
 function getPreviewUrl(fileUrl: string): string {
     return `/api/preview?path=${encodeURIComponent(fileUrl)}`;
@@ -456,7 +457,7 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                                         )}
                                         {doc.uploadedAt && (
                                             <span className="text-xs text-gray-400">
-                                                {new Date(doc.uploadedAt).toLocaleDateString('zh-TW')}
+                                                {formatDateOnly(doc.uploadedAt)}
                                             </span>
                                         )}
                                         {doc.rejectReason && (

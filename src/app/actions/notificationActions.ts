@@ -65,6 +65,7 @@ export interface NotificationLog {
     template_id: number | null;
     status: 'sent' | 'failed';
     error_message: string | null;
+    attachment_filenames: string[];
     sent_at: string;
 }
 
@@ -623,8 +624,8 @@ export async function sendNotificationEmail(
     try {
         const logRes = await client.query(
             `INSERT INTO notification_logs
-                (application_id, channel, sender_id, recipients, subject, body, template_id, status, error_message, is_pending_doc_reminder, disbursement_id)
-             VALUES ($1, 'email', $2::bigint, $3, $4, $5, $6, $7, $8, $9, $10)
+                (application_id, channel, sender_id, recipients, subject, body, template_id, status, error_message, is_pending_doc_reminder, disbursement_id, attachment_filenames)
+             VALUES ($1, 'email', $2::bigint, $3, $4, $5, $6, $7, $8, $9, $10, $11::text[])
              RETURNING id`,
             [
                 applicationId,
@@ -637,6 +638,7 @@ export async function sendNotificationEmail(
                 sendError,
                 isPendingDocReminder,
                 disbursementId ?? null,
+                attachments?.map(attachment => attachment.filename) ?? [],
             ]
         );
 
@@ -820,7 +822,24 @@ export interface AutoNotificationRule {
     updated_at: string;
 }
 
-export async function fetchAutoNotificationRules(): Promise<{ success: boolean; data?: AutoNotificationRule[]; error?: string }> {
+async function canManageAutoNotificationRules(operatorUserId: string): Promise<boolean> {
+    if (!/^\d+$/.test(operatorUserId)) return false;
+    const res = await pool.query(
+        `SELECT 1
+         FROM user_roles ur
+         JOIN roles r ON r.id = ur.role_id
+         WHERE ur.user_id = $1::bigint
+           AND r.code IN ('admin', 'supervisor', 'executive')
+         LIMIT 1`,
+        [operatorUserId],
+    );
+    return (res.rowCount ?? 0) > 0;
+}
+
+export async function fetchAutoNotificationRules(operatorUserId: string): Promise<{ success: boolean; data?: AutoNotificationRule[]; error?: string }> {
+    if (!(await canManageAutoNotificationRules(operatorUserId))) {
+        return { success: false, error: '僅管理員、主管或執行長可查看自動通知設定' };
+    }
     const client = await pool.connect();
     try {
         const res = await client.query(`
@@ -857,13 +876,16 @@ export async function fetchAutoNotificationRules(): Promise<{ success: boolean; 
     }
 }
 
-export async function saveAutoNotificationRule(data: {
+export async function saveAutoNotificationRule(operatorUserId: string, data: {
     id: string;
     is_enabled: boolean;
     channels: string[];
     email_template_id: number | null;
     line_template_id: number | null;
 }): Promise<{ success: boolean; error?: string }> {
+    if (!(await canManageAutoNotificationRules(operatorUserId))) {
+        return { success: false, error: '僅管理員、主管或執行長可修改自動通知設定' };
+    }
     if (!/^\d+$/.test(data.id)) return { success: false, error: '規則 ID 格式錯誤' };
     const channels = [...new Set(data.channels)].filter(c => c === 'email' || c === 'line');
     if (channels.length === 0) return { success: false, error: '至少要選擇一個通知渠道' };
@@ -1035,7 +1057,7 @@ export async function fetchNotificationLogs(applicationId: string): Promise<{ su
             `SELECT nl.id::text, nl.application_id::text, nl.channel,
                     nl.sender_id::text, u.name_enc, u.name_iv,
                     nl.recipients, nl.subject, nl.body,
-                    nl.template_id, nl.status, nl.error_message,
+                    nl.template_id, nl.status, nl.error_message, nl.attachment_filenames,
                     nl.sent_at::text
              FROM notification_logs nl
              LEFT JOIN users u ON u.id = nl.sender_id
@@ -1056,6 +1078,9 @@ export async function fetchNotificationLogs(applicationId: string): Promise<{ su
             template_id: r.template_id ?? null,
             status: r.status,
             error_message: r.error_message ?? null,
+            attachment_filenames: Array.isArray(r.attachment_filenames)
+                ? r.attachment_filenames.map((filename: unknown) => String(filename))
+                : [],
             sent_at: r.sent_at,
         }));
         return { success: true, data };

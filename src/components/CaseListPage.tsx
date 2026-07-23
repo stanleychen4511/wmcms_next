@@ -3,6 +3,7 @@ import { Search, ChevronRight, FileText, UserCheck, AlertTriangle, ArrowUp, Arro
 import { CaseSummary, Role, WorkflowStage } from '../types';
 import { AppHeader } from './AppHeader';
 import { DateInput } from './DateInput';
+import { todayDateOnly } from '../lib/dateOnly';
 
 interface OfficerOption { id: string; name: string; }
 
@@ -67,15 +68,11 @@ const STATUS_BADGE: Record<string, { label: string; className: string }> = {
     '5': { label: '結案（通過）', className: 'bg-emerald-100 text-emerald-700' },
 };
 
-function getMonthRange(): { first: string; last: string } {
-    const now = new Date();
-    const y = now.getFullYear();
-    const m = now.getMonth();
-    const lastDay = new Date(y, m + 1, 0).getDate();
-    const pad = (n: number) => String(n).padStart(2, '0');
+function getCurrentYearRange(): { first: string; last: string } {
+    const year = todayDateOnly().slice(0, 4);
     return {
-        first: `${y}-${pad(m + 1)}-01`,
-        last:  `${y}-${pad(m + 1)}-${pad(lastDay)}`,
+        first: `${year}-01-01`,
+        last:  `${year}-12-31`,
     };
 }
 
@@ -109,7 +106,7 @@ export function CaseListPage({
     subtypeMaxAmounts = { '1': 30000, '2': 350000 },
     onMount, onAssign, onSelectCase, onSelectApplication, onLogout, onGoHome,
 }: CaseListPageProps) {
-    const { first, last } = getMonthRange();
+    const { first, last } = getCurrentYearRange();
 
     const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
 
@@ -808,7 +805,7 @@ function CaseRow({
                     const badge = STATUS_BADGE[c.statusCode ?? '1'] ?? STATUS_BADGE['1'];
                     return (
                         <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${badge.className}`}>
-                            {badge.label}
+                            {c.isEarlyClosed ? '中途結案（通過）' : badge.label}
                         </span>
                     );
                 })()}

@@ -1,8 +1,6 @@
 import type { NextConfig } from "next";
 import path from "path";
 
-process.env.TZ = 'Asia/Taipei';
-
 const nextConfig: NextConfig = {
   serverExternalPackages: ['pg', 'pg-native', 'canvas'],
   turbopack: {

@@ -1,7 +1,7 @@
 'use client';
 
 /**
- * 通用「不通過結案」Modal
+ * 通用結案 Modal（不通過或中途結案）
  *
  * 用途：在任何 workflow 階段（admin_review / visit / board_review / reimbursement）
  *      讓承辦人勾選結案原因 + 補充說明後結案。
@@ -10,15 +10,15 @@
  *   - prefillReasonCodes：caller 預先帶入勾選 + 金額（資格判定不符會用到）
  *   - prefillNote：caller 預先帶入文字說明（補件超時會用到）
  *
- * 結案後 application.status = '2'，
- * application_close_reasons 寫入結構化原因。
+ * 不通過結案後 application.status = '2'，並寫入結構化原因。
+ * 中途結案後 application.status = '4'，並保留必填原因。
  */
 
 import { useEffect, useState } from 'react';
 import { X, AlertTriangle, Loader2 } from 'lucide-react';
 import { useToast } from './FloatingToast';
 import { useModalDismiss } from '../hooks/useModalDismiss';
-import { closeCaseWithReasons } from '../app/actions/workflowActions';
+import { closeCaseEarly, closeCaseWithReasons } from '../app/actions/workflowActions';
 import { CLOSE_REASON_OPTIONS, type CloseReasonCode } from '../lib/closeReasonConstants';
 
 interface PrefillReason {
@@ -29,6 +29,8 @@ interface PrefillReason {
 interface Props {
     applicationId: string;
     operatorUserId: string;
+    /** early = 任何進行中階段皆可中途結案；預設為不通過結案 */
+    mode?: 'rejected' | 'early';
     /** 觸發結案當下的 stage；用於審計與 UI 顯示 */
     stage?: 'admin_review' | 'home_visit' | 'visit' | 'board_review' | 'reimbursement' | string;
     /** 預填 codes + values（資格判定 reasonCodes、補件超時 '98' 等場景用） */
@@ -51,7 +53,7 @@ const STAGE_LABEL: Record<string, string> = {
 
 export function CloseCaseModal({
     applicationId, operatorUserId, stage,
-    prefillReasonCodes, prefillNote, titleSuffix,
+    mode = 'rejected', prefillReasonCodes, prefillNote, titleSuffix,
     onClose, onClosed,
 }: Props) {
     useModalDismiss(onClose);
@@ -84,6 +86,22 @@ export function CloseCaseModal({
     };
 
     const handleSubmit = async () => {
+        if (mode === 'early') {
+            if (!note.trim()) {
+                pushToast({ type: 'error', msg: '請填寫中途結案原因' });
+                return;
+            }
+            setSubmitting(true);
+            const res = await closeCaseEarly(applicationId, note, operatorUserId);
+            setSubmitting(false);
+            if (!res.success) {
+                pushToast({ type: 'error', msg: res.error ?? '中途結案失敗' });
+                return;
+            }
+            pushToast({ type: 'success', msg: '案件已中途結案' });
+            onClosed();
+            return;
+        }
         if (checked.size === 0) {
             pushToast({ type: 'error', msg: '請至少勾選一項結案原因' });
             return;
@@ -117,6 +135,7 @@ export function CloseCaseModal({
     };
 
     const stageLabel = stage ? STAGE_LABEL[stage] ?? stage : '';
+    const isEarlyClose = mode === 'early';
 
     return (
         <div
@@ -131,7 +150,7 @@ export function CloseCaseModal({
                 <div className="flex items-center justify-between px-5 py-4 border-b border-slate-200">
                     <h3 className="text-lg font-bold text-slate-900 flex items-center gap-2">
                         <AlertTriangle className="w-5 h-5 text-red-600" />
-                        不通過結案
+                        {isEarlyClose ? '中途結案' : '不通過結案'}
                         {titleSuffix && <span className="text-sm font-normal text-slate-500">— {titleSuffix}</span>}
                         {stageLabel && <span className="text-xs font-normal text-slate-400 ml-1">（{stageLabel} 階段）</span>}
                     </h3>
@@ -143,10 +162,12 @@ export function CloseCaseModal({
                 {/* Body */}
                 <div className="flex-1 overflow-y-auto px-5 py-4 space-y-3">
                     <p className="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded-lg px-3 py-2">
-                        ⚠ 結案後此案件 status 將設為「審核未通過」（不可逆），請確認結案原因。
+                        {isEarlyClose
+                            ? '⚠ 此案件會歸類為「通過／結案」。既有完成撥款會保留，未撥餘額不再處理。'
+                            : '⚠ 結案後此案件 status 將設為「審核未通過」（不可逆），請確認結案原因。'}
                     </p>
 
-                    <div>
+                    {!isEarlyClose && <div>
                         <label className="text-xs font-semibold text-slate-700">結案原因（至少勾選一項）</label>
                         <div className="mt-2 space-y-1.5">
                             {CLOSE_REASON_OPTIONS.map(opt => {
@@ -178,15 +199,15 @@ export function CloseCaseModal({
                                 );
                             })}
                         </div>
-                    </div>
+                    </div>}
 
                     <div>
-                        <label className="text-xs font-semibold text-slate-700">補充說明（選填）</label>
+                        <label className="text-xs font-semibold text-slate-700">{isEarlyClose ? '中途結案原因' : '補充說明（選填）'}</label>
                         <textarea
                             value={note}
                             onChange={e => setNote(e.target.value)}
                             rows={3}
-                            placeholder="補充原因細節、背景說明等"
+                            placeholder={isEarlyClose ? '例如：申請藥物已取得健保補助，無須繼續撥款' : '補充原因細節、背景說明等'}
                             className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm resize-y"
                         />
                     </div>
@@ -205,11 +226,11 @@ export function CloseCaseModal({
                     <button
                         type="button"
                         onClick={handleSubmit}
-                        disabled={submitting || checked.size === 0}
+                        disabled={submitting || (!isEarlyClose && checked.size === 0)}
                         className="inline-flex items-center gap-1.5 px-4 py-2 text-sm bg-red-600 text-white font-medium rounded-lg hover:bg-red-700 disabled:opacity-50"
                     >
                         {submitting ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <AlertTriangle className="w-3.5 h-3.5" />}
-                        確認結案
+                        {isEarlyClose ? '確認中途結案' : '確認結案'}
                     </button>
                 </div>
             </div>

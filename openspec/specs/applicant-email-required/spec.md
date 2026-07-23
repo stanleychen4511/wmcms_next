@@ -6,9 +6,9 @@ TBD - created by archiving change 'add-auto-send-payment-receipt'. Update Purpos
 
 ## Requirements
 
-### Requirement: Email required at all applicant intake entry points
+### Requirement: Email required for self applications
 
-All UI entry points that create a new applicant + application record SHALL render the email field as a required input (HTML `required` attribute + visible asterisk indicator) and SHALL block form submission when email is empty or invalid. The affected entry points are: `src/components/NewApplicationPage.tsx` (internal staff-created), `src/components/ExternalIntake.tsx` (external public-facing), and any future intake components that call `createNewApplication` or external intake server actions.
+All self-application UI entry points that create a new applicant + application record SHALL render the applicant email field as a required input (HTML `required` attribute + visible asterisk indicator) and SHALL block form submission when email is empty or invalid. For external referrals, the applicant email field SHALL be hidden and only the referral contact email SHALL be required and verified. The affected entry points are: `src/components/NewApplicationPage.tsx` (internal staff-created), `src/components/ExternalIntake.tsx` (external public-facing), and any future intake components that call `createNewApplication` or external intake server actions.
 
 #### Scenario: Internal new application form blocks empty email
 

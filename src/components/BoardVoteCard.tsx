@@ -5,6 +5,7 @@ import {
     CaseBoardInfo,
     fetchBoardGroupForCase,
 } from '../app/actions/boardGroupActions';
+import { formatTaipeiDateTime } from '../lib/dateOnly';
 
 interface Props {
     applicationId: string;
@@ -65,7 +66,7 @@ export function BoardVoteCard({ applicationId, refreshKey }: Props) {
 
             <div className="text-xs text-slate-500 flex items-center gap-1">
                 <Clock className="w-3 h-3" />
-                派案時間：{info.assignedAt ? new Date(info.assignedAt).toLocaleString('zh-TW') : '—'}
+                派案時間：{info.assignedAt ? formatTaipeiDateTime(info.assignedAt) : '—'}
             </div>
 
             <div className="flex flex-wrap gap-2">

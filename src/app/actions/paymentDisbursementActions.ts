@@ -1384,7 +1384,6 @@ export async function sendDisbursementNotificationEmail(
         }))
         .filter(r => r.user_id && r.name && /^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(r.email));
     if (cleanRecipients.length === 0) return { success: false, error: '請至少設定一位有效收件人' };
-    if (!cleanRecipients.some(r => r.is_applicant)) return { success: false, error: '收件人必須包含申請人' };
     const trimmedSubject = subject.trim();
     const trimmedBody = body.trim();
     if (!trimmedSubject) return { success: false, error: '請輸入主旨' };

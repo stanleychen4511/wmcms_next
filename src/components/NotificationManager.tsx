@@ -18,7 +18,9 @@ import {
 } from '../app/actions/notificationActions';
 import { fetchLineCredentialStatus, sendLineMessage } from '../app/actions/lineActions';
 import { SYSTEM_TEMPLATE_NAMES, getNotificationTemplateLabel } from '../lib/systemTemplates';
+import { formatTaipeiDateTime } from '../lib/dateOnly';
 import { useToast } from './FloatingToast';
+import type { Role } from '../types';
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -356,13 +358,15 @@ type AutoRuleDraft = {
 
 interface NotificationManagerProps {
     userId: string;
+    userRoles: Role[];
     onBack: () => void;
     username?: string;
     onLogout?: () => void;
 }
 
-export function NotificationManager({ userId, onBack, username, onLogout }: NotificationManagerProps) {
+export function NotificationManager({ userId, userRoles, onBack, username, onLogout }: NotificationManagerProps) {
     const { push: pushToast } = useToast();
+    const canManageAutoRules = userRoles.some(role => role === 'admin' || role === 'supervisor' || role === 'executive');
     const [activeTab, setActiveTab] = useState<Tab>('channels');
     const [channels, setChannels] = useState<NotificationChannel[]>([]);
     const [templates, setTemplates] = useState<NotificationTemplate[]>([]);
@@ -384,12 +388,12 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                 fetchChannels(),
                 fetchTemplates(),
                 fetchSchedules(),
-                fetchAutoNotificationRules(),
+                canManageAutoRules ? fetchAutoNotificationRules(userId) : Promise.resolve(undefined),
             ]);
             if (chRes.success && chRes.data) setChannels(chRes.data);
             if (tplRes.success && tplRes.data) setTemplates(tplRes.data);
             if (schRes.success && schRes.data) setSchedules(schRes.data);
-            if (autoRuleRes.success && autoRuleRes.data) {
+            if (autoRuleRes?.success && autoRuleRes.data) {
                 setAutoRules(autoRuleRes.data);
                 setAutoRuleDrafts(Object.fromEntries(autoRuleRes.data.map(rule => [
                     rule.id,
@@ -407,7 +411,7 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
         } finally {
             setLoading(false);
         }
-    }, [pushToast]);
+    }, [pushToast, canManageAutoRules, userId]);
 
     useEffect(() => { loadData(); }, [loadData]);
 
@@ -472,10 +476,11 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
     };
 
     const handleSaveAutoRule = async (rule: AutoNotificationRule) => {
+        if (!canManageAutoRules) return;
         const draft = autoRuleDrafts[rule.id];
         if (!draft) return;
         setSavingAutoRuleId(rule.id);
-        const res = await saveAutoNotificationRule({ id: rule.id, ...draft });
+        const res = await saveAutoNotificationRule(userId, { id: rule.id, ...draft });
         setSavingAutoRuleId(null);
         if (res.success) {
             pushToast({ type: 'success', msg: '自動通知規則已更新' });
@@ -507,7 +512,7 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                     {([
                         { key: 'channels', label: '渠道設定' },
                         { key: 'templates', label: '通知範本' },
-                        { key: 'auto_rules', label: '自動通知' },
+                        ...(canManageAutoRules ? [{ key: 'auto_rules' as const, label: '自動通知' }] : []),
                         { key: 'schedules', label: '批次發送排程' },
                         { key: 'line_test', label: 'LINE 測試推送' },
                     ] as { key: Tab; label: string }[]).map(tab => (
@@ -664,7 +669,7 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                 )}
 
                 {/* ── Schedule management ── */}
-                {activeTab === 'auto_rules' && (
+                {canManageAutoRules && activeTab === 'auto_rules' && (
                     <section className="space-y-3">
                         <div>
                             <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide">自動通知規則</h3>
@@ -799,7 +804,7 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
 
                                             <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
                                                 <p className="text-xs text-slate-400">
-                                                    最後更新：{rule.updated_at ? new Date(rule.updated_at).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' }) : '-'}
+                                                    最後更新：{rule.updated_at ? formatTaipeiDateTime(rule.updated_at) : '-'}
                                                 </p>
                                                 <button
                                                     type="button"
@@ -865,7 +870,7 @@ export function NotificationManager({ userId, onBack, username, onLogout }: Noti
                                                 </td>
                                                 <td className="py-3 px-4 text-xs text-slate-500">
                                                     {sch.last_sent_at
-                                                        ? new Date(sch.last_sent_at).toLocaleString('zh-TW', { dateStyle: 'short', timeStyle: 'short' })
+                                                        ? formatTaipeiDateTime(sch.last_sent_at)
                                                         : '—'}
                                                 </td>
                                                 <td className="py-3 px-4">
