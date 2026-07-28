@@ -1,4 +1,5 @@
 import { useState, useMemo, useEffect } from 'react';
+import { createPortal } from 'react-dom';
 import { Search, ChevronRight, FileText, UserCheck, AlertTriangle, ArrowUp, ArrowDown, Plus, X, RefreshCw, Lock } from 'lucide-react';
 import { CaseSummary, Role, WorkflowStage } from '../types';
 import { AppHeader } from './AppHeader';
@@ -96,6 +97,17 @@ const DEFAULT_SORT: SortEntry[] = [
     { key: 'totalAmount', dir: 'asc' },
 ];
 
+export function getSpecialAttentionTooltipPosition(
+    anchor: { left: number; top: number },
+    viewportWidth: number,
+    viewportHeight: number,
+) {
+    return {
+        left: Math.max(8, Math.min(anchor.left, viewportWidth - 336)),
+        bottom: viewportHeight - anchor.top + 4,
+    };
+}
+
 export function CaseListPage({
     username, userId, userRoles, cases, allOfficers, officersWithId,
     isLoading, pendingAlertIds = new Set(), thresholdReminderCounts = new Map(),
@@ -141,6 +153,7 @@ export function CaseListPage({
     const [assignFilter,   setAssignFilter]   = useState<'all' | 'unassigned' | 'assigned'>('all');
     const [pendingOnly,    setPendingOnly]    = useState<boolean>(false);
     const [specialAttentionOnly, setSpecialAttentionOnly] = useState<boolean>(false);
+    const [specialAttentionTooltip, setSpecialAttentionTooltip] = useState<{ note: string; left: number; bottom: number } | null>(null);
     // 從外部（首頁 modal）打開時自動勾起未補件 filter
     useEffect(() => {
         if (pendingOnlyActive !== undefined) setPendingOnly(pendingOnlyActive);
@@ -195,6 +208,15 @@ export function CaseListPage({
     const [assignOfficerId, setAssignOfficerId] = useState<string>('');
     const [assigning, setAssigning] = useState(false);
     const [assignError, setAssignError] = useState('');
+
+    const showSpecialAttentionTooltip = (event: React.MouseEvent<HTMLSpanElement>, note: string) => {
+        const position = getSpecialAttentionTooltipPosition(
+            event.currentTarget.getBoundingClientRect(),
+            window.innerWidth,
+            window.innerHeight,
+        );
+        setSpecialAttentionTooltip({ note, ...position });
+    };
 
     // Clear selection when filter changes
     useEffect(() => { setSelectedIds(new Set()); }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter, pendingOnly, specialAttentionOnly, thresholdOnly]);
@@ -626,6 +648,8 @@ export function CaseListPage({
                                                 ?? Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2'])}
                                             onToggle={() => toggleOne(c.applicationId)}
                                             onClick={() => onSelectCase(c.id)}
+                                            onSpecialAttentionEnter={showSpecialAttentionTooltip}
+                                            onSpecialAttentionLeave={() => setSpecialAttentionTooltip(null)}
                                         />
                                     );
                                 })
@@ -715,6 +739,16 @@ export function CaseListPage({
                     </div>
                 </div>
             )}
+            {specialAttentionTooltip && createPortal(
+                <div
+                    role="tooltip"
+                    className="pointer-events-none fixed z-[60] w-max max-w-xs whitespace-pre-wrap rounded-md bg-slate-800 px-2.5 py-1.5 text-xs text-white shadow-lg"
+                    style={{ left: specialAttentionTooltip.left, bottom: specialAttentionTooltip.bottom }}
+                >
+                    {specialAttentionTooltip.note}
+                </div>,
+                document.body,
+            )}
         </div>
     );
 }
@@ -736,13 +770,15 @@ function ThCenter({ children }: { children: React.ReactNode }) {
 }
 
 function CaseRow({
-    case: c, isLast, canAssign, canOpen, lockReason, selected, isPending, thresholdReminderCount, maxApplyAmount, onToggle, onClick,
+    case: c, isLast, canAssign, canOpen, lockReason, selected, isPending, thresholdReminderCount, maxApplyAmount, onToggle, onClick, onSpecialAttentionEnter, onSpecialAttentionLeave,
 }: {
     case: CaseSummary; isLast: boolean;
     canAssign: boolean; canOpen: boolean; lockReason: string; selected: boolean; isPending: boolean;
     thresholdReminderCount: number;
     maxApplyAmount: number;
     onToggle: () => void; onClick: () => void;
+    onSpecialAttentionEnter: (event: React.MouseEvent<HTMLSpanElement>, note: string) => void;
+    onSpecialAttentionLeave: () => void;
 }) {
     const remaining = maxApplyAmount - (c.totalAmount ?? 0);
     const handleClick = () => {
@@ -782,15 +818,14 @@ function CaseRow({
                 <span className="flex items-center gap-2">
                     {c.applicantName}
                     {c.hasSpecialAttention && (
-                        <span className="relative group/attention inline-flex shrink-0">
+                        <span
+                            className="inline-flex shrink-0"
+                            onMouseEnter={event => c.specialAttentionNote && onSpecialAttentionEnter(event, c.specialAttentionNote)}
+                            onMouseLeave={onSpecialAttentionLeave}
+                        >
                             <span className="inline-flex items-center gap-0.5 text-xs bg-amber-100 text-amber-800 border border-amber-300 rounded-full px-1.5 py-0.5 font-medium">
                                 <AlertTriangle className="w-3 h-3" />特殊注意
                             </span>
-                            {c.specialAttentionNote && (
-                                <span role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-20 mb-1 hidden w-max max-w-xs whitespace-pre-wrap rounded-md bg-slate-800 px-2.5 py-1.5 text-xs font-normal text-white shadow-lg group-hover/attention:block">
-                                    {c.specialAttentionNote}
-                                </span>
-                            )}
                         </span>
                     )}
                     {isPending && (
