@@ -40,6 +40,9 @@ export interface ContactRecord {
     rejectReasons: string[];
 
     summary: string | null;
+    isSpecialAttention: boolean;
+    hasSpecialAttention: boolean;
+    specialAttentionNote: string | null;
     mediaUrls: string[];
 
     /** 關懷紀錄專用：聯絡對象（與申請人關係）'1'=本人 '2'=配偶 '9'=其他 */
@@ -73,6 +76,8 @@ export interface ContactRecordInput {
     consultProgram?: string | null;
     rejectReasons?: string[];
     summary?: string | null;
+    isSpecialAttention?: boolean;
+    specialAttentionNote?: string | null;
     mediaUrls?: string[];
     contactedParty?: '1' | '2' | '9' | null;
     contactedPartyOther?: string | null;
@@ -127,6 +132,18 @@ function normCodes(input: unknown, allowed: string[]): string[] {
     return Array.from(seen);
 }
 
+function normalizeSpecialAttention(input: ContactRecordInput): { isSpecialAttention: boolean; specialAttentionNote: string | null } | null {
+    if (input.isSpecialAttention != null && typeof input.isSpecialAttention !== 'boolean') return null;
+    if (input.specialAttentionNote != null && typeof input.specialAttentionNote !== 'string') return null;
+    const isSpecialAttention = input.isSpecialAttention === true;
+    const specialAttentionNote = (input.specialAttentionNote ?? '').trim();
+    if (isSpecialAttention && !specialAttentionNote) return null;
+    return {
+        isSpecialAttention,
+        specialAttentionNote: isSpecialAttention ? specialAttentionNote : null,
+    };
+}
+
 const REJECT_REASON_CODES = ['1','2','3','4','5','6','7'];
 
 function decryptName(enc: Buffer | null, iv: Buffer | null, fallback = '系統'): string {
@@ -170,6 +187,9 @@ function rowToContactRecord(r: any): ContactRecord {
         consultProgram: r.consult_program ?? null,
         rejectReasons: Array.isArray(r.reject_reasons) ? r.reject_reasons : [],
         summary: r.summary ?? null,
+        isSpecialAttention: r.is_special_attention === true,
+        hasSpecialAttention: r.is_special_attention === true,
+        specialAttentionNote: r.special_attention_note ?? null,
         mediaUrls: Array.isArray(r.media_urls) ? r.media_urls : [],
         contactedParty: r.contacted_party ?? null,
         contactedPartyOther: r.contacted_party_other ?? null,
@@ -194,6 +214,8 @@ const SELECT_COLS = `
     cr.consult_program,
     cr.reject_reasons,
     cr.summary,
+    cr.is_special_attention,
+    cr.special_attention_note,
     cr.media_urls,
     cr.contacted_party,
     cr.contacted_party_other,
@@ -310,7 +332,10 @@ export async function createContactRecord(
 
     const cleanReasons = normCodes(input.rejectReasons, REJECT_REASON_CODES);
     const cleanMedia = normUrls(input.mediaUrls);
-
+    const specialAttention = normalizeSpecialAttention(input);
+    if (!specialAttention) {
+        return { success: false, error: '特殊注意時請填寫說明' };
+    }
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
@@ -325,13 +350,13 @@ export async function createContactRecord(
                 (record_type, contact_date, handler_user_id,
                  applicant_user_id, caller_name, caller_gender, caller_phone,
                  application_id, from_source, consultant_type, consult_program,
-                 reject_reasons, summary, media_urls,
+                 reject_reasons, summary, is_special_attention, special_attention_note, media_urls,
                  contacted_party, contacted_party_other)
              VALUES ($1, $2::date, $3::bigint,
                      $4, $5, $6, $7,
                      $8, $9, $10, $11,
-                     $12::text[], $13, $14::text[],
-                     $15, $16)
+                     $12::text[], $13, $14, $15, $16::text[],
+                     $17, $18)
              RETURNING id::text`,
             [
                 input.recordType, input.contactDate, operatorUserId,
@@ -343,7 +368,8 @@ export async function createContactRecord(
                 input.fromSource ?? null,
                 input.consultantType ?? null,
                 input.consultProgram ?? null,
-                cleanReasons, summary || null, cleanMedia,
+                cleanReasons, summary || null,
+                specialAttention.isSpecialAttention, specialAttention.specialAttentionNote, cleanMedia,
                 contactedParty, contactedPartyOther,
             ],
         );
@@ -352,8 +378,8 @@ export async function createContactRecord(
         if (input.recordType === '1' && summary) {
             await client.query(
                 `INSERT INTO contact_record_followups
-                    (contact_record_id, author_user_id, summary)
-                 VALUES ($1::bigint, $2::bigint, $3)`,
+                    (contact_record_id, author_user_id, summary, kind)
+                 VALUES ($1::bigint, $2::bigint, $3, 'followup')`,
                 [id, operatorUserId, `首次：${summary}`],
             );
         }
@@ -369,6 +395,7 @@ export async function createContactRecord(
                 contact_date: input.contactDate,
                 applicant_user_id: input.applicantUserId ?? null,
                 application_id: input.applicationId ?? null,
+                is_special_attention: specialAttention.isSpecialAttention,
             },
         });
         return { success: true, data: { id } };
@@ -393,7 +420,74 @@ export interface FetchOptions {
     contactDateFrom?: string;
     /** contact_date <= 此日期（'YYYY-MM-DD'） */
     contactDateTo?: string;
+    specialAttentionOnly?: boolean;
     limit?: number;
+}
+
+export interface SpecialAttentionCase {
+    applicationId: string;
+    caseNumber: string;
+    applicantName: string;
+    specialAttentionNote: string;
+    contactDate: string;
+}
+
+export async function fetchSpecialAttentionCases(
+    operatorUserId: string,
+    options?: { volunteerOnly?: boolean },
+): Promise<ActionResult<SpecialAttentionCase[]>> {
+    if (!(await hasAnyRole(operatorUserId, ALLOWED_ROLES))) {
+        return { success: false, error: '權限不足' };
+    }
+
+    const canViewAllCases = await hasAnyRole(operatorUserId, ['supervisor', 'case_officer', 'admin', 'executive']);
+    const volunteerOnly = options?.volunteerOnly === true || !canViewAllCases;
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `WITH latest_cases AS (
+                SELECT DISTINCT ON (a.applicant_id)
+                    a.id::text AS application_id,
+                    a.applicant_id,
+                    a.case_number,
+                    u.name_enc,
+                    u.name_iv,
+                    attention.special_attention_note,
+                    attention.contact_date
+                 FROM applications a
+                 JOIN users u ON u.id = a.applicant_id
+                 JOIN LATERAL (
+                    SELECT cr.special_attention_note, cr.contact_date, cr.created_at
+                    FROM contact_records cr
+                    WHERE cr.applicant_user_id = a.applicant_id
+                      AND cr.is_special_attention = TRUE
+                    ORDER BY cr.contact_date DESC, cr.created_at DESC
+                    LIMIT 1
+                 ) attention ON TRUE
+                 ${volunteerOnly ? 'WHERE a.home_visit_assignee_id = $1::bigint' : ''}
+                 ORDER BY a.applicant_id, a.apply_at DESC
+             )
+             SELECT *
+             FROM latest_cases
+             ORDER BY contact_date DESC, application_id DESC`,
+            volunteerOnly ? [operatorUserId] : [],
+        );
+        return {
+            success: true,
+            data: res.rows.map(row => ({
+                applicationId: String(row.application_id),
+                caseNumber: row.case_number ?? '',
+                applicantName: decryptName(row.name_enc, row.name_iv, '未知'),
+                specialAttentionNote: row.special_attention_note ?? '',
+                contactDate: row.contact_date ? formatLocalDate(row.contact_date) : '',
+            })),
+        };
+    } catch (err: any) {
+        console.error('fetchSpecialAttentionCases error:', err);
+        return { success: false, error: err.message ?? '查詢失敗' };
+    } finally {
+        client.release();
+    }
 }
 
 export async function fetchContactRecords(
@@ -434,6 +528,9 @@ export async function fetchContactRecords(
         params.push(opts.contactDateTo);
         where.push(`cr.contact_date <= $${params.length}::date`);
     }
+    if (opts.specialAttentionOnly === true) {
+        where.push('cr.is_special_attention = TRUE');
+    }
     const limit = Math.min(Math.max(opts.limit ?? 100, 1), 500);
 
     const client = await pool.connect();
@@ -442,7 +539,7 @@ export async function fetchContactRecords(
             `SELECT ${SELECT_COLS}
              ${FROM_JOIN}
              ${where.length ? 'WHERE ' + where.join(' AND ') : ''}
-             ORDER BY cr.contact_date DESC, cr.created_at DESC
+             ORDER BY cr.is_special_attention DESC, cr.contact_date DESC, cr.created_at DESC
              LIMIT ${limit}`,
             params,
         );
@@ -484,7 +581,7 @@ export async function fetchPhoneHistory(
             `SELECT ${SELECT_COLS}
              ${FROM_JOIN}
              WHERE cr.caller_phone_digits = $1${extra}
-             ORDER BY cr.contact_date DESC, cr.created_at DESC
+             ORDER BY cr.is_special_attention DESC, cr.contact_date DESC, cr.created_at DESC
              LIMIT 50`,
             params,
         );
@@ -589,7 +686,7 @@ export async function searchContactsByIdNumber(
             `SELECT ${SELECT_COLS}
              ${FROM_JOIN}
              WHERE cr.applicant_user_id = $1::bigint
-             ORDER BY cr.contact_date DESC, cr.created_at DESC
+             ORDER BY cr.is_special_attention DESC, cr.contact_date DESC, cr.created_at DESC
              LIMIT 500`,
             [applicantUserId]
         );
@@ -661,6 +758,7 @@ export async function fetchContactRecordFollowups(
              FROM contact_record_followups f
              LEFT JOIN users u ON u.id = f.author_user_id
              WHERE f.contact_record_id = $1::bigint
+               AND f.kind = 'followup'
              ORDER BY f.created_at ASC, f.id ASC`,
             [contactRecordId],
         );
@@ -711,8 +809,8 @@ export async function createContactRecordFollowup(
         const res = await client.query(
             `WITH inserted AS (
                  INSERT INTO contact_record_followups
-                     (contact_record_id, author_user_id, summary)
-                 VALUES ($1::bigint, $2::bigint, $3)
+                     (contact_record_id, author_user_id, summary, kind)
+                 VALUES ($1::bigint, $2::bigint, $3, 'followup')
                  RETURNING id::text, contact_record_id::text, author_user_id::text, summary, created_at, updated_at
              )
              SELECT inserted.*,
@@ -771,7 +869,7 @@ export async function updateContactRecordFollowup(
         const cur = await client.query(
             `SELECT author_user_id::text
              FROM contact_record_followups
-             WHERE id = $1::bigint`,
+             WHERE id = $1::bigint AND kind = 'followup'`,
             [followupId],
         );
         if (cur.rowCount === 0) {
@@ -786,7 +884,7 @@ export async function updateContactRecordFollowup(
                  UPDATE contact_record_followups
                  SET summary = $2,
                      updated_at = NOW()
-                 WHERE id = $1::bigint
+                 WHERE id = $1::bigint AND kind = 'followup'
                  RETURNING id::text, contact_record_id::text, author_user_id::text, summary, created_at, updated_at
              )
              SELECT updated.*,
@@ -849,6 +947,10 @@ export async function updateContactRecord(
     }
     const cleanReasons = normCodes(input.rejectReasons, REJECT_REASON_CODES);
     const cleanMedia = normUrls(input.mediaUrls);
+    const specialAttention = normalizeSpecialAttention(input);
+    if (!specialAttention) {
+        return { success: false, error: '特殊注意時請填寫說明' };
+    }
 
     const client = await pool.connect();
     try {
@@ -869,10 +971,11 @@ export async function updateContactRecord(
              SET record_type = $1, contact_date = $2::date,
                  applicant_user_id = $3, caller_name = $4, caller_gender = $5, caller_phone = $6,
                  application_id = $7, from_source = $8, consultant_type = $9, consult_program = $10,
-                 reject_reasons = $11::text[], summary = $12, media_urls = $13::text[],
-                 contacted_party = $14, contacted_party_other = $15,
+                 reject_reasons = $11::text[], summary = $12,
+                 is_special_attention = $13, special_attention_note = $14, media_urls = $15::text[],
+                 contacted_party = $16, contacted_party_other = $17,
                  updated_at = NOW()
-             WHERE id = $16::bigint`,
+             WHERE id = $18::bigint`,
             [
                 input.recordType, input.contactDate,
                 input.applicantUserId ?? null,
@@ -883,7 +986,8 @@ export async function updateContactRecord(
                 input.fromSource ?? null,
                 input.consultantType ?? null,
                 input.consultProgram ?? null,
-                cleanReasons, cur.rows[0].summary ?? null, cleanMedia,
+                cleanReasons, cur.rows[0].summary ?? null,
+                specialAttention.isSpecialAttention, specialAttention.specialAttentionNote, cleanMedia,
                 contactedParty, contactedPartyOther,
                 recordId,
             ],
@@ -893,7 +997,7 @@ export async function updateContactRecord(
             action: 'contact_record.updated',
             targetType: 'contact_record',
             targetId: recordId,
-            detail: { record_type: input.recordType },
+            detail: { record_type: input.recordType, is_special_attention: specialAttention.isSpecialAttention },
         });
         return { success: true, data: undefined };
     } catch (err: any) {

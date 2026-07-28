@@ -974,7 +974,14 @@ CREATE TABLE IF NOT EXISTS contact_records (
     reject_reasons    TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
 
     summary           TEXT,
+    is_special_attention BOOLEAN NOT NULL DEFAULT FALSE,
+    special_attention_note TEXT,
     media_urls        TEXT[] NOT NULL DEFAULT ARRAY[]::TEXT[],
+
+    CONSTRAINT contact_records_special_attention_note_chk CHECK (
+        (NOT is_special_attention AND special_attention_note IS NULL)
+        OR (is_special_attention AND btrim(COALESCE(special_attention_note, '')) <> '')
+    ),
 
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now()
@@ -983,7 +990,6 @@ CREATE INDEX IF NOT EXISTS idx_contact_records_phone     ON contact_records (cal
 CREATE INDEX IF NOT EXISTS idx_contact_records_applicant ON contact_records (applicant_user_id);
 CREATE INDEX IF NOT EXISTS idx_contact_records_app       ON contact_records (application_id);
 CREATE INDEX IF NOT EXISTS idx_contact_records_date      ON contact_records (contact_date DESC);
-
 -- 2c-2. contact_records 關懷專屬欄位（refine-contact-care，2026-05）
 --   record_type='2' 時記錄聯絡對象（與申請人之關係）
 ALTER TABLE contact_records
@@ -991,6 +997,24 @@ ALTER TABLE contact_records
     ADD COLUMN IF NOT EXISTS contacted_party_other TEXT;
 COMMENT ON COLUMN contact_records.contacted_party       IS '關懷紀錄專用：聯絡對象與申請人之關係（1=本人 2=配偶 9=其他）';
 COMMENT ON COLUMN contact_records.contacted_party_other IS '當 contacted_party=9 時的補充描述';
+
+ALTER TABLE contact_records
+    ADD COLUMN IF NOT EXISTS is_special_attention BOOLEAN NOT NULL DEFAULT FALSE,
+    ADD COLUMN IF NOT EXISTS special_attention_note TEXT;
+
+ALTER TABLE contact_records
+    DROP CONSTRAINT IF EXISTS contact_records_special_attention_note_chk;
+
+ALTER TABLE contact_records
+    ADD CONSTRAINT contact_records_special_attention_note_chk
+    CHECK (
+        (NOT is_special_attention AND special_attention_note IS NULL)
+        OR (is_special_attention AND btrim(COALESCE(special_attention_note, '')) <> '')
+    );
+
+CREATE INDEX IF NOT EXISTS idx_contact_records_special_attention_applicant
+    ON contact_records (applicant_user_id, contact_date DESC, created_at DESC)
+    WHERE is_special_attention;
 
 -- 2c-3. caller_phone 正規化欄位 + index（2026-05）
 --   原本查詢用 regexp_replace(caller_phone, '[^0-9]', '') = $1，
@@ -1020,18 +1044,49 @@ CREATE TABLE IF NOT EXISTS contact_record_followups (
     contact_record_id BIGINT NOT NULL REFERENCES contact_records(id) ON DELETE CASCADE,
     author_user_id    BIGINT REFERENCES users(id) ON DELETE SET NULL,
     summary           TEXT NOT NULL,
+    kind              TEXT NOT NULL DEFAULT 'followup',
     created_at        TIMESTAMPTZ NOT NULL DEFAULT NOW(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
 ALTER TABLE contact_record_followups
     ADD COLUMN IF NOT EXISTS updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW();
+
+ALTER TABLE contact_record_followups
+    ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'followup';
+
+ALTER TABLE contact_record_followups
+    DROP CONSTRAINT IF EXISTS contact_record_followups_kind_chk;
+
+ALTER TABLE contact_record_followups
+    ADD CONSTRAINT contact_record_followups_kind_chk
+    CHECK (kind IN ('followup', 'special_attention'));
+
+-- Carry forward the latest special-attention note entered by the temporary multi-note UI.
+WITH latest_special_attention AS (
+    SELECT DISTINCT ON (f.contact_record_id)
+        f.contact_record_id,
+        f.summary
+    FROM contact_record_followups f
+    WHERE f.kind = 'special_attention'
+    ORDER BY f.contact_record_id, f.created_at DESC, f.id DESC
+)
+UPDATE contact_records cr
+SET is_special_attention = TRUE,
+    special_attention_note = latest.summary
+FROM latest_special_attention latest
+WHERE latest.contact_record_id = cr.id
+  AND (NOT cr.is_special_attention OR btrim(COALESCE(cr.special_attention_note, '')) = '');
 CREATE INDEX IF NOT EXISTS idx_contact_record_followups_record
     ON contact_record_followups (contact_record_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_contact_record_followups_special_attention
+    ON contact_record_followups (contact_record_id, created_at DESC)
+    WHERE kind = 'special_attention';
 COMMENT ON TABLE contact_record_followups IS '來電／關懷紀錄的追蹤摘要；每次新增一筆並保留新增者';
 COMMENT ON COLUMN contact_record_followups.contact_record_id IS '對應 contact_records.id';
 COMMENT ON COLUMN contact_record_followups.author_user_id IS '新增追蹤摘要的人員';
 COMMENT ON COLUMN contact_record_followups.summary IS '追蹤摘要內容';
+COMMENT ON COLUMN contact_record_followups.kind IS '歷史相容欄位；新資料一律為 followup';
 COMMENT ON COLUMN contact_record_followups.created_at IS '追蹤摘要新增時間';
 COMMENT ON COLUMN contact_record_followups.updated_at IS '追蹤摘要最後修改時間';
 

@@ -50,6 +50,7 @@ interface HomePageProps {
     onPendingDocGoToList?: () => void;
     myTurnItems?: { applicationId: string; caseNumber: string; applicantName: string; reasonText: string }[];
     onMyTurnGoToList?: () => void;
+    specialAttentionCases?: { applicationId: string; caseNumber: string; applicantName: string; specialAttentionNote: string; contactDate: string }[];
     onSelectCase?: (applicationId: string) => void;
     banners?: Banner[];
     announcements?: Announcement[];
@@ -261,13 +262,14 @@ function BannerCarousel({ banners }: { banners: Banner[] }) {
 
 const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
 
-export function HomePage({ username, userId, userRoles, activeRole, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, unassignedCases = [], disbursableCases = [], onUnassignedGoToList, onPendingDocGoToList, myTurnItems = [], onMyTurnGoToList, banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onGoReports, onGoRejectedArchive, onLogout, onSelectCase }: HomePageProps) {
+export function HomePage({ username, userId, userRoles, activeRole, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, unassignedCases = [], disbursableCases = [], onUnassignedGoToList, onPendingDocGoToList, myTurnItems = [], onMyTurnGoToList, specialAttentionCases = [], banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onGoReports, onGoRejectedArchive, onLogout, onSelectCase }: HomePageProps) {
     const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
     const canViewStats = userRoles.some(r => STATS_ROLES.includes(r));
     const [selectedAnn, setSelectedAnn] = useState<Announcement | null>(null);
     const [contactSearchOpen, setContactSearchOpen] = useState(false);
     /** 「輪到我處理」改成按鈕 + modal 模式 */
     const [showMyTurnModal, setShowMyTurnModal] = useState(false);
+    const [showSpecialAttentionModal, setShowSpecialAttentionModal] = useState(false);
     /** 「未派案」改成按鈕 + modal 模式 */
     const [showUnassignedModal, setShowUnassignedModal] = useState(false);
     /** 「未補件」改成按鈕 + modal 模式 */
@@ -297,11 +299,26 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                 {/* 一排按鈕：輪到我處理 + 未派案 + 未補件 + 可撥款（並列，點開後分別 modal） */}
                 {(
                     myTurnItems.length > 0
+                    || specialAttentionCases.length > 0
                     || (canAssign && unassignedCount > 0)
                     || (userRoles.includes('case_officer') && pendingAlerts.length > 0)
                     || (userRoles.includes('case_officer') && disbursableCases.length > 0)
                 ) && (
                     <div className="flex flex-wrap gap-2">
+                        {specialAttentionCases.length > 0 && (
+                            <button
+                                type="button"
+                                onClick={() => setShowSpecialAttentionModal(true)}
+                                className="inline-flex items-center gap-2 px-3 py-1.5 bg-amber-600 hover:bg-amber-700 text-white text-sm font-medium rounded-lg shadow-sm transition"
+                                title="查看特殊注意案件"
+                            >
+                                <AlertTriangle className="w-4 h-4" />
+                                <span>特殊注意</span>
+                                <span className="inline-flex items-center justify-center min-w-[1.5rem] h-5 px-1.5 rounded-full bg-white text-amber-800 text-[11px] font-bold">
+                                    {specialAttentionCases.length}
+                                </span>
+                            </button>
+                        )}
                         {myTurnItems.length > 0 && (
                             <button
                                 type="button"
@@ -549,6 +566,47 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
             )}
 
             {/* 「未補件」清單 modal */}
+            {showSpecialAttentionModal && (
+                <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowSpecialAttentionModal(false)}>
+                    <ModalEscapeListener onClose={() => setShowSpecialAttentionModal(false)} />
+                    <div className="bg-white rounded-2xl shadow-2xl w-full max-w-3xl max-h-[85vh] flex flex-col" onClick={e => e.stopPropagation()}>
+                        <div className="p-4 border-b border-amber-200 flex items-center gap-3">
+                            <AlertTriangle className="w-5 h-5 text-amber-600" />
+                            <h3 className="text-base font-bold text-slate-800">特殊注意案件</h3>
+                            <span className="inline-flex items-center justify-center min-w-[1.5rem] h-6 px-2 rounded-full bg-amber-600 text-white text-xs font-bold">
+                                {specialAttentionCases.length}
+                            </span>
+                            <button
+                                onClick={() => setShowSpecialAttentionModal(false)}
+                                className="ml-auto text-slate-400 hover:text-slate-600 transition shrink-0"
+                            >
+                                <X className="w-5 h-5" />
+                            </button>
+                        </div>
+                        <div className="flex-1 overflow-y-auto p-3">
+                            <ul className="space-y-1.5">
+                                {specialAttentionCases.map((item) => (
+                                    <li key={item.applicationId}>
+                                        <button
+                                            type="button"
+                                            onClick={() => { setShowSpecialAttentionModal(false); onSelectCase?.(item.applicationId); }}
+                                            className="w-full text-left rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 hover:bg-amber-100 transition"
+                                        >
+                                            <div className="flex items-center gap-3">
+                                                <span className="text-sm font-mono text-slate-700 shrink-0">{item.caseNumber}</span>
+                                                <span className="text-sm font-medium text-slate-800 truncate">{item.applicantName}</span>
+                                                <span className="ml-auto text-xs text-slate-500 shrink-0">{item.contactDate}</span>
+                                            </div>
+                                            <p className="mt-1 text-xs text-amber-900 line-clamp-2 whitespace-pre-wrap">{item.specialAttentionNote}</p>
+                                        </button>
+                                    </li>
+                                ))}
+                            </ul>
+                        </div>
+                    </div>
+                </div>
+            )}
+
             {showPendingDocModal && (
                 <div className="fixed inset-0 bg-black/60 z-50 flex items-center justify-center p-4" onClick={() => setShowPendingDocModal(false)}>
                     <ModalEscapeListener onClose={() => setShowPendingDocModal(false)} />

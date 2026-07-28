@@ -88,6 +88,7 @@ import {
 } from './app/actions/applicationActions';
 
 import { fetchCaseOfficers, fetchCaseOfficersWithId } from './app/actions/userActions';
+import { fetchSpecialAttentionCases, type SpecialAttentionCase } from './app/actions/contactRecordActions';
 import { fetchSetting } from './app/actions/settingsActions';
 import { fetchSettingFresh } from './lib/settingClient';
 import { uploadFileToBlob } from './lib/uploadClient';
@@ -738,6 +739,7 @@ function App() {
     const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
     const [unassignedCount, setUnassignedCount] = useState<number>(0);
     const [unassignedCases, setUnassignedCases] = useState<Array<{ applicationId: string; caseNumber: string; applicantName: string; appliedAt: string | null }>>([]);
+    const [specialAttentionCases, setSpecialAttentionCases] = useState<SpecialAttentionCase[]>([]);
 
     const loadUnassignedCount = useCallback(async () => {
         const [count, list] = await Promise.all([
@@ -747,6 +749,19 @@ function App() {
         setUnassignedCount(count);
         setUnassignedCases(list);
     }, []);
+
+    useEffect(() => {
+        if (view !== 'home' || !loggedInUser) return;
+        let cancelled = false;
+        fetchSpecialAttentionCases(loggedInUser.id, { volunteerOnly: role === 'volunteer' })
+            .then(result => {
+                if (!cancelled) setSpecialAttentionCases(result.success ? result.data : []);
+            })
+            .catch(() => {
+                if (!cancelled) setSpecialAttentionCases([]);
+            });
+        return () => { cancelled = true; };
+    }, [view, loggedInUser, role]);
 
     // 「可撥款」清單 — case_officer 的 status='3' 且尚無 payment_disbursements 的案件
     const [disbursableCases, setDisbursableCases] = useState<Array<{
@@ -878,6 +893,7 @@ function App() {
                 thresholdAlerts={thresholdAlerts}
                 unassignedCount={unassignedCount}
                 unassignedCases={unassignedCases}
+                specialAttentionCases={specialAttentionCases}
                 disbursableCases={disbursableCases}
                 onUnassignedGoToList={() => { setUnassignedFilterActive(true); setView('list'); }}
                 onPendingDocGoToList={() => { setPendingDocFilterActive(true); setView('list'); }}
@@ -1047,11 +1063,6 @@ function App() {
                 onSelectCase={(personId) => {
                     setSelectedPersonId(personId);
                     setView('history');
-                }}
-                onSelectApplication={(applicationId) => {
-                    setSelectedAppId(applicationId);
-                    setDetailReturnView('list');
-                    setView('detail');
                 }}
                 onLogout={handleLogout}
                 onGoHome={() => setView('home')}

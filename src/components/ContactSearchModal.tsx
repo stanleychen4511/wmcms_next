@@ -13,7 +13,8 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Search, X, Loader2, Phone, Heart, Plus, ChevronLeft, ChevronRight, FileText } from 'lucide-react';
+import { createPortal } from 'react-dom';
+import { Search, X, Loader2, Phone, Heart, Plus, ChevronLeft, ChevronRight, FileText, AlertTriangle } from 'lucide-react';
 import { DateInput } from './DateInput';
 import {
     fetchContactRecords,
@@ -53,6 +54,7 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
     const [dateTo, setDateTo]         = useState(initialRange.to);
     // 自動觸發的篩選（typeFilter 改了立刻送）
     const [typeFilter, setTypeFilter] = useState<RecordTypeFilter>('');
+    const [specialAttentionOnly, setSpecialAttentionOnly] = useState(false);
     // 已送出的搜尋條件（決定當前 query 內容）
     const [appliedFilters, setAppliedFilters] = useState({
         name:  '',
@@ -72,6 +74,7 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
     const [phoneCreateOpen, setPhoneCreateOpen] = useState(false);
     const [pickerOpen, setPickerOpen]           = useState(false);
     const [careTarget, setCareTarget]           = useState<ApplicantSearchResult | null>(null);
+    const [specialAttentionTooltip, setSpecialAttentionTooltip] = useState<{ note: string; left: number; bottom: number } | null>(null);
     /** 重新載入搜尋結果用的 trigger（任一寫入動作 +1） */
     const [reloadTick, setReloadTick] = useState(0);
     // 分頁
@@ -101,9 +104,11 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                     // 套用本地 type / date 過濾在身分證查到的紀錄上
                     let recs = r.data.contactRecords;
                     if (typeFilter) recs = recs.filter(x => x.recordType === typeFilter);
+                    if (specialAttentionOnly) recs = recs.filter(x => x.hasSpecialAttention);
                     if (appliedFilters.from) recs = recs.filter(x => (x.contactDate || '') >= appliedFilters.from);
                     if (appliedFilters.to)   recs = recs.filter(x => (x.contactDate || '') <= appliedFilters.to);
-                    recs.sort((a, b) => (b.contactDate || '').localeCompare(a.contactDate || ''));
+                    recs.sort((a, b) => Number(b.hasSpecialAttention) - Number(a.hasSpecialAttention)
+                        || (b.contactDate || '').localeCompare(a.contactDate || ''));
                     setRecords(recs);
                     setTruncated(false);
                     return;
@@ -119,6 +124,7 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                     callerPhoneContains: appliedFilters.phone || undefined,
                     contactDateFrom: appliedFilters.from || undefined,
                     contactDateTo: appliedFilters.to || undefined,
+                    specialAttentionOnly,
                     limit: HARD_LIMIT,
                 });
                 if (cancelled) return;
@@ -130,7 +136,8 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                         || (rec.callerName ?? '').includes(cleanName)
                     );
                 }
-                allRecords.sort((a, b) => (b.contactDate || '').localeCompare(a.contactDate || ''));
+                allRecords.sort((a, b) => Number(b.hasSpecialAttention) - Number(a.hasSpecialAttention)
+                    || (b.contactDate || '').localeCompare(a.contactDate || ''));
                 setRecords(allRecords);
                 setTruncated((r.success ? r.data.length : 0) >= HARD_LIMIT);
             } finally {
@@ -138,10 +145,10 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
             }
         })();
         return () => { cancelled = true; };
-    }, [appliedFilters, typeFilter, operatorUserId, reloadTick]);
+    }, [appliedFilters, typeFilter, specialAttentionOnly, operatorUserId, reloadTick]);
 
     // 篩選或頁大小改變 → 跳回第 1 頁
-    useEffect(() => { setPage(1); }, [appliedFilters, typeFilter, pageSize, reloadTick]);
+    useEffect(() => { setPage(1); }, [appliedFilters, typeFilter, specialAttentionOnly, pageSize, reloadTick]);
 
     /** 套用目前編輯中的條件 → 觸發實際查詢 */
     const runSearch = () => {
@@ -166,6 +173,7 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
         setDateFrom(r.from);
         setDateTo(r.to);
         setTypeFilter('');
+        setSpecialAttentionOnly(false);
         setAppliedFilters({ name: '', phone: '', idNumber: '', from: r.from, to: r.to });
     };
 
@@ -181,6 +189,15 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
         () => records.slice((safePage - 1) * pageSize, safePage * pageSize),
         [records, safePage, pageSize],
     );
+
+    const showSpecialAttentionTooltip = (event: React.MouseEvent<HTMLSpanElement>, note: string) => {
+        const rect = event.currentTarget.getBoundingClientRect();
+        setSpecialAttentionTooltip({
+            note,
+            left: Math.max(8, Math.min(rect.left, window.innerWidth - 336)),
+            bottom: window.innerHeight - rect.top + 4,
+        });
+    };
 
     return (
         <div
@@ -280,6 +297,19 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                             <option value="1">來電</option>
                             <option value="2">關懷</option>
                         </select>
+                    </div>
+                    <div className="flex items-end">
+                        <label className="flex items-center gap-2 cursor-pointer select-none w-full border border-amber-200 bg-amber-50 rounded-lg px-3 py-2 hover:bg-amber-100 transition">
+                            <input
+                                type="checkbox"
+                                checked={specialAttentionOnly}
+                                onChange={e => setSpecialAttentionOnly(e.target.checked)}
+                                className="w-4 h-4 accent-amber-600"
+                            />
+                            <span className="text-sm font-medium text-amber-800 flex items-center gap-1">
+                                <AlertTriangle className="w-3.5 h-3.5" />僅特殊注意
+                            </span>
+                        </label>
                     </div>
                     <div className="flex gap-2">
                         <div className="flex-1">
@@ -430,6 +460,19 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                                         {r.recordType === '1' ? '來電' : '關懷'}
                                     </span>
                                     {/* 3. 日期（最先顯示） */}
+                                    {r.hasSpecialAttention && (
+                                        <span
+                                            className="inline-flex shrink-0"
+                                            onMouseEnter={e => {
+                                                if (r.specialAttentionNote) showSpecialAttentionTooltip(e, r.specialAttentionNote);
+                                            }}
+                                            onMouseLeave={() => setSpecialAttentionTooltip(null)}
+                                        >
+                                            <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 font-medium">
+                                                <AlertTriangle className="w-3 h-3" />特殊注意
+                                            </span>
+                                        </span>
+                                    )}
                                     <span className="text-xs text-slate-600 font-mono shrink-0">{r.contactDate}</span>
                                     {/* 4. 姓名（來電→callerName / 關懷→applicantName） */}
                                     {(() => {
@@ -504,6 +547,17 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                     </div>
                 )}
             </div>
+
+            {specialAttentionTooltip && createPortal(
+                <div
+                    role="tooltip"
+                    className="pointer-events-none fixed z-[60] w-max max-w-xs whitespace-pre-wrap rounded-md bg-slate-800 px-2.5 py-1.5 text-xs text-white shadow-lg"
+                    style={{ left: specialAttentionTooltip.left, bottom: specialAttentionTooltip.bottom }}
+                >
+                    {specialAttentionTooltip.note}
+                </div>,
+                document.body,
+            )}
 
             {editing && (
                 <ContactRecordModal

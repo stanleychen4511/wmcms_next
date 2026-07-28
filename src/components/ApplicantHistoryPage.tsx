@@ -1,7 +1,7 @@
 import { useState, useEffect, useCallback } from 'react';
 import {
     ChevronRight, FileText, ArrowLeft, Clock, CheckCircle, XCircle,
-    Heart, Plus, Trash2, Loader2, ClipboardList,
+    Heart, Plus, Trash2, Loader2, ClipboardList, AlertTriangle,
 } from 'lucide-react';
 import { ApplicationRecord, WorkflowStage } from '../types';
 import { AppHeader } from './AppHeader';
@@ -75,6 +75,7 @@ export function ApplicantHistoryPage({
         .filter((r) => r.amount != null && r.amount > 0)
         .reduce((sum, r) => sum + (r.amount ?? 0), 0);
     const activeRecord = records.find((r) => r.status === 'active') ?? null;
+    const specialAttentionNote = records.find(r => r.specialAttentionNote?.trim())?.specialAttentionNote ?? null;
 
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
@@ -101,6 +102,14 @@ export function ApplicantHistoryPage({
                             <span className="text-slate-400 ml-1">—</span>
                         )}
                     </p>
+                    {specialAttentionNote && (
+                        <div className="mt-3 inline-flex max-w-2xl items-start gap-2 rounded-lg border border-amber-300 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-amber-300 bg-amber-100 px-1.5 py-0.5 text-xs font-medium text-amber-800">
+                                <AlertTriangle className="w-3 h-3" />特殊注意
+                            </span>
+                            <p className="whitespace-pre-wrap leading-5">{specialAttentionNote}</p>
+                        </div>
+                    )}
                 </div>
 
                 {/* Tab switcher — 只有能看關懷紀錄的角色才會看到第二個 tab */}

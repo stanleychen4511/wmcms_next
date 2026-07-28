@@ -34,7 +34,6 @@ interface CaseListPageProps {
     onMount?: () => void;
     onAssign: (applicationIds: string[], officerUserId: string) => Promise<void>;
     onSelectCase: (caseId: string) => void;
-    onSelectApplication?: (applicationId: string) => void;
     onLogout: () => void;
     onGoHome: () => void;
 }
@@ -104,7 +103,7 @@ export function CaseListPage({
     pendingOnlyActive, onTogglePendingOnly,
     unassignedFilterActive, onToggleUnassignedFilter,
     subtypeMaxAmounts = { '1': 30000, '2': 350000 },
-    onMount, onAssign, onSelectCase, onSelectApplication, onLogout, onGoHome,
+    onMount, onAssign, onSelectCase, onLogout, onGoHome,
 }: CaseListPageProps) {
     const { first, last } = getCurrentYearRange();
 
@@ -141,6 +140,7 @@ export function CaseListPage({
     const [officerFilter,  setOfficerFilter]  = useState<string>('');
     const [assignFilter,   setAssignFilter]   = useState<'all' | 'unassigned' | 'assigned'>('all');
     const [pendingOnly,    setPendingOnly]    = useState<boolean>(false);
+    const [specialAttentionOnly, setSpecialAttentionOnly] = useState<boolean>(false);
     // 從外部（首頁 modal）打開時自動勾起未補件 filter
     useEffect(() => {
         if (pendingOnlyActive !== undefined) setPendingOnly(pendingOnlyActive);
@@ -197,7 +197,7 @@ export function CaseListPage({
     const [assignError, setAssignError] = useState('');
 
     // Clear selection when filter changes
-    useEffect(() => { setSelectedIds(new Set()); }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter, pendingOnly, thresholdOnly]);
+    useEffect(() => { setSelectedIds(new Set()); }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter, pendingOnly, specialAttentionOnly, thresholdOnly]);
 
     const filteredCases = useMemo(() => {
         return cases.filter((c) => {
@@ -219,6 +219,7 @@ export function CaseListPage({
             if (effectiveAssignFilter === 'unassigned' && c.officerId !== null) return false;
             if (effectiveAssignFilter === 'assigned'   && c.officerId === null) return false;
             if (pendingOnly && !pendingAlertIds.has(c.applicationId)) return false;
+            if (specialAttentionOnly && !c.hasSpecialAttention) return false;
             if (thresholdOnly && !thresholdReminderCounts.has(c.applicationId)) return false;
             if (myTurnFilterActive && !myTurnAppIds.has(c.applicationId)) return false;
             if (boardUnassignedOnly) {
@@ -249,7 +250,7 @@ export function CaseListPage({
             }
             return 0;
         });
-    }, [cases, nameQuery, idMatchApplicantId, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, thresholdOnly, thresholdReminderCounts, myTurnFilterActive, myTurnAppIds, boardUnassignedOnly, sortStack, subtypeMaxAmounts]);
+    }, [cases, nameQuery, idMatchApplicantId, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, specialAttentionOnly, thresholdOnly, thresholdReminderCounts, myTurnFilterActive, myTurnAppIds, boardUnassignedOnly, sortStack, subtypeMaxAmounts]);
 
     const allFilteredSelected = filteredCases.length > 0 &&
         filteredCases.every(c => selectedIds.has(c.applicationId));
@@ -392,6 +393,23 @@ export function CaseListPage({
                                 <option value="assigned">已派案</option>
                             </select>
                         </div>
+
+                        {cases.some(c => c.hasSpecialAttention) && (
+                            <div className="sm:col-span-1 flex items-end">
+                                <label className="flex items-center gap-2 cursor-pointer select-none w-full border border-amber-200 bg-amber-50 rounded-lg px-3 py-2 hover:bg-amber-100 transition">
+                                    <input
+                                        type="checkbox"
+                                        checked={specialAttentionOnly}
+                                        onChange={e => setSpecialAttentionOnly(e.target.checked)}
+                                        className="w-4 h-4 accent-amber-600"
+                                    />
+                                    <span className="text-sm font-medium text-amber-800 flex items-center gap-1">
+                                        <AlertTriangle className="w-3.5 h-3.5" />
+                                        僅特殊注意
+                                    </span>
+                                </label>
+                            </div>
+                        )}
 
                         {/* Pending doc filter — only shown when there are alerts */}
                         {pendingAlertIds.size > 0 && (
@@ -607,13 +625,7 @@ export function CaseListPage({
                                             maxApplyAmount={subtypeMaxAmounts[c.subsidySubtype as '1' | '2']
                                                 ?? Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2'])}
                                             onToggle={() => toggleOne(c.applicationId)}
-                                            onClick={() => {
-                                                if (onSelectApplication) {
-                                                    onSelectApplication(c.applicationId);
-                                                    return;
-                                                }
-                                                onSelectCase(c.id);
-                                            }}
+                                            onClick={() => onSelectCase(c.id)}
                                         />
                                     );
                                 })
@@ -769,6 +781,18 @@ function CaseRow({
             <td className={`py-3.5 px-4 font-medium text-slate-800 transition-colors ${canOpen ? 'group-hover:text-blue-700 cursor-pointer' : 'cursor-not-allowed'}`} onClick={handleClick}>
                 <span className="flex items-center gap-2">
                     {c.applicantName}
+                    {c.hasSpecialAttention && (
+                        <span className="relative group/attention inline-flex shrink-0">
+                            <span className="inline-flex items-center gap-0.5 text-xs bg-amber-100 text-amber-800 border border-amber-300 rounded-full px-1.5 py-0.5 font-medium">
+                                <AlertTriangle className="w-3 h-3" />特殊注意
+                            </span>
+                            {c.specialAttentionNote && (
+                                <span role="tooltip" className="pointer-events-none absolute bottom-full left-0 z-20 mb-1 hidden w-max max-w-xs whitespace-pre-wrap rounded-md bg-slate-800 px-2.5 py-1.5 text-xs font-normal text-white shadow-lg group-hover/attention:block">
+                                    {c.specialAttentionNote}
+                                </span>
+                            )}
+                        </span>
+                    )}
                     {isPending && (
                         <span className="inline-flex items-center gap-0.5 text-xs bg-orange-100 text-orange-600 border border-orange-200 rounded-full px-1.5 py-0.5 font-medium shrink-0">
                             <AlertTriangle className="w-3 h-3" />未補件

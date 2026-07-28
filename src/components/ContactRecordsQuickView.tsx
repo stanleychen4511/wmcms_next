@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { Phone, Heart, ChevronDown, ChevronUp, Loader2 } from 'lucide-react';
+import { Phone, Heart, ChevronDown, ChevronUp, Loader2, AlertTriangle } from 'lucide-react';
 import { fetchContactRecords, type ContactRecord } from '../app/actions/contactRecordActions';
 import { RECORD_TYPE_LABEL } from '../lib/contactRecordConstants';
 import { ContactRecordModal } from './ContactRecordModal';
@@ -94,6 +94,11 @@ export function ContactRecordsQuickView({ applicantUserId, applicantName, operat
                                     }`}>
                                         {RECORD_TYPE_LABEL[r.recordType]}
                                     </span>
+                                    {r.hasSpecialAttention && (
+                                        <span className="inline-flex items-center gap-0.5 px-1.5 py-0.5 rounded bg-amber-100 text-amber-800 border border-amber-300 font-medium">
+                                            <AlertTriangle className="w-3 h-3" />特殊注意
+                                        </span>
+                                    )}
                                     <span className="font-mono">{r.contactDate}</span>
                                     {r.handlerName && <span>· 處理者 {r.handlerName}</span>}
                                     {r.callerName && <span>· {r.callerName}{r.callerPhone ? `（${r.callerPhone}）` : ''}</span>}

@@ -10,7 +10,7 @@
  */
 
 import { useEffect, useMemo, useState } from 'react';
-import { Heart, X, Loader2, Phone, ClipboardList } from 'lucide-react';
+import { Heart, X, Loader2, Phone, ClipboardList, AlertTriangle } from 'lucide-react';
 import {
     fetchContactRecords,
     type ContactRecord,
@@ -72,9 +72,10 @@ export function ApplicationCareRecordsModal({ applicationId, applicantUserId, ca
             const phoneData = phoneRes.success ? phoneRes.data : [];
             const merged = new Map<string, ContactRecord>();
             for (const r of [...careData, ...phoneData]) merged.set(r.id, r);
-            const sorted = Array.from(merged.values()).sort(
-                (a, b) => (b.contactDate || '').localeCompare(a.contactDate || ''),
-            );
+            const sorted = Array.from(merged.values()).sort((a, b) => {
+                if (a.hasSpecialAttention !== b.hasSpecialAttention) return a.hasSpecialAttention ? -1 : 1;
+                return (b.contactDate || '').localeCompare(a.contactDate || '');
+            });
             setRecords(sorted);
             setLoading(false);
         })();
@@ -153,6 +154,11 @@ export function ApplicationCareRecordsModal({ applicationId, applicantUserId, ca
                                             <span className={`text-[10px] px-1.5 py-0.5 rounded shrink-0 ${tagClass}`}>
                                                 {tagLabel}
                                             </span>
+                                            {r.hasSpecialAttention && (
+                                                <span className="inline-flex items-center gap-0.5 text-[10px] px-1.5 py-0.5 rounded shrink-0 bg-amber-100 text-amber-800 border border-amber-300 font-medium">
+                                                    <AlertTriangle className="w-3 h-3" />特殊注意
+                                                </span>
+                                            )}
                                             <span className="text-xs text-slate-600 font-mono shrink-0">{r.contactDate}</span>
                                             <span className="text-xs text-slate-500 shrink-0">· {r.handlerName}</span>
                                             {isPhone && r.callerName && (
@@ -182,6 +188,11 @@ export function ApplicationCareRecordsModal({ applicationId, applicantUserId, ca
                                                 {r.summary
                                                     ? <p className="whitespace-pre-wrap">{r.summary}</p>
                                                     : <p className="text-slate-400">（無摘要內容）</p>}
+                                                {r.isSpecialAttention && r.specialAttentionNote && (
+                                                    <p className="whitespace-pre-wrap rounded border border-amber-200 bg-amber-50 px-2 py-1.5 text-amber-900">
+                                                        <span className="font-medium">特殊注意：</span>{r.specialAttentionNote}
+                                                    </p>
+                                                )}
                                                 {r.mediaUrls.length > 0 && (() => {
                                                     const imgs = imageMap.get(r.id) ?? [];
                                                     const nonImgs = r.mediaUrls.map(u => u.trim()).filter(u => u && !looksLikeImageUrl(u));

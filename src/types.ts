@@ -19,6 +19,10 @@ export interface CaseSummary {
     applicantName: string;
     /** 申請人聯絡電話（latest application 的 applicant_phone；可能為空） */
     applicantPhone?: string | null;
+    /** 此申請人是否有特殊注意的聯絡紀錄 */
+    hasSpecialAttention?: boolean;
+    /** 最新一筆特殊注意的內容 */
+    specialAttentionNote?: string | null;
     applicationCount: number;
     totalAmount: number;
     appliedAt: string; // ISO date string e.g. "2025-11-03"
@@ -47,6 +51,8 @@ export interface ApplicationRecord {
     status: ApplicationStatus;
     closedReason?: string;  // e.g. '核准補助' | '不符資格' | '撤件'
     amount?: number;
+    /** 此申請人最新一筆特殊注意的內容 */
+    specialAttentionNote?: string | null;
 }
 
 export type DocumentStatus = 'pending' | 'uploaded' | 'verified' | 'rejected';

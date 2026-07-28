@@ -548,10 +548,25 @@ export async function fetchCaseSummaries(
                 l.officer_account,
                 l.board_group_id,
                 l.subsidy_subtype,
-                l.applicant_phone
+                l.applicant_phone,
+                latest_attention.special_attention_note,
+                EXISTS (
+                    SELECT 1
+                    FROM contact_records cr
+                    WHERE cr.applicant_user_id = u.id
+                      AND cr.is_special_attention = TRUE
+                ) AS has_special_attention
             FROM users u
             JOIN user_stats s ON s.applicant_id = u.id
             LEFT JOIN latest_apps l ON l.applicant_id = u.id
+            LEFT JOIN LATERAL (
+                SELECT cr.special_attention_note
+                FROM contact_records cr
+                WHERE cr.applicant_user_id = u.id
+                  AND cr.is_special_attention = TRUE
+                ORDER BY cr.contact_date DESC, cr.created_at DESC
+                LIMIT 1
+            ) latest_attention ON TRUE
             ORDER BY l.apply_at DESC NULLS LAST
         `;
         const params = useVolunteerFilter ? [volunteerFilter] : [];
@@ -585,6 +600,8 @@ export async function fetchCaseSummaries(
                 caseNumber: row.case_number ?? '',
                 applicantName: name,
                 applicantPhone: row.applicant_phone ?? null,
+                hasSpecialAttention: row.has_special_attention === true,
+                specialAttentionNote: row.special_attention_note ?? null,
                 applicationCount: parseInt(row.app_count),
                 totalAmount: parseInt(row.total_approved) || 0,
                 appliedAt: formatDateOnly(row.apply_at) ?? '',
@@ -655,7 +672,8 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
                 a.id, a.case_number, a.apply_at, a.status, a.approved_amount,
                 u_off.name_enc as off_name_enc, u_off.name_iv as off_name_iv,
                 u_off.account as officer_account,
-                w.stage as wf_stage
+                w.stage as wf_stage,
+                latest_attention.special_attention_note
             FROM applications a
             LEFT JOIN users u_off ON u_off.id = a.officer_id
             LEFT JOIN LATERAL (
@@ -663,6 +681,14 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
                 WHERE application_id = a.id
                 ORDER BY id DESC LIMIT 1
             ) w ON TRUE
+            LEFT JOIN LATERAL (
+                SELECT cr.special_attention_note
+                FROM contact_records cr
+                WHERE cr.applicant_user_id = a.applicant_id
+                  AND cr.is_special_attention = TRUE
+                ORDER BY cr.contact_date DESC, cr.created_at DESC
+                LIMIT 1
+            ) latest_attention ON TRUE
             WHERE a.applicant_id = $1
             ORDER BY a.apply_at DESC
         `, [applicantId]);
@@ -703,7 +729,8 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
                 officer: offName,
                 status,
                 closedReason: STATUS_LABEL[dbStatus] || undefined,
-                amount: row.approved_amount ? parseInt(row.approved_amount) : undefined
+                amount: row.approved_amount ? parseInt(row.approved_amount) : undefined,
+                specialAttentionNote: row.special_attention_note ?? null,
             };
         });
     } catch (err) {

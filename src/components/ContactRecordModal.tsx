@@ -13,7 +13,7 @@
  */
 
 import { useEffect, useState } from 'react';
-import { X, Plus, Trash2, Save, Loader2, Phone, History, User, Search } from 'lucide-react';
+import { X, Plus, Trash2, Save, Loader2, Phone, History, User, Search, AlertTriangle } from 'lucide-react';
 import { useToast } from './FloatingToast';
 import { DateInput } from './DateInput';
 import {
@@ -96,6 +96,8 @@ export function ContactRecordModal({
     const [consultProgram, setConsultProgram] = useState(existingRecord?.consultProgram ?? '');
     const [rejectReasons, setRejectReasons] = useState<string[]>(existingRecord?.rejectReasons ?? []);
     const [summary, setSummary] = useState(existingRecord?.summary ?? '');
+    const [isSpecialAttention, setIsSpecialAttention] = useState(existingRecord?.isSpecialAttention ?? false);
+    const [specialAttentionNote, setSpecialAttentionNote] = useState(existingRecord?.specialAttentionNote ?? '');
     const [mediaUrls, setMediaUrls] = useState<string[]>(() => {
         if (existingRecord && existingRecord.mediaUrls.length > 0) return [...existingRecord.mediaUrls];
         return [''];
@@ -115,6 +117,7 @@ export function ContactRecordModal({
     const [pickerOpen, setPickerOpen] = useState(false);
 
     const [saving, setSaving] = useState(false);
+    const canEditRecord = mode === 'create' || existingRecord?.handlerUserId === operatorUserId;
     const [followups, setFollowups] = useState<ContactRecordFollowup[]>([]);
     const [followupsLoading, setFollowupsLoading] = useState(false);
     const [newFollowup, setNewFollowup] = useState('');
@@ -169,6 +172,8 @@ export function ContactRecordModal({
             setConsultProgram(existingRecord.consultProgram ?? '');
             setRejectReasons(existingRecord.rejectReasons);
             setSummary(existingRecord.summary ?? '');
+            setIsSpecialAttention(existingRecord.isSpecialAttention);
+            setSpecialAttentionNote(existingRecord.specialAttentionNote ?? '');
             setMediaUrls(existingRecord.mediaUrls.length > 0 ? [...existingRecord.mediaUrls] : ['']);
             setApplicationId(existingRecord.applicationId ?? '');
             setContactedParty(existingRecord.contactedParty ?? '');
@@ -265,6 +270,7 @@ export function ContactRecordModal({
     };
 
     const handleSave = async () => {
+        if (!canEditRecord) return;
         // 關懷模式必填驗證
         if (recordType === '2') {
             if (!applicationId) {
@@ -279,6 +285,10 @@ export function ContactRecordModal({
                 pushToast({ type: 'error', msg: '請填寫關懷摘要' });
                 return;
             }
+        }
+        if (isSpecialAttention && !specialAttentionNote.trim()) {
+            pushToast({ type: 'error', msg: '特殊注意時請填寫說明' });
+            return;
         }
         setSaving(true);
         try {
@@ -300,6 +310,8 @@ export function ContactRecordModal({
                 consultProgram: consultProgram || null,
                 rejectReasons,
                 summary: summary.trim() || null,
+                isSpecialAttention,
+                specialAttentionNote: specialAttentionNote.trim() || null,
                 mediaUrls: mediaUrls.map(u => u.trim()).filter(u => u),
                 contactedParty: recordType === '2' ? (contactedParty || null) : null,
                 contactedPartyOther: recordType === '2' && contactedParty === '9'
@@ -338,6 +350,16 @@ export function ContactRecordModal({
 
                 {/* Body */}
                 <div className="flex-1 overflow-y-auto px-5 py-4 space-y-4">
+                    {mode === 'edit' && existingRecord && (
+                        <div className="flex items-center justify-between gap-3 rounded-lg border border-slate-200 bg-slate-50 px-3 py-2 text-xs text-slate-600">
+                            <span className="inline-flex items-center gap-1.5">
+                                <User className="w-3.5 h-3.5" />
+                                建立者：<span className="font-medium text-slate-800">{existingRecord.handlerName}</span>
+                            </span>
+                            {!canEditRecord && <span className="text-amber-700">僅建立者可修改原始紀錄</span>}
+                        </div>
+                    )}
+                    <fieldset disabled={!canEditRecord} className="contents">
                     {applicantName && recordType === '2' && (
                         <p className="text-xs text-slate-500">
                             關懷對象：<span className="font-medium text-slate-700">{applicantName}</span>
@@ -608,6 +630,35 @@ export function ContactRecordModal({
                         )}
                     </div>
 
+                    <div className="rounded-lg border border-amber-200 bg-amber-50 p-3">
+                        <label className="flex items-center gap-2 text-sm font-medium text-amber-900 cursor-pointer">
+                            <input
+                                type="checkbox"
+                                checked={isSpecialAttention}
+                                onChange={e => setIsSpecialAttention(e.target.checked)}
+                                className="w-4 h-4 accent-amber-600"
+                            />
+                            <AlertTriangle className="w-4 h-4" />
+                            特殊注意
+                        </label>
+                        {isSpecialAttention && (
+                            <div className="mt-2">
+                                <label className="text-xs font-medium text-amber-900">
+                                    特殊注意說明 <span className="text-red-500">*</span>
+                                </label>
+                                <textarea
+                                    value={specialAttentionNote}
+                                    onChange={e => setSpecialAttentionNote(e.target.value)}
+                                    rows={3}
+                                    className="mt-1 w-full border border-amber-300 rounded-lg px-3 py-2 text-sm resize-y bg-white"
+                                    placeholder="請說明需特別留意的事項…"
+                                />
+                            </div>
+                        )}
+                    </div>
+
+                    </fieldset>
+
                     {mode === 'edit' && existingRecord?.id && (
                         <div className="rounded-lg border border-slate-200 bg-slate-50 p-3 space-y-3">
                             <div className="flex items-center justify-between">
@@ -721,6 +772,7 @@ export function ContactRecordModal({
                                                 type="url"
                                                 value={url}
                                                 onChange={e => setMediaUrl(idx, e.target.value)}
+                                                disabled={!canEditRecord}
                                                 placeholder="https://photos.google.com/... 或直接貼上 .jpg/.png 圖片網址"
                                                 className="flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
                                             />
@@ -728,6 +780,7 @@ export function ContactRecordModal({
                                                 <button
                                                     type="button"
                                                     onClick={() => removeMediaUrl(idx)}
+                                                    disabled={!canEditRecord}
                                                     className="p-2 text-slate-400 hover:text-red-600 hover:bg-red-50 rounded-lg"
                                                 >
                                                     <Trash2 className="w-4 h-4" />
@@ -767,6 +820,7 @@ export function ContactRecordModal({
                             <button
                                 type="button"
                                 onClick={addMediaUrl}
+                                disabled={!canEditRecord}
                                 className="inline-flex items-center gap-1 text-xs text-indigo-600 hover:text-indigo-800"
                             >
                                 <Plus className="w-3.5 h-3.5" />新增連結
@@ -789,7 +843,7 @@ export function ContactRecordModal({
                     <button
                         type="button"
                         onClick={handleSave}
-                        disabled={saving}
+                        disabled={saving || !canEditRecord}
                         className="inline-flex items-center gap-1.5 px-4 py-2 text-sm bg-indigo-600 text-white font-medium rounded-lg hover:bg-indigo-700 disabled:opacity-50"
                     >
                         {saving ? <Loader2 className="w-3.5 h-3.5 animate-spin" /> : <Save className="w-3.5 h-3.5" />}
