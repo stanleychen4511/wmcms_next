@@ -5,23 +5,25 @@ import { clsx } from 'clsx';
 import { useEffect, useRef, useState } from 'react';
 
 export function formatDateDigits(value: string): string {
-    const digits = value.replace(/\D/g, '').slice(0, 8);
-    if (digits.length <= 4) return digits;
-    if (digits.length <= 6) return `${digits.slice(0, 4)}/${digits.slice(4)}`;
-    return `${digits.slice(0, 4)}/${digits.slice(4, 6)}/${digits.slice(6)}`;
+    const digits = value.replace(/\D/g, '').slice(0, 7);
+    if (digits.length <= 3) return digits;
+    if (digits.length <= 5) return `${digits.slice(0, 3)}/${digits.slice(3)}`;
+    return `${digits.slice(0, 3)}/${digits.slice(3, 5)}/${digits.slice(5)}`;
 }
 
 export function isoDateToText(value: string): string {
     if (!value) return '';
-    return formatDateDigits(value);
+    const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+    if (!match) return '';
+    return `${String(Number(match[1]) - 1911).padStart(3, '0')}/${match[2]}/${match[3]}`;
 }
 
 export function dateTextToIso(value: string): string {
     const digits = value.replace(/\D/g, '');
-    if (digits.length !== 8) return '';
-    const yyyy = digits.slice(0, 4);
-    const mm = digits.slice(4, 6);
-    const dd = digits.slice(6, 8);
+    if (digits.length !== 7) return '';
+    const yyyy = String(Number(digits.slice(0, 3)) + 1911);
+    const mm = digits.slice(3, 5);
+    const dd = digits.slice(5, 7);
     const date = new Date(`${yyyy}-${mm}-${dd}T00:00:00`);
     if (
         Number.isNaN(date.getTime()) ||
@@ -50,7 +52,7 @@ export function DateInput({
     className,
     disabled,
     required,
-    placeholder = 'YYYY/MM/DD',
+    placeholder = '民國YYY/MM/DD',
     title,
 }: DateInputProps) {
     const [textValue, setTextValue] = useState(isoDateToText(value));
@@ -97,9 +99,9 @@ export function DateInput({
                 }}
                 onFocus={openPicker}
                 inputMode="numeric"
-                maxLength={10}
+                maxLength={9}
                 placeholder={placeholder}
-                title={title ?? '請輸入西元日期，格式 YYYY/MM/DD'}
+                title={title ?? '請輸入民國日期，格式 YYY/MM/DD'}
                 disabled={disabled}
                 required={required}
                 className={clsx('w-full pr-10', className)}

@@ -54,6 +54,7 @@ export interface PaymentDisbursement {
     officialReceiptAccountantConfirmedAt: string | null;
     officialReceiptAccountantConfirmedBy: string | null;
     notes: string | null;
+    isLegacyImport: boolean;
     createdBy: string | null;
     createdAt: string;
     updatedAt: string;
@@ -99,7 +100,7 @@ export interface PaymentDisbursement {
 export interface DisbursementSummary {
     approvedAmount: number;       // applications.approved_amount
     totalDisbursed: number;       // SUM(amount where review_stage='9')
-    totalReceived: number;        // SUM(amount where received_at not null AND stage='9')
+    totalReceived: number;        // SUM(amount where received_at not null OR legacy import, AND stage='9')
     totalInFlight: number;        // SUM(amount where stage IN '1'..'4')
     remaining: number;            // approved - (disbursed + in-flight)
     canCloseCase: boolean;        // received >= approved
@@ -241,6 +242,7 @@ function rowToDisbursement(r: any): PaymentDisbursement {
         officialReceiptAccountantConfirmedAt: r.official_receipt_accountant_confirmed_at ? new Date(r.official_receipt_accountant_confirmed_at).toISOString() : null,
         officialReceiptAccountantConfirmedBy: r.official_receipt_accountant_confirmed_by ? String(r.official_receipt_accountant_confirmed_by) : null,
         notes: r.notes ?? null,
+        isLegacyImport: !!r.is_legacy_import,
         createdBy: r.created_by ? String(r.created_by) : null,
         createdAt: r.created_at ? new Date(r.created_at).toISOString() : '',
         updatedAt: r.updated_at ? new Date(r.updated_at).toISOString() : '',
@@ -291,7 +293,7 @@ const SELECT_ALL_COLS = `
     sent_at, received_at, receipt_file_path, remittance_slip_file_path, medical_receipt_status,
     official_receipt_replaced_at, official_receipt_replaced_by,
     official_receipt_accountant_confirmed_at, official_receipt_accountant_confirmed_by,
-    notes,
+    notes, is_legacy_import,
     created_by, created_at, updated_at,
     review_stage, officer_signed_at,
     supervisor_user_id, supervisor_signed_at,
@@ -386,9 +388,9 @@ export async function fetchDisbursements(
         const inFlight  = disbursements.filter(d => ['1','2','3','4'].includes(d.reviewStage));
         const totalDisbursed = completed.reduce((s, d) => s + d.amount, 0);
         const totalInFlight  = inFlight.reduce((s, d) => s + d.amount, 0);
-        const totalReceived  = completed.filter(d => d.receivedAt).reduce((s, d) => s + d.amount, 0);
+        const totalReceived  = completed.filter(d => d.receivedAt || d.isLegacyImport).reduce((s, d) => s + d.amount, 0);
         const pendingOfficialReceiptConfirmation = completed.find(d => d.officialReceiptReplacedAt && !d.officialReceiptAccountantConfirmedAt);
-        const missingRemittanceSlip = completed.find(d => d.receivedAt && !d.remittanceSlipFilePath);
+        const missingRemittanceSlip = completed.find(d => !d.isLegacyImport && d.receivedAt && !d.remittanceSlipFilePath);
         const closeCaseBlockReason = pendingOfficialReceiptConfirmation
             ? `撥款單號${pendingOfficialReceiptConfirmation.externalCode || pendingOfficialReceiptConfirmation.receiptNumber}正式收據已更新，等待會計確認`
             : missingRemittanceSlip

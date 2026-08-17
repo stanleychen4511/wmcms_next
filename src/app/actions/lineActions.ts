@@ -1,9 +1,13 @@
 'use server';
 
-import * as crypto from 'crypto';
 import { messagingApi } from '@line/bot-sdk';
 const { MessagingApiClient } = messagingApi;
 import { pool } from '../../lib/db';
+import {
+    createLineLinkCodeSuffix,
+    formatLineLinkCode,
+    parseLineLinkCode,
+} from '../../lib/lineLinkCode';
 import { writeAuditLog } from './auditActions';
 
 const LINE_USER_ID_REGEX = /^U[0-9a-f]{32}$/;
@@ -156,7 +160,8 @@ export async function sendLineMessage(
 
 // ─── Phase 2: account linking ────────────────────────────────────────────────
 
-const LINK_CODE_TTL_MINUTES = 30;
+const LINK_CODE_TTL_MINUTES = 10;
+const LINK_CODE_MAX_ATTEMPTS = 5;
 
 /**
  * Reply to a LINE event using its replyToken. Reply messages do NOT count
@@ -182,7 +187,8 @@ export async function replyLineMessage(replyToken: string, text: string): Promis
 }
 
 /**
- * Generate a fresh 6-digit binding code for the operator user.
+ * Generate a fresh WMCMS-prefixed six-character Base32 binding code.
+ * Only active internal users (at least one non-applicant role) may generate one.
  * - Fails if the user is already linked to a LINE account.
  * - Overwrites any prior code (PK = user_id).
  * - Audit log does NOT contain the code value (only expiry).
@@ -195,15 +201,27 @@ export async function generateLineLinkCode(
     const client = await pool.connect();
     try {
         const userRes = await client.query(
-            `SELECT line_user_id FROM users WHERE id = $1::bigint LIMIT 1`,
+            `SELECT u.line_user_id
+             FROM users u
+             WHERE u.id = $1::bigint
+               AND u.is_active = TRUE
+               AND EXISTS (
+                   SELECT 1
+                   FROM user_roles ur
+                   JOIN roles r ON r.id = ur.role_id
+                   WHERE ur.user_id = u.id AND r.code <> 'applicant'
+               )
+             LIMIT 1`,
             [operatorUserId]
         );
-        if (userRes.rowCount === 0) return { success: false, error: '使用者不存在' };
+        if (userRes.rowCount === 0) {
+            return { success: false, error: '僅限啟用中的內部人員使用 LINE 綁定' };
+        }
         if (userRes.rows[0].line_user_id) {
             return { success: false, error: '此帳號已綁定 LINE，請先解除綁定' };
         }
 
-        const code = String(crypto.randomInt(100000, 1000000)); // 100000-999999
+        const code = createLineLinkCodeSuffix();
         const ttlMinutes = LINK_CODE_TTL_MINUTES;
 
         const upRes = await client.query(
@@ -226,9 +244,12 @@ export async function generateLineLinkCode(
             detail: { expires_at: expiresAt, ttl_minutes: ttlMinutes },
         });
 
-        return { success: true, data: { code, expiresAt } };
+        return { success: true, data: { code: formatLineLinkCode(code), expiresAt } };
     } catch (err: any) {
         console.error('generateLineLinkCode error:', err);
+        if (err?.code === '23505') {
+            return { success: false, error: '綁定碼碰撞，請重新產生' };
+        }
         return { success: false, error: err.message };
     } finally {
         client.release();
@@ -295,6 +316,13 @@ export async function fetchLineLinkStatus(operatorUserId: string): Promise<Actio
              LEFT JOIN user_line_link_codes c
                ON c.user_id = u.id AND c.expires_at > NOW()
              WHERE u.id = $1::bigint
+               AND u.is_active = TRUE
+               AND EXISTS (
+                   SELECT 1
+                   FROM user_roles ur
+                   JOIN roles r ON r.id = ur.role_id
+                   WHERE ur.user_id = u.id AND r.code <> 'applicant'
+               )
              LIMIT 1`,
             [operatorUserId]
         );
@@ -308,7 +336,7 @@ export async function fetchLineLinkStatus(operatorUserId: string): Promise<Actio
                 lineUserIdSuffix: linked ? String(row.line_user_id).slice(-6) : null,
                 pendingCode: !linked && row.code
                     ? {
-                        code: String(row.code).trim(),
+                        code: formatLineLinkCode(String(row.code)),
                         expiresAt: new Date(row.expires_at).toISOString(),
                     }
                     : null,
@@ -323,26 +351,61 @@ export async function fetchLineLinkStatus(operatorUserId: string): Promise<Actio
 }
 
 /**
- * Internal helper for webhook: process a 6-digit binding code.
+ * Internal helper for webhook: process a WMCMS-prefixed Base32 binding code.
  * Returns reply text to send back to the user.
  *
  * Within a transaction: SELECT matching code → UPDATE users.line_user_id → DELETE link_code → audit.
  */
 export async function consumeLinkCodeFromWebhook(
-    code: string,
+    input: string,
     senderLineUserId: string,
 ): Promise<{ replyText: string; linkedUserId: string | null }> {
+    const code = parseLineLinkCode(input);
+    if (!code) return { replyText: '綁定碼格式錯誤', linkedUserId: null };
+
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
 
+        const attemptRes = await client.query(
+            `INSERT INTO line_link_attempts (line_user_id, attempt_count, window_started_at)
+             VALUES ($1, 1, NOW())
+             ON CONFLICT (line_user_id) DO UPDATE SET
+                 attempt_count = CASE
+                     WHEN line_link_attempts.window_started_at <= NOW() - INTERVAL '10 minutes' THEN 1
+                     ELSE LEAST(line_link_attempts.attempt_count + 1, $2)
+                 END,
+                 window_started_at = CASE
+                     WHEN line_link_attempts.window_started_at <= NOW() - INTERVAL '10 minutes' THEN NOW()
+                     ELSE line_link_attempts.window_started_at
+                 END
+             RETURNING attempt_count`,
+            [senderLineUserId, LINK_CODE_MAX_ATTEMPTS + 1]
+        );
+        if (Number(attemptRes.rows[0].attempt_count) > LINK_CODE_MAX_ATTEMPTS) {
+            await client.query('COMMIT');
+            return { replyText: '嘗試次數過多，請 10 分鐘後再試', linkedUserId: null };
+        }
+
         const codeRes = await client.query(
-            `SELECT user_id FROM user_line_link_codes
-             WHERE code = $1 AND expires_at > NOW() LIMIT 1`,
+            `SELECT c.user_id
+             FROM user_line_link_codes c
+             JOIN users u ON u.id = c.user_id
+             WHERE c.code = $1
+               AND c.expires_at > NOW()
+               AND u.is_active = TRUE
+               AND EXISTS (
+                   SELECT 1
+                   FROM user_roles ur
+                   JOIN roles r ON r.id = ur.role_id
+                   WHERE ur.user_id = u.id AND r.code <> 'applicant'
+               )
+             LIMIT 1
+             FOR UPDATE OF c`,
             [code]
         );
         if (codeRes.rowCount === 0) {
-            await client.query('ROLLBACK');
+            await client.query('COMMIT');
             return { replyText: '綁定碼無效或已過期', linkedUserId: null };
         }
         const targetUserId = String(codeRes.rows[0].user_id);
@@ -363,6 +426,10 @@ export async function consumeLinkCodeFromWebhook(
         await client.query(
             `DELETE FROM user_line_link_codes WHERE user_id = $1::bigint`,
             [targetUserId]
+        );
+        await client.query(
+            `DELETE FROM line_link_attempts WHERE line_user_id = $1`,
+            [senderLineUserId]
         );
 
         // Decrypt the linked user's name for the success reply

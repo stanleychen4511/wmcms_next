@@ -9,7 +9,7 @@ import {
     submitBoardSignature,
 } from '../app/actions/boardSignatureActions';
 import { ModalEscapeListener } from '../hooks/useModalDismiss';
-import { formatTaipeiDateTime } from '../lib/dateOnly';
+import { formatRocDateTime } from '../lib/rocDate';
 
 interface Props {
     applicationId: string;
@@ -129,7 +129,7 @@ export function BoardSignaturePanel({ applicationId, currentUserId, refreshKey, 
                                     {m.signedAt && (
                                         <span className="text-xs text-slate-400 flex items-center gap-1">
                                             <Clock className="w-3 h-3" />
-                                            {formatTaipeiDateTime(m.signedAt)}
+                                            {formatRocDateTime(m.signedAt)}
                                         </span>
                                     )}
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded-full bg-emerald-100 text-emerald-700 text-xs font-medium">

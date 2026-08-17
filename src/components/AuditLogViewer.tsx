@@ -2,7 +2,8 @@ import { useState, useEffect, useCallback } from 'react';
 import { Search, Filter, Clock, ChevronLeft, ChevronRight } from 'lucide-react';
 import { fetchAuditLogs, AuditLogEntry, AuditAction, AuditTargetType } from '../app/actions/auditActions';
 import { DateInput } from './DateInput';
-import { formatTaipeiDateTime, todayDateOnly } from '../lib/dateOnly';
+import { todayDateOnly } from '../lib/dateOnly';
+import { formatRocDateTime } from '../lib/rocDate';
 
 // ── Chinese label maps ────────────────────────────────────────────────────────
 
@@ -63,7 +64,7 @@ const ACTION_COLORS: Record<string, string> = {
 // ── Helpers ───────────────────────────────────────────────────────────────────
 
 function formatDateTime(iso: string): string {
-    return formatTaipeiDateTime(iso) ?? iso;
+    return formatRocDateTime(iso) || iso;
 }
 
 // ── Component ─────────────────────────────────────────────────────────────────

@@ -26,6 +26,7 @@ import {
 import { ContactRecordModal } from './ContactRecordModal';
 import { ApplicantPickerModal } from './ApplicantPickerModal';
 import { useModalDismiss } from '../hooks/useModalDismiss';
+import { formatRocDateOnly } from '../lib/rocDate';
 
 interface Props {
     operatorUserId: string;
@@ -369,10 +370,10 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                                 {idLookup.applicationCount > 0 && (
                                     <div className="text-xs text-slate-600 flex items-center gap-3 flex-wrap">
                                         <span>
-                                            最早：<span className="font-mono">{idLookup.earliestApplyAt ?? '—'}</span>
+                                            最早：<span className="font-mono">{formatRocDateOnly(idLookup.earliestApplyAt) || '—'}</span>
                                         </span>
                                         <span>
-                                            最近：<span className="font-mono">{idLookup.latestApplyAt ?? '—'}</span>
+                                            最近：<span className="font-mono">{formatRocDateOnly(idLookup.latestApplyAt) || '—'}</span>
                                         </span>
                                     </div>
                                 )}
@@ -380,7 +381,7 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                                     <ul className="text-xs text-slate-700 space-y-0.5">
                                         {idLookup.applications.map((a, i) => (
                                             <li key={a.applicationId ?? `app-${i}`} className="flex items-center gap-2">
-                                                <span className="font-mono text-slate-500">{a.applyAt || '—'}</span>
+                                                <span className="font-mono text-slate-500">{formatRocDateOnly(a.applyAt) || '—'}</span>
                                                 {a.caseNumber && (
                                                     <span className="font-mono px-1.5 py-0.5 rounded bg-emerald-100 text-emerald-700">
                                                         {a.caseNumber}
@@ -473,7 +474,7 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                                             </span>
                                         </span>
                                     )}
-                                    <span className="text-xs text-slate-600 font-mono shrink-0">{r.contactDate}</span>
+                                    <span className="text-xs text-slate-600 font-mono shrink-0">{formatRocDateOnly(r.contactDate)}</span>
                                     {/* 4. 姓名（來電→callerName / 關懷→applicantName） */}
                                     {(() => {
                                         const name = r.recordType === '1' ? r.callerName : r.applicantName;

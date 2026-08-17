@@ -30,6 +30,10 @@ export const FROM_SOURCE_OPTIONS = [
     { value: '11', label: 'Hope基金會' },
     { value: '12', label: '癌資中心' },
     { value: '13', label: '醫院個管' },
+    { value: '14', label: '合作的社工' },
+    { value: '15', label: '學校輔導室' },
+    { value: '16', label: '醫院' },
+    { value: '17', label: '醫院護理師' },
 ] as const;
 
 /** 諮詢人（單選） */
@@ -54,6 +58,7 @@ export const REJECT_REASON_OPTIONS = [
     { value: '5', label: '非癌症' },
     { value: '6', label: '非本國籍' },
     { value: '7', label: '中低收入' },
+    { value: '8', label: '房產不符' },
 ] as const;
 
 export const FROM_SOURCE_LABEL: Record<string, string> =

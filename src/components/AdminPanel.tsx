@@ -30,6 +30,7 @@ import { ReferralUnitManager } from './ReferralUnitManager';
 import { BoardGroupManager } from './BoardGroupManager';
 import { clsx } from 'clsx';
 import { getUsers, createUser, updateUserRoles, resetUserPassword, updateUserEmail, deleteUserAccount, fetchRoles, toggleUserActive, reassignOfficer, fetchCaseOfficersWithId, AdminUserView, RoleOption } from '../app/actions/userActions';
+import { formatRocDateOnly } from '../lib/rocDate';
 import { twIdError } from '../lib/validateTwId';
 import { AppHeader } from './AppHeader';
 import { useToast } from './FloatingToast';
@@ -569,7 +570,7 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                                                                 <span className="font-bold text-slate-800 text-base">{acc.username}</span>
                                                                 <span className="ml-2 text-xs text-slate-500">(@{acc.account})</span>
                                                                 <p className="text-xs text-slate-400 mt-0.5">
-                                                                    建立日期: {acc.created_at}
+                                                                    建立日期: {formatRocDateOnly(acc.created_at)}
                                                                 </p>
                                                                 <p className="text-xs text-slate-500 mt-0.5 flex items-center gap-1.5">
                                                                     <span className="text-slate-400">Email:</span>

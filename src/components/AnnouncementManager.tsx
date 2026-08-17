@@ -10,6 +10,7 @@ import {
 } from '../app/actions/announcementActions';
 import { DateInput } from './DateInput';
 import { todayDateOnly } from '../lib/dateOnly';
+import { formatRocDateOnly } from '../lib/rocDate';
 
 interface AnnouncementManagerProps {
     userId?: string;
@@ -414,7 +415,7 @@ export function AnnouncementManager({ userId }: AnnouncementManagerProps) {
                                         </div>
                                         <p className="text-sm font-semibold text-slate-800 truncate">{a.title}</p>
                                         <p className="text-xs text-slate-400 mt-0.5">
-                                            發布：{a.publish_date}　區間：{a.start_date} ～ {a.end_date ?? '永久'}
+                                            發布：{formatRocDateOnly(a.publish_date)}　區間：{formatRocDateOnly(a.start_date)} ～ {a.end_date ? formatRocDateOnly(a.end_date) : '永久'}
                                         </p>
                                     </div>
                                     <div className="flex items-center gap-1.5 shrink-0">

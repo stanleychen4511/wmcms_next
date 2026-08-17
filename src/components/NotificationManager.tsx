@@ -18,7 +18,7 @@ import {
 } from '../app/actions/notificationActions';
 import { fetchLineCredentialStatus, sendLineMessage } from '../app/actions/lineActions';
 import { SYSTEM_TEMPLATE_NAMES, getNotificationTemplateLabel } from '../lib/systemTemplates';
-import { formatTaipeiDateTime } from '../lib/dateOnly';
+import { formatRocDateTime } from '../lib/rocDate';
 import { useToast } from './FloatingToast';
 import type { Role } from '../types';
 import { canManageNotifications } from '../lib/notificationPermissions';
@@ -819,7 +819,7 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
 
                                             <div className="flex items-center justify-between gap-3 border-t border-slate-100 pt-3">
                                                 <p className="text-xs text-slate-400">
-                                                    最後更新：{rule.updated_at ? formatTaipeiDateTime(rule.updated_at) : '-'}
+                                                    最後更新：{rule.updated_at ? formatRocDateTime(rule.updated_at) : '-'}
                                                 </p>
                                                 <button
                                                     type="button"
@@ -885,7 +885,7 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
                                                 </td>
                                                 <td className="py-3 px-4 text-xs text-slate-500">
                                                     {sch.last_sent_at
-                                                        ? formatTaipeiDateTime(sch.last_sent_at)
+                                                        ? formatRocDateTime(sch.last_sent_at)
                                                         : '—'}
                                                 </td>
                                                 <td className="py-3 px-4">

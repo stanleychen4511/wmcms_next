@@ -5,6 +5,7 @@ import { CaseSummary, Role, WorkflowStage } from '../types';
 import { AppHeader } from './AppHeader';
 import { DateInput } from './DateInput';
 import { todayDateOnly } from '../lib/dateOnly';
+import { formatRocDateOnly } from '../lib/rocDate';
 
 interface OfficerOption { id: string; name: string; }
 
@@ -853,7 +854,7 @@ function CaseRow({
                     ? <span className="text-blue-700">${remaining.toLocaleString()}</span>
                     : <span className="text-red-500">${remaining.toLocaleString()}</span>}
             </td>
-            <td className={`py-3.5 px-4 text-gray-500 ${cellCursor}`} onClick={handleClick}>{c.appliedAt}</td>
+            <td className={`py-3.5 px-4 text-gray-500 ${cellCursor}`} onClick={handleClick}>{formatRocDateOnly(c.appliedAt)}</td>
             <td className={`py-3.5 px-4 ${cellCursor}`} onClick={handleClick}>
                 <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STAGE_COLORS[c.stage]}`}>
                     {STAGE_LABELS[c.stage]}

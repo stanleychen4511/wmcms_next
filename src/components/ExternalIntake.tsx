@@ -1125,7 +1125,7 @@ export function ExternalIntake() {
                             </div>
                             <div>
                                 <label className="block text-sm font-medium text-gray-700 mb-1">
-                                    出生年月日（西元）<span className="text-red-500">*</span>
+                                    出生年月日（民國）<span className="text-red-500">*</span>
                                 </label>
                                 <DateInput
                                     value={applicantDob}

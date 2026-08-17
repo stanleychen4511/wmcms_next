@@ -13,6 +13,7 @@ import {
 } from '../app/actions/caseStatisticsActions';
 import { CaseStatisticsDrillDownModal } from './CaseStatisticsDrillDownModal';
 import { DateInput } from './DateInput';
+import { formatRocDateOnly, formatRocYearMonth } from '../lib/rocDate';
 
 interface Props {
     operatorUserId: string;
@@ -237,9 +238,9 @@ export function CaseStatisticsPage({ operatorUserId, username, onGoHome, onLogou
                                     const rate = total === 0 ? '—' : `${((m.approved / total) * 100).toFixed(1)}%`;
                                     return {
                                         cells: [
-                                            { value: m.yearMonth },
-                                            { value: m.approved, onClick: m.approved > 0 ? () => openDrillDown({ dimension: 'month', dimensionValue: m.yearMonth, outcome: 'approved', title: `${m.yearMonth} - 通過案件` }) : undefined },
-                                            { value: m.rejected, onClick: m.rejected > 0 ? () => openDrillDown({ dimension: 'month', dimensionValue: m.yearMonth, outcome: 'rejected', title: `${m.yearMonth} - 不通過案件` }) : undefined },
+                                            { value: formatRocYearMonth(m.yearMonth) },
+                                            { value: m.approved, onClick: m.approved > 0 ? () => openDrillDown({ dimension: 'month', dimensionValue: m.yearMonth, outcome: 'approved', title: `${formatRocYearMonth(m.yearMonth)} - 通過案件` }) : undefined },
+                                            { value: m.rejected, onClick: m.rejected > 0 ? () => openDrillDown({ dimension: 'month', dimensionValue: m.yearMonth, outcome: 'rejected', title: `${formatRocYearMonth(m.yearMonth)} - 不通過案件` }) : undefined },
                                             { value: rate },
                                         ],
                                     };
@@ -373,7 +374,7 @@ function exportToCsv(stats: CaseStatistics): void {
 
     // 1. 總覽
     lines.push(csvRow('總覽'));
-    lines.push(csvRow('區間', `${stats.fromDate} ~ ${stats.toDate}`));
+    lines.push(csvRow('區間', `${formatRocDateOnly(stats.fromDate)} ~ ${formatRocDateOnly(stats.toDate)}`));
     lines.push(csvRow('指標', '數值'));
     lines.push(csvRow('通過', stats.total.approved));
     lines.push(csvRow('不通過', stats.total.rejected));
@@ -414,7 +415,7 @@ function exportToCsv(stats: CaseStatistics): void {
     lines.push(csvRow('依月份'));
     lines.push(csvRow('月份', '通過', '不通過'));
     for (const m of stats.byMonth) {
-        lines.push(csvRow(m.yearMonth, m.approved, m.rejected));
+        lines.push(csvRow(formatRocYearMonth(m.yearMonth), m.approved, m.rejected));
     }
 
     // 加 BOM + 觸發下載

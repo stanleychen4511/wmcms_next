@@ -9,6 +9,7 @@ import {
     type StatsDrillDownRow,
 } from '../app/actions/caseStatisticsActions';
 import { useModalDismiss } from '../hooks/useModalDismiss';
+import { formatRocDateOnly } from '../lib/rocDate';
 
 interface Props {
     fromDate: string;
@@ -106,7 +107,7 @@ export function CaseStatisticsDrillDownModal({
                                     <tr key={r.caseId} className="border-b border-slate-100 hover:bg-slate-50">
                                         <td className="py-2.5 px-4 font-mono text-xs">{r.caseNumber}</td>
                                         <td className="py-2.5 px-4">{r.applicantName}</td>
-                                        <td className="py-2.5 px-4 text-slate-600">{r.applyAt}</td>
+                                        <td className="py-2.5 px-4 text-slate-600">{formatRocDateOnly(r.applyAt)}</td>
                                         <td className="py-2.5 px-4 text-right">
                                             {r.approvedAmount != null && r.approvedAmount > 0 ? (
                                                 <span className="text-emerald-700 font-medium">${r.approvedAmount.toLocaleString()}</span>

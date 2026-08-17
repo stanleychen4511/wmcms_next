@@ -17,6 +17,7 @@ import {
 } from '../app/actions/contactRecordActions';
 import { ImageLightbox, looksLikeImageUrl } from './ImageLightbox';
 import { useModalDismiss } from '../hooks/useModalDismiss';
+import { formatRocDateOnly, formatRocDateTime } from '../lib/rocDate';
 
 interface Props {
     applicationId: string;
@@ -159,7 +160,7 @@ export function ApplicationCareRecordsModal({ applicationId, applicantUserId, ca
                                                     <AlertTriangle className="w-3 h-3" />特殊注意
                                                 </span>
                                             )}
-                                            <span className="text-xs text-slate-600 font-mono shrink-0">{r.contactDate}</span>
+                                            <span className="text-xs text-slate-600 font-mono shrink-0">{formatRocDateOnly(r.contactDate)}</span>
                                             <span className="text-xs text-slate-500 shrink-0">· {r.handlerName}</span>
                                             {isPhone && r.callerName && (
                                                 <span className="text-xs text-slate-700 shrink-0 truncate max-w-[120px]">
@@ -239,9 +240,9 @@ export function ApplicationCareRecordsModal({ applicationId, applicantUserId, ca
                                                     );
                                                 })()}
                                                 <p className="text-slate-400 text-[11px]">
-                                                    建立 {r.createdAt?.slice(0, 16).replace('T', ' ')}
+                                                    建立 {formatRocDateTime(r.createdAt)}
                                                     {r.createdAt !== r.updatedAt && (
-                                                        <span className="ml-2">· 最後編輯 {r.updatedAt?.slice(0, 16).replace('T', ' ')}</span>
+                                                        <span className="ml-2">· 最後編輯 {formatRocDateTime(r.updatedAt)}</span>
                                                     )}
                                                 </p>
                                             </div>

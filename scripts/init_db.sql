@@ -729,6 +729,7 @@ CREATE TABLE IF NOT EXISTS payment_disbursements (
     received_at        DATE,
     receipt_file_path  TEXT,
     remittance_slip_file_path TEXT,
+    is_legacy_import   BOOLEAN NOT NULL DEFAULT FALSE,
     medical_receipt_status TEXT,
     notes              TEXT,
     created_by         BIGINT       REFERENCES users(id) ON DELETE SET NULL,
@@ -758,6 +759,10 @@ COMMENT ON COLUMN payment_disbursements.external_code  IS '外部隱碼（6 字�
 ALTER TABLE payment_disbursements
     ADD COLUMN IF NOT EXISTS remittance_slip_file_path TEXT;
 COMMENT ON COLUMN payment_disbursements.remittance_slip_file_path IS '撥款完成後上傳的匯款單掃描檔 URL';
+
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS is_legacy_import BOOLEAN NOT NULL DEFAULT FALSE;
+COMMENT ON COLUMN payment_disbursements.is_legacy_import IS '初始匯入的歷史撥款；不要求追溯收件日期、匯款單及歷史簽核';
 
 -- 7f-1d. payment_disbursements 醫療收據狀態（#51）
 ALTER TABLE payment_disbursements
@@ -953,8 +958,16 @@ CREATE TABLE IF NOT EXISTS user_line_link_codes (
     created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 CREATE INDEX IF NOT EXISTS idx_user_line_link_codes_code ON user_line_link_codes (code);
+CREATE UNIQUE INDEX IF NOT EXISTS uq_user_line_link_codes_code ON user_line_link_codes (code);
 
--- 2c. contact_records（#14：來電紀錄與關懷紀錄合併表）
+-- 2c. line_link_attempts（以 LINE userId 限制每 10 分鐘最多 5 次綁定嘗試）
+CREATE TABLE IF NOT EXISTS line_link_attempts (
+    line_user_id      TEXT        PRIMARY KEY,
+    attempt_count     INTEGER     NOT NULL CHECK (attempt_count BETWEEN 1 AND 6),
+    window_started_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+
+-- 2d. contact_records（#14：來電紀錄與關懷紀錄合併表）
 CREATE TABLE IF NOT EXISTS contact_records (
     id                BIGSERIAL PRIMARY KEY,
     record_type       CHAR(1) NOT NULL CHECK (record_type IN ('1', '2')),  -- 1=來電 2=關懷
@@ -1514,7 +1527,8 @@ COMMENT ON TABLE board_groups             IS '董事組別主檔：由董事長(
 COMMENT ON TABLE board_group_members      IS '董事組別成員：多對多但 UNIQUE(user_id) 限制一位董事僅屬於一組';
 COMMENT ON TABLE board_review_assignments IS '案件派組紀錄：每案一列，記錄當前派到哪個董事組別、派案者、手動/自動';
 COMMENT ON TABLE board_review_signatures  IS '董事審核電子簽章：每位派組成員一列，含簽章 base64 + 當時案件內容 SHA-256 hash + 時間/IP/UA；推進前守門驗證全員簽完且 hash 有效';
-COMMENT ON TABLE user_line_link_codes     IS '使用者 LINE 綁定碼暫存表：PK = user_id 強制一人一碼，產新覆寫舊；過期 30 分鐘自動失效（webhook 查詢時加 expires_at > NOW() 過濾）';
+COMMENT ON TABLE user_line_link_codes     IS '使用者 LINE 綁定碼暫存表：PK = user_id 強制一人一碼，產新覆寫舊；過期 10 分鐘自動失效';
+COMMENT ON TABLE line_link_attempts       IS '以 LINE userId 紀錄綁定嘗試視窗：每 10 分鐘最多處理 5 次';
 
 -- ─────────────────────────────────────────────────────────────
 -- 欄位註解（COMMENT ON COLUMN）
@@ -1625,9 +1639,14 @@ COMMENT ON COLUMN board_review_signatures.ip_address         IS '簽章當下的
 
 -- user_line_link_codes
 COMMENT ON COLUMN user_line_link_codes.user_id    IS '系統使用者 ID（PK）';
-COMMENT ON COLUMN user_line_link_codes.code       IS '6 位數字綁定碼（使用者於 LINE app 傳給 bot）';
-COMMENT ON COLUMN user_line_link_codes.expires_at IS '失效時間（產生時設 NOW() + 30 minutes）';
+COMMENT ON COLUMN user_line_link_codes.code       IS 'WMCMS- 後的 6 碼 Crockford Base32 綁定碼';
+COMMENT ON COLUMN user_line_link_codes.expires_at IS '失效時間（產生時設 NOW() + 10 minutes）';
 COMMENT ON COLUMN user_line_link_codes.created_at IS '產生時間';
+
+-- line_link_attempts
+COMMENT ON COLUMN line_link_attempts.line_user_id      IS 'LINE Messaging API userId（限流主體）';
+COMMENT ON COLUMN line_link_attempts.attempt_count     IS '目前 10 分鐘視窗的嘗試次數，6 代表已遭阻擋';
+COMMENT ON COLUMN line_link_attempts.window_started_at IS '嘗試視窗開始時間';
 
 -- referral_units
 COMMENT ON COLUMN referral_units.id           IS '主鍵，自動遞增（BIGINT）';

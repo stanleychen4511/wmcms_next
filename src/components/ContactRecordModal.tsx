@@ -42,7 +42,8 @@ import {
     type Gender,
     type RecordType,
 } from '../lib/contactRecordConstants';
-import { formatTaipeiDateTime, todayDateOnly } from '../lib/dateOnly';
+import { todayDateOnly } from '../lib/dateOnly';
+import { formatRocDateOnly, formatRocDateTime } from '../lib/rocDate';
 
 interface ApplicationOption {
     id: string;
@@ -72,7 +73,7 @@ function todayIsoDate(): string {
 
 function formatDateTime(value: string): string {
     if (!value) return '';
-    return formatTaipeiDateTime(value) ?? value;
+    return formatRocDateTime(value) || value;
 }
 
 export function ContactRecordModal({
@@ -535,7 +536,7 @@ export function ContactRecordModal({
                                     <ul className="text-xs text-slate-600 space-y-0.5 max-h-32 overflow-y-auto">
                                         {phoneHistory.slice(0, 10).map(r => (
                                             <li key={r.id} className="border-l-2 border-amber-300 pl-2">
-                                                <span className="font-mono">{r.contactDate}</span>
+                                                <span className="font-mono">{formatRocDateOnly(r.contactDate)}</span>
                                                 {' · '}
                                                 {RECORD_TYPE_LABEL[r.recordType]}
                                                 {' · '}

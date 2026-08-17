@@ -25,7 +25,7 @@ export interface RoleOption {
 export async function fetchRoles(): Promise<RoleOption[]> {
     const client = await pool.connect();
     try {
-        const res = await client.query('SELECT code, name FROM roles ORDER BY id');
+        const res = await client.query("SELECT code, name FROM roles WHERE code <> 'applicant' ORDER BY id");
         return res.rows.map(row => ({ code: row.code as Role, name: row.name }));
     } catch (err) {
         console.error('fetchRoles error', err);
@@ -54,6 +54,13 @@ export async function getUsers(): Promise<AdminUserView[]> {
             FROM users u
             LEFT JOIN user_roles ur ON u.id = ur.user_id
             LEFT JOIN roles r ON ur.role_id = r.id
+            WHERE EXISTS (
+                SELECT 1
+                FROM user_roles internal_ur
+                JOIN roles internal_r ON internal_r.id = internal_ur.role_id
+                WHERE internal_ur.user_id = u.id
+                  AND internal_r.code <> 'applicant'
+            )
             GROUP BY u.id, u.account, u.name_enc, u.name_iv, u.id_number_enc, u.id_number_iv, u.email, u.is_active, u.created_at
             ORDER BY u.created_at DESC;
         `;

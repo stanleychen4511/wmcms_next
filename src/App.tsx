@@ -96,7 +96,7 @@ import { fetchActiveBanners, Banner } from './app/actions/bannerActions';
 import { fetchHomeAnnouncements, Announcement } from './app/actions/announcementActions';
 
 import { STATUS_TO_STAGE, STAGE_TO_STATUS } from './lib/stageMaps';
-import { formatDateOnly, formatTaipeiDateTime } from './lib/dateOnly';
+import { formatRocDateOnly, formatRocDateTime } from './lib/rocDate';
 
 import { LoadingSpinner } from './components/LoadingSpinner';
 import { CaseSummary, ApplicationRecord, WorkflowStage, Role } from './types';
@@ -1519,7 +1519,7 @@ function App() {
                         第 {history.length - idx} 次退回
                     </span>
                     <span className="text-slate-500">
-                        送出日期：{item.requestedAt ? item.requestedAt.slice(0, 10) : '—'}
+                        送出日期：{formatRocDateOnly(item.requestedAt) || '—'}
                     </span>
                     <span className={clsx(
                         'px-2 py-0.5 rounded-full text-xs font-semibold',
@@ -1603,7 +1603,7 @@ function App() {
                     </div>
                     {round.completedAt && (
                         <span className="text-xs text-slate-500">
-                            {formatTaipeiDateTime(round.completedAt)}
+                            {formatRocDateTime(round.completedAt)}
                         </span>
                     )}
                 </div>
@@ -2267,7 +2267,7 @@ function App() {
                                                             第 {reconsiderationHistory.length - idx} 次退回
                                                         </span>
                                                         <span className="text-slate-500">
-                                                            送出日期：{item.requestedAt ? item.requestedAt.slice(0, 10) : '—'}
+                                                            送出日期：{formatRocDateOnly(item.requestedAt) || '—'}
                                                         </span>
                                                         <span className={clsx(
                                                             'px-2 py-0.5 rounded-full text-xs font-semibold',
@@ -2715,7 +2715,7 @@ function App() {
                                 <div className="space-y-2 max-h-52 overflow-y-auto">
                                     {notifLogs.map(log => {
                                         const recipients = Array.isArray(log.recipients) ? log.recipients : [];
-                                        const sentAt = formatTaipeiDateTime(log.sent_at) ?? '—';
+                                        const sentAt = formatRocDateTime(log.sent_at) || '—';
 
                                         return (
                                             <button key={log.id} type="button" onClick={() => {
@@ -2959,7 +2959,7 @@ function App() {
                             <div className="text-xs text-slate-500 px-1">
                                 未補件提醒已發送 <strong className="text-slate-700">{reminderStatus.count}</strong> / {reminderStatus.threshold} 次
                                 {reminderStatus.lastReminderAt && (
-                                    <span className="ml-2 text-slate-400">最近一次：{formatDateOnly(reminderStatus.lastReminderAt)}</span>
+                                    <span className="ml-2 text-slate-400">最近一次：{formatRocDateOnly(reminderStatus.lastReminderAt)}</span>
                                 )}
                             </div>
                             {reminderStatus.count >= reminderStatus.threshold && (
@@ -3510,7 +3510,7 @@ function App() {
                                 const recipientText = recipients
                                     .map(r => `${r.name || r.email}${r.email ? ` <${r.email}>` : ''}${r.is_bcc ? '（密件）' : ''}`)
                                     .join('、') || '—';
-                                const sentAt = formatTaipeiDateTime(log.sent_at) ?? '—';
+                                const sentAt = formatRocDateTime(log.sent_at) || '—';
 
                                 return (
                                     <article key={log.id} className="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
@@ -3578,7 +3578,7 @@ function App() {
                         案號: appDetail?.caseNumber ?? '',
                         申請人: personName,
                         階段: STAGE_LABEL_MAP[stage],
-                        申請日期: appDetail?.applyAt ?? '',
+                        申請日期: formatRocDateOnly(appDetail?.applyAt),
                         申請金額: appDetail?.applyAmount != null ? `NT$ ${appDetail.applyAmount.toLocaleString()}` : '—',
                         承辦人: appDetail?.officerName ?? '',
                     }}

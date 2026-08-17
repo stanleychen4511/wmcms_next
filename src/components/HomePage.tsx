@@ -31,6 +31,7 @@ import { AppHeader } from './AppHeader';
 import { ModalEscapeListener } from '../hooks/useModalDismiss';
 import { ContactSearchModal } from './ContactSearchModal';
 import { canManageNotifications } from '../lib/notificationPermissions';
+import { formatRocDateOnly } from '../lib/rocDate';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -511,7 +512,7 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                                                 )}
                                                 {a.title}
                                             </p>
-                                            <span className="text-xs text-slate-400 shrink-0">{a.publish_date}</span>
+                                            <span className="text-xs text-slate-400 shrink-0">{formatRocDateOnly(a.publish_date)}</span>
                                         </div>
                                         <p className="text-xs text-slate-500 mt-1 line-clamp-2 leading-relaxed">{a.content.slice(0, 100)}</p>
                                     </div>
@@ -548,7 +549,7 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                                     </span>
                                 )}
                                 <h3 className="text-lg font-bold text-slate-800 leading-snug">{selectedAnn.title}</h3>
-                                <p className="text-xs text-slate-400 mt-1">{selectedAnn.publish_date}</p>
+                                <p className="text-xs text-slate-400 mt-1">{formatRocDateOnly(selectedAnn.publish_date)}</p>
                             </div>
                             <button onClick={() => setSelectedAnn(null)} className="text-slate-400 hover:text-slate-600 transition shrink-0">
                                 <X className="w-5 h-5" />
@@ -595,7 +596,7 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                                             <div className="flex items-center gap-3">
                                                 <span className="text-sm font-mono text-slate-700 shrink-0">{item.caseNumber}</span>
                                                 <span className="text-sm font-medium text-slate-800 truncate">{item.applicantName}</span>
-                                                <span className="ml-auto text-xs text-slate-500 shrink-0">{item.contactDate}</span>
+                                                <span className="ml-auto text-xs text-slate-500 shrink-0">{formatRocDateOnly(item.contactDate)}</span>
                                             </div>
                                             <p className="mt-1 text-xs text-amber-900 line-clamp-2 whitespace-pre-wrap">{item.specialAttentionNote}</p>
                                         </button>
@@ -750,7 +751,7 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                                                 <span className="text-sm font-mono text-slate-700 shrink-0">{it.caseNumber}</span>
                                                 <span className="text-sm text-slate-800 truncate">{it.applicantName}</span>
                                                 {it.appliedAt && (
-                                                    <span className="ml-auto text-xs text-slate-500 shrink-0">{it.appliedAt}</span>
+                                                    <span className="ml-auto text-xs text-slate-500 shrink-0">{formatRocDateOnly(it.appliedAt)}</span>
                                                 )}
                                             </button>
                                         </li>

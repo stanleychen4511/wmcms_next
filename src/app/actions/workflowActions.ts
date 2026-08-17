@@ -2145,6 +2145,7 @@ export async function closeCase(
              FROM payment_disbursements
              WHERE application_id = $1::bigint
                AND review_stage = '9'
+               AND NOT is_legacy_import
                AND NULLIF(TRIM(COALESCE(remittance_slip_file_path, '')), '') IS NULL
              ORDER BY created_at ASC
              LIMIT 1`,
@@ -2261,6 +2262,7 @@ export async function closeCaseEarly(
         const missingRemittance = await client.query<{ receipt_number: string }>(
             `SELECT receipt_number FROM payment_disbursements
              WHERE application_id = $1::bigint AND review_stage = '9'
+               AND NOT is_legacy_import
                AND NULLIF(TRIM(COALESCE(remittance_slip_file_path, '')), '') IS NULL
              ORDER BY created_at ASC LIMIT 1`,
             [applicationId],

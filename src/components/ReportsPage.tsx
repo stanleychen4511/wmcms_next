@@ -32,6 +32,7 @@ import {
 } from '../app/actions/reportActions';
 import { CLOSE_REASON_OPTIONS } from '../lib/closeReasonConstants';
 import { DateInput } from './DateInput';
+import { formatRocDateOnly as toRoc, formatRocDateTime as toRocDateTime } from '../lib/rocDate';
 
 interface Props {
     operatorUserId: string;
@@ -52,22 +53,6 @@ const SUBSIDY_LABEL: Record<string, string> = { '1': '經濟弱勢', '2': '小�
 const APP_FORM_LABEL: Record<string, string> = { P: '紙本', E: '電子郵件' };
 const PHASE_LABEL: Record<string, string> = { B: '治療前', A: '治療後', X: '治療前後' };
 const STATUS_LABEL: Record<string, string> = { '1': '審核中', '2': '審核未通過', '3': '待核銷', '4': '核銷完成' };
-
-function toRoc(s: string | null | undefined): string {
-    if (!s) return '';
-    const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(s);
-    if (!m) return s;
-    return `${Number(m[1]) - 1911}/${m[2]}/${m[3]}`;
-}
-
-/** 西元 YYYY-MM-DD HH:MM:SS → 民國 YYY/MM/DD HH:MM:SS（無時分秒則退回 toRoc） */
-function toRocDateTime(s: string | null | undefined): string {
-    if (!s) return '';
-    const m = /^(\d{4})-(\d{2})-(\d{2})[ T](\d{2}):(\d{2})(?::(\d{2}))?/.exec(s);
-    if (!m) return toRoc(s);
-    const yr = Number(m[1]) - 1911;
-    return `${yr}/${m[2]}/${m[3]} ${m[4]}:${m[5]}${m[6] ? ':' + m[6] : ''}`;
-}
 
 function defaultDateRange(): { from: string; to: string } {
     const today = new Date();

@@ -5,6 +5,7 @@ import { clsx } from 'clsx';
 import { fetchAllAnnouncements, Announcement } from '../app/actions/announcementActions';
 import { AppHeader } from './AppHeader';
 import { useModalDismiss } from '../hooks/useModalDismiss';
+import { formatRocDateOnly } from '../lib/rocDate';
 
 interface AnnouncementsPageProps {
     username?: string;
@@ -97,7 +98,7 @@ export function AnnouncementsPage({ username, onBack, onGoHome, onLogout }: Anno
                                             )}
                                             {a.title}
                                         </p>
-                                        <span className="text-xs text-slate-400 shrink-0">{a.publish_date}</span>
+                                        <span className="text-xs text-slate-400 shrink-0">{formatRocDateOnly(a.publish_date)}</span>
                                     </div>
                                 </div>
                                 <ChevronRight className="w-4 h-4 text-gray-300 group-hover:text-blue-400 transition shrink-0 mt-0.5" />
@@ -129,7 +130,7 @@ function AnnouncementDetailModal({ item, onClose }: { item: Announcement; onClos
                             </span>
                         )}
                         <h3 className="text-lg font-bold text-slate-800 leading-snug">{item.title}</h3>
-                        <p className="text-xs text-slate-400 mt-1">{item.publish_date}</p>
+                        <p className="text-xs text-slate-400 mt-1">{formatRocDateOnly(item.publish_date)}</p>
                     </div>
                     <button onClick={onClose} className="text-slate-400 hover:text-slate-600 transition shrink-0 mt-0.5">
                         <X className="w-5 h-5" />

@@ -4,6 +4,7 @@ import { encryptAES, decryptAES } from '../../lib/crypto';
 import { writeAuditLog } from './auditActions';
 import { SYSTEM_TEMPLATE_NAMES } from '../../lib/systemTemplates';
 import { NOTIFICATION_MANAGER_ROLES } from '../../lib/notificationPermissions';
+import { formatRocDateOnly } from '../../lib/rocDate';
 import { after } from 'next/server';
 import {
     getNotificationAttachmentContentType,
@@ -1051,7 +1052,7 @@ async function executeScheduleInternal(
             const vars: Record<string, string> = {
                 '案號': row.case_number,
                 '申請人': applicantName,
-                '申請日期': row.apply_at ? new Date(row.apply_at).toLocaleDateString('zh-TW') : '',
+                '申請日期': formatRocDateOnly(row.apply_at),
                 '缺件天數': String(Math.floor((Date.now() - new Date(row.apply_at).getTime()) / 86400000)),
             };
 

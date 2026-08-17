@@ -181,7 +181,7 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
                                         <span className="text-amber-700">請聯絡管理員設定 LINE 官方帳號 ID（系統設定 → line_official_account_id）</span>
                                     )}
                                 </li>
-                                <li>於 LINE 對 bot 傳送下方 6 位數字綁定碼</li>
+                                <li>於 LINE 對 bot 傳送下方 WMCMS- 開頭的 6 碼 Base32 綁定碼</li>
                                 <li>收到「綁定成功」訊息即完成</li>
                             </ol>
 

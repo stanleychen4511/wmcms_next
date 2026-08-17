@@ -62,7 +62,8 @@ import { useToast } from './FloatingToast';
 import { useModalDismiss } from '../hooks/useModalDismiss';
 import { clsx } from 'clsx';
 import { DateInput } from './DateInput';
-import { formatTaipeiDateTime, todayDateOnly } from '../lib/dateOnly';
+import { todayDateOnly } from '../lib/dateOnly';
+import { formatRocDateOnly, formatRocDateTime } from '../lib/rocDate';
 import { applyPlaceholders } from '../lib/notificationUtils';
 import { getNotificationTemplateLabel } from '../lib/systemTemplates';
 import {
@@ -559,7 +560,7 @@ function HistoricalMedicalReceiptsModal({ rows, onClose, onPreview }: HistoryMod
                                             ${r.disbursementAmount.toLocaleString()}
                                         </td>
                                         <td className="px-2 py-2 text-xs text-slate-500">
-                                            {r.uploadedAt ? formatTaipeiDateTime(r.uploadedAt) : '—'}
+                                            {r.uploadedAt ? formatRocDateTime(r.uploadedAt) : '—'}
                                         </td>
                                         <td className="px-2 py-2 text-center">
                                             <button
@@ -1152,7 +1153,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
         if (printOperatorTooltip || !d.lastPrintedAt) return;
         const r = await fetchLastPrintMeta(operatorUserId, d.id);
         if (r.success && r.data) {
-            const t = r.data.printedAt ? formatTaipeiDateTime(r.data.printedAt) : '';
+            const t = r.data.printedAt ? formatRocDateTime(r.data.printedAt) : '';
             setPrintOperatorTooltip(`${t}　by ${r.data.operatorName ?? '—'}`);
         }
     };
@@ -1284,17 +1285,22 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                         <span className={`inline-flex items-center gap-1 text-xs px-2 py-0.5 rounded ${stageBadgeColor}`}>
                             {stageLabel}
                         </span>
+                        {d.isLegacyImport && (
+                            <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-amber-100 text-amber-700 rounded">
+                                初始匯入
+                            </span>
+                        )}
                         {d.receivedAt && (
                             <span className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-green-100 text-green-700 rounded">
                                 <CheckCircle className="w-3 h-3" />
-                                已回收 {d.receivedAt}
+                                已回收 {formatRocDateOnly(d.receivedAt)}
                             </span>
                         )}
                         {d.lastPrintedAt && (
                             <span
                                 className="inline-flex items-center gap-1 text-xs px-2 py-0.5 bg-slate-100 text-slate-600 rounded cursor-help"
                                 onMouseEnter={handlePrintTooltipHover}
-                                title={printOperatorTooltip || `已列印 ${formatTaipeiDateTime(d.lastPrintedAt)}`}
+                                title={printOperatorTooltip || `已列印 ${formatRocDateTime(d.lastPrintedAt)}`}
                             >
                                 📄 已列印
                             </span>
@@ -1305,7 +1311,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                         {d.payeeName && (
                             <span>· 具領：{d.payeeName}（{d.payeeRelation ?? ''}{d.payeeRelation === '其他' && d.payeeRelationOther ? `：${d.payeeRelationOther}` : ''}）</span>
                         )}
-                        {d.sentAt && <span>· 寄出 {d.sentAt}</span>}
+                        {d.sentAt && <span>· 寄出 {formatRocDateOnly(d.sentAt)}</span>}
                     </div>
                     {d.notes && <p className="text-xs text-slate-600 mt-1">備註：{d.notes}</p>}
                     {/* 「檢視」按鈕群（領款收據 / 醫療收據 / 申請表 / 家訪 / 董事審核）：
@@ -2193,10 +2199,10 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                     <div className="flex items-center gap-1 font-medium text-slate-600">
                         <History className="w-3 h-3" />簽核歷程
                     </div>
-                    {d.officerSignedAt    && <div>個管師送出：{formatTaipeiDateTime(d.officerSignedAt)}</div>}
-                    {d.supervisorSignedAt && <div>主管送出：{formatTaipeiDateTime(d.supervisorSignedAt)}</div>}
-                    {d.accountantSignedAt && <div>會計送出：{formatTaipeiDateTime(d.accountantSignedAt)}</div>}
-                    {d.executiveSignedAt  && <div>執行長完成：{formatTaipeiDateTime(d.executiveSignedAt)}</div>}
+                    {d.officerSignedAt    && <div>個管師送出：{formatRocDateTime(d.officerSignedAt)}</div>}
+                    {d.supervisorSignedAt && <div>主管送出：{formatRocDateTime(d.supervisorSignedAt)}</div>}
+                    {d.accountantSignedAt && <div>會計送出：{formatRocDateTime(d.accountantSignedAt)}</div>}
+                    {d.executiveSignedAt  && <div>執行長完成：{formatRocDateTime(d.executiveSignedAt)}</div>}
                 </div>
             )}
             {/* 紙本掃描檔預覽 modal — 與行政初審文件預覽相同機制（浮水印 + 防右鍵 + 防下載） */}
@@ -2257,7 +2263,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
             {showHomeVisit && auxData?.homeVisit && (() => {
                 const hv = auxData.homeVisit;
                 const sections: InfoSection[] = [
-                    { label: '訪視日期', value: hv.visitDate },
+                    { label: '訪視日期', value: formatRocDateOnly(hv.visitDate) },
                     { label: '訪視員', value: [hv.visitorName, hv.visitorTitle].filter(Boolean).join('・') || null },
                     { label: '本人陳述', value: hv.selfReportedCondition, multiline: true },
                     { label: '對病情的反應', value: [hv.diseaseReactionStatus, hv.diseaseReactionOther].filter(Boolean).join('｜') || null },
@@ -2286,7 +2292,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                 const formatAmount = (amount: number | null) =>
                     amount != null ? `NT$ ${amount.toLocaleString()}` : '未填寫';
                 const formatDate = (value: string | null) =>
-                    value ? formatTaipeiDateTime(value) ?? '' : '';
+                    value ? formatRocDateTime(value) : '';
                 const rounds = br.rounds.length > 0
                     ? br.rounds
                     : [{

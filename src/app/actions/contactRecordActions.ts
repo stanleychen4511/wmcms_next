@@ -144,7 +144,7 @@ function normalizeSpecialAttention(input: ContactRecordInput): { isSpecialAttent
     };
 }
 
-const REJECT_REASON_CODES = ['1','2','3','4','5','6','7'];
+const REJECT_REASON_CODES = ['1','2','3','4','5','6','7','8'];
 
 function decryptName(enc: Buffer | null, iv: Buffer | null, fallback = '系統'): string {
     if (!enc || !iv) return fallback;

@@ -126,10 +126,6 @@ export function LoginPage({ onLogin }: LoginPageProps) {
                             {isLoading ? '登入中...' : '登入'}
                         </button>
                     </form>
-
-                    <p className="text-center text-slate-500 text-xs mt-6">
-                        預設測試帳號：<span className="text-slate-400 font-mono">admin_01</span> / 密碼 <span className="text-slate-400 font-mono">Password123!</span>
-                    </p>
                 </div>
             </div>
 

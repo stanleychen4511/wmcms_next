@@ -17,6 +17,7 @@ import {
     type ApplicantHomeVisit,
 } from '../app/actions/homeVisitActions';
 import { useToast } from './FloatingToast';
+import { formatRocDateOnly } from '../lib/rocDate';
 
 interface ApplicantHistoryPageProps {
     applicantName: string;
@@ -193,7 +194,7 @@ function ApplicationsSection({ activeRecord, sortedRecords, isLoading, onSelectA
                         <div>
                             <p className="font-semibold text-blue-800">目前進行中的申請</p>
                             <p className="text-sm text-blue-600">
-                                申請日期 {activeRecord.appliedAt}・目前進度：
+                                申請日期 {formatRocDateOnly(activeRecord.appliedAt)}・目前進度：
                                 <span className={`inline-flex items-center px-2 py-0.5 rounded-full text-xs font-medium ml-1 ${STAGE_COLORS[activeRecord.stage]}`}>
                                     {STAGE_LABELS[activeRecord.stage]}
                                 </span>
@@ -254,7 +255,7 @@ function ApplicationsSection({ activeRecord, sortedRecords, isLoading, onSelectA
                                             isRejected ? 'cursor-pointer hover:bg-rose-50 group opacity-80' : '',
                                         ].join(' ')}
                                     >
-                                        <td className="py-3.5 px-4 text-gray-700 font-medium">{rec.appliedAt}</td>
+                                        <td className="py-3.5 px-4 text-gray-700 font-medium">{formatRocDateOnly(rec.appliedAt)}</td>
                                         <td className="py-3.5 px-4">
                                             <span className={`inline-flex items-center px-2.5 py-0.5 rounded-full text-xs font-medium ${STAGE_COLORS[rec.stage]}`}>
                                                 {STAGE_LABELS[rec.stage]}
@@ -363,7 +364,7 @@ function CareSection({ applicantUserId, applicantName, loggedInUserId, canCreate
         setModalOpen(true);
     };
     const handleDelete = async (r: ContactRecord) => {
-        if (!confirm(`確定刪除 ${r.contactDate} 的紀錄？`)) return;
+        if (!confirm(`確定刪除 ${formatRocDateOnly(r.contactDate)} 的紀錄？`)) return;
         const res = await deleteContactRecord(loggedInUserId, r.id);
         if (res.success) {
             await loadRecords();
@@ -492,7 +493,7 @@ function CareSection({ applicantUserId, applicantName, loggedInUserId, canCreate
                                         }`}>
                                             {STATUS_LABEL_HERE[hv.caseStatus] ?? hv.caseStatus}
                                         </span>
-                                        <span className="text-xs text-slate-600 font-mono shrink-0">{hv.visitDate ?? '—'}</span>
+                                        <span className="text-xs text-slate-600 font-mono shrink-0">{formatRocDateOnly(hv.visitDate) || '—'}</span>
                                         {hv.visitorName && (
                                             <span className="text-xs text-slate-500 shrink-0">
                                                 · 訪視者：{hv.visitorName}{hv.visitorTitle ? `（${hv.visitorTitle}）` : ''}
@@ -534,7 +535,7 @@ function CareSection({ applicantUserId, applicantName, loggedInUserId, canCreate
                                                     {r.caseNumber}
                                                 </span>
                                             )}
-                                            <span className="text-xs text-slate-600 font-mono shrink-0">{r.contactDate}</span>
+                                            <span className="text-xs text-slate-600 font-mono shrink-0">{formatRocDateOnly(r.contactDate)}</span>
                                             <span className="text-xs text-slate-500 shrink-0">· {r.handlerName}</span>
                                             <span className="text-xs text-slate-700 truncate">{summary}</span>
                                             {r.createdAt !== r.updatedAt && (
@@ -585,7 +586,7 @@ function CareSection({ applicantUserId, applicantName, loggedInUserId, canCreate
             {openHomeVisit && (() => {
                 const hv = openHomeVisit;
                 const sections: InfoSection[] = [
-                    { label: '訪視日期', value: hv.visitDate },
+                    { label: '訪視日期', value: formatRocDateOnly(hv.visitDate) },
                     { label: '訪視員', value: [hv.visitorName, hv.visitorTitle].filter(Boolean).join('・') || null },
                     { label: '本人陳述', value: hv.selfReportedCondition, multiline: true },
                     { label: '對病情的反應', value: [hv.diseaseReactionStatus, hv.diseaseReactionOther].filter(Boolean).join('｜') || null },
@@ -601,7 +602,7 @@ function CareSection({ applicantUserId, applicantName, loggedInUserId, canCreate
                 return (
                     <InfoSheetModal
                         title={`家訪關懷紀錄表 — ${hv.caseNumber}`}
-                        headline={`${STATUS_LABEL_HERE[hv.caseStatus] ?? hv.caseStatus}　訪視日期：${hv.visitDate ?? '—'}`}
+                        headline={`${STATUS_LABEL_HERE[hv.caseStatus] ?? hv.caseStatus}　訪視日期：${formatRocDateOnly(hv.visitDate) || '—'}`}
                         sections={sections}
                         images={hv.photoUrls}
                         onClose={() => setOpenHomeVisit(null)}

@@ -887,7 +887,7 @@ export function NewApplicationPage({
                     {/* 出生年月日 */}
                     <div>
                         <label className="block text-sm font-semibold text-slate-700 mb-1.5">
-                            出生年月日（西元）<span className="text-red-500 ml-1">*</span>
+                            出生年月日（民國）<span className="text-red-500 ml-1">*</span>
                         </label>
                         <DateInput
                             value={applicantDob}
@@ -1281,11 +1281,12 @@ export function NewApplicationPage({
                                     const raw = e.target.value.replace(/\D/g, '');
                                     let v: number | '' = raw === '' ? '' : Number(raw);
                                     // 即時 clamp：超過上限直接修正為上限
-                                    if (v !== '' && effectiveApplyCap > 0 && v > effectiveApplyCap) {
+                                    const exceedsApplyCap = v !== '' && effectiveApplyCap > 0 && v > effectiveApplyCap;
+                                    if (exceedsApplyCap) {
                                         v = effectiveApplyCap;
                                     }
                                     setApplyAmount(v);
-                                    if (v !== '' && effectiveApplyCap > 0 && Number(v) >= effectiveApplyCap) {
+                                    if (exceedsApplyCap) {
                                         setApplyAmountError(`上限為 NT$${effectiveApplyCap.toLocaleString()} 元`);
                                     } else {
                                         setApplyAmountError('');

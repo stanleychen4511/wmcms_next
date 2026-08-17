@@ -14,6 +14,7 @@ import { Phone, Heart, ChevronDown, ChevronUp, Loader2, AlertTriangle } from 'lu
 import { fetchContactRecords, type ContactRecord } from '../app/actions/contactRecordActions';
 import { RECORD_TYPE_LABEL } from '../lib/contactRecordConstants';
 import { ContactRecordModal } from './ContactRecordModal';
+import { formatRocDateOnly } from '../lib/rocDate';
 
 interface Props {
     applicantUserId: string;
@@ -99,7 +100,7 @@ export function ContactRecordsQuickView({ applicantUserId, applicantName, operat
                                             <AlertTriangle className="w-3 h-3" />特殊注意
                                         </span>
                                     )}
-                                    <span className="font-mono">{r.contactDate}</span>
+                                    <span className="font-mono">{formatRocDateOnly(r.contactDate)}</span>
                                     {r.handlerName && <span>· 處理者 {r.handlerName}</span>}
                                     {r.callerName && <span>· {r.callerName}{r.callerPhone ? `（${r.callerPhone}）` : ''}</span>}
                                 </div>
