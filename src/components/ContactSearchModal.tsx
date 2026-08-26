@@ -488,6 +488,11 @@ export function ContactSearchModal({ operatorUserId, onClose }: Props) {
                                     {r.callerPhone && (
                                         <span className="text-xs text-slate-500 font-mono shrink-0">{r.callerPhone}</span>
                                     )}
+                                    {r.callerPhoneFromCallerId && (
+                                        <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">
+                                            來電顯示
+                                        </span>
+                                    )}
                                     {/* 6. 摘要 — 佔可用空間 */}
                                     <span className="text-xs text-slate-700 truncate flex-1">
                                         {r.summary?.trim() || '（無摘要）'}

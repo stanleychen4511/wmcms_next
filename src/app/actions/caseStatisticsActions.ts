@@ -15,6 +15,7 @@ import { pool } from '../../lib/db';
 import { formatDateOnly } from '../../lib/dateOnly';
 import { decryptAES } from '../../lib/crypto';
 import { writeAuditLog } from './auditActions';
+import { boardApplicationAccessSql, isRestrictedBoardViewer } from '../../lib/applicationAccess';
 
 const VIEW_ROLES = ['admin', 'supervisor', 'chairman', 'board_member'] as const;
 type ViewRole = typeof VIEW_ROLES[number];
@@ -197,6 +198,12 @@ export async function fetchCaseStatistics(
 
     const client = await pool.connect();
     try {
+        const queryParams: unknown[] = [fromDate, toDate];
+        let boardAccessWhere = '';
+        if (await isRestrictedBoardViewer(client, operatorUserId)) {
+            queryParams.push(operatorUserId);
+            boardAccessWhere = `AND ${boardApplicationAccessSql('a', `$${queryParams.length}`)}`;
+        }
         // 一次撈出範圍內所有案件 + 必要關聯
         // 含 application_type, case_number, status, officer_id, application_way,
         //    referral_unit_id, apply_at；以及 officer 姓名 / referral unit 名稱
@@ -219,8 +226,9 @@ export async function fetchCaseStatistics(
              LEFT JOIN referral_units ru  ON ru.id = a.referral_unit_id
              WHERE a.apply_at IS NOT NULL
                AND a.apply_at >= $1::date
-               AND a.apply_at <  ($2::date + INTERVAL '1 day')`,
-            [fromDate, toDate]
+               AND a.apply_at <  ($2::date + INTERVAL '1 day')
+               ${boardAccessWhere}`,
+            queryParams
         );
 
         // ── 聚合 ──
@@ -434,6 +442,11 @@ export async function fetchCaseStatisticsDrillDown(
 
     const client = await pool.connect();
     try {
+        let boardAccessWhere = '';
+        if (await isRestrictedBoardViewer(client, operatorUserId)) {
+            params.push(operatorUserId);
+            boardAccessWhere = `AND ${boardApplicationAccessSql('a', `$${params.length}`)}`;
+        }
         const res = await client.query(
             `SELECT
                  a.id::text          AS id,
@@ -453,6 +466,7 @@ export async function fetchCaseStatisticsDrillDown(
                AND a.apply_at <  ($2::date + INTERVAL '1 day')
                AND a.status = ANY($3::text[])
                ${extraWhere}
+               ${boardAccessWhere}
              ORDER BY a.apply_at DESC`,
             params
         );

@@ -92,6 +92,7 @@ export function ContactRecordModal({
     const [callerName, setCallerName] = useState(existingRecord?.callerName ?? '');
     const [callerGender, setCallerGender] = useState<Gender | ''>(existingRecord?.callerGender ?? '');
     const [callerPhone, setCallerPhone] = useState(existingRecord?.callerPhone ?? '');
+    const [callerPhoneFromCallerId, setCallerPhoneFromCallerId] = useState(existingRecord?.callerPhoneFromCallerId ?? false);
     const [fromSource, setFromSource] = useState(existingRecord?.fromSource ?? '');
     const [consultantType, setConsultantType] = useState(existingRecord?.consultantType ?? '');
     const [consultProgram, setConsultProgram] = useState(existingRecord?.consultProgram ?? '');
@@ -168,6 +169,7 @@ export function ContactRecordModal({
             setCallerName(existingRecord.callerName ?? '');
             setCallerGender(existingRecord.callerGender ?? '');
             setCallerPhone(existingRecord.callerPhone ?? '');
+            setCallerPhoneFromCallerId(existingRecord.callerPhoneFromCallerId);
             setFromSource(existingRecord.fromSource ?? '');
             setConsultantType(existingRecord.consultantType ?? '');
             setConsultProgram(existingRecord.consultProgram ?? '');
@@ -305,6 +307,7 @@ export function ContactRecordModal({
                 callerName: callerName.trim() || null,
                 callerGender: callerGender || null,
                 callerPhone: callerPhone.trim() || null,
+                callerPhoneFromCallerId: recordType === '1' && !!callerPhone.trim() && callerPhoneFromCallerId,
                 applicationId: recordType === '2' ? (applicationId || null) : null,
                 fromSource: fromSource || null,
                 consultantType: consultantType || null,
@@ -511,15 +514,28 @@ export function ContactRecordModal({
                                 </div>
                                 <div>
                                     <label className="text-xs font-medium text-slate-600 flex items-center gap-1 h-4">
-                                        <Phone className="w-3 h-3" />聯絡方式
+                                        <Phone className="w-3 h-3" />聯絡方式（選填）
                                     </label>
                                     <input
                                         type="text" maxLength={50}
                                         value={callerPhone}
-                                        onChange={e => setCallerPhone(e.target.value)}
+                                        onChange={e => {
+                                            setCallerPhone(e.target.value);
+                                            if (!e.target.value.trim()) setCallerPhoneFromCallerId(false);
+                                        }}
                                         className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
                                         placeholder="電話 / LINE / Email"
                                     />
+                                    <label className={`mt-2 inline-flex items-center gap-2 text-xs ${callerPhone.trim() ? 'text-slate-600 cursor-pointer' : 'text-slate-400 cursor-not-allowed'}`}>
+                                        <input
+                                            type="checkbox"
+                                            checked={callerPhoneFromCallerId}
+                                            disabled={!callerPhone.trim()}
+                                            onChange={e => setCallerPhoneFromCallerId(e.target.checked)}
+                                            className="accent-blue-600"
+                                        />
+                                        此號碼由來電顯示取得
+                                    </label>
                                 </div>
                             </div>
 

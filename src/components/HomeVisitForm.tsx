@@ -133,12 +133,13 @@ export function HomeVisitForm({ applicationId, visitorUserId, readOnly = false, 
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            const data = await fetchHomeVisit(applicationId);
+            if (!visitorUserId) throw new Error('缺少操作人員資訊');
+            const data = await fetchHomeVisit(applicationId, visitorUserId);
             if (data) setForm(data);
         } finally {
             setLoading(false);
         }
-    }, [applicationId]);
+    }, [applicationId, visitorUserId]);
 
     useEffect(() => { loadData(); }, [loadData]);
 

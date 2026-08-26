@@ -288,12 +288,13 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
     const loadDocs = useCallback(async (silent = false) => {
         if (!silent) setLoading(true);
         try {
-            const result = await fetchApplicationDocuments(applicationId);
+            if (!userId) throw new Error('缺少操作人員資訊');
+            const result = await fetchApplicationDocuments(applicationId, userId);
             setDocs(result);
         } finally {
             if (!silent) setLoading(false);
         }
-    }, [applicationId]);
+    }, [applicationId, userId]);
 
     useEffect(() => { loadDocs(false); }, [loadDocs, reloadKey]);
 

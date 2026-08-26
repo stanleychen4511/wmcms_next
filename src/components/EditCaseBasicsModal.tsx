@@ -6,8 +6,10 @@ import { fetchActiveReferralUnits, createReferralUnit } from '../app/actions/ref
 import { useToast } from './FloatingToast';
 import { useModalDismiss } from '../hooks/useModalDismiss';
 import { DateInput } from './DateInput';
+import { todayDateOnly } from '../lib/dateOnly';
 
 export interface EditCaseBasicsInitial {
+    applyAt?: string | null;
     applicantName: string;
     applicantEmail?: string | null;
     /** 申請人聯絡電話（必填） */
@@ -54,6 +56,8 @@ interface Props {
 export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, onClose, onSaved }: Props) {
     useModalDismiss(onClose);
     const { push: pushToast } = useToast();
+    const [applyAt, setApplyAt] = useState(initial.applyAt ?? '');
+    const [applyAtError, setApplyAtError] = useState('');
     const [applicantName, setApplicantName] = useState(initial.applicantName ?? '');
     const [applicantEmail, setApplicantEmail] = useState(initial.applicantEmail ?? '');
     const [emailError, setEmailError] = useState('');
@@ -124,6 +128,15 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
 
     function validate(): boolean {
         let ok = true;
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(applyAt)) {
+            setApplyAtError('請選擇申請日');
+            ok = false;
+        } else if (applyAt > todayDateOnly()) {
+            setApplyAtError('申請日不可晚於今天');
+            ok = false;
+        } else {
+            setApplyAtError('');
+        }
         const trimmed = applicantName.trim();
         if (trimmed.length < 1) { setNameError('姓名為必填'); ok = false; }
         else if (trimmed.length > 50) { setNameError('姓名不可超過 50 字'); ok = false; }
@@ -214,6 +227,7 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
 
             // Build patch with only fields that differ from initial
             const patch: UpdateApplicationBasicsPatch = {};
+            if (applyAt !== (initial.applyAt ?? '')) patch.applyAt = applyAt;
             const trimmedName = applicantName.trim();
             if (trimmedName !== (initial.applicantName ?? '')) patch.applicantName = trimmedName;
             const trimmedEmail = applicantEmail.trim();
@@ -282,6 +296,21 @@ export function EditCaseBasicsModal({ applicationId, operatorUserId, initial, on
                 </div>
 
                 <div className="p-5 space-y-4 overflow-y-auto">
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1">
+                            申請日 <span className="text-red-500">*</span>
+                        </label>
+                        <DateInput
+                            value={applyAt}
+                            onChange={value => { setApplyAt(value); setApplyAtError(''); }}
+                            className={`w-full px-3 py-2 border rounded-lg text-sm focus:outline-none focus:ring-2 transition ${
+                                applyAtError ? 'border-red-400 focus:ring-red-200' : 'border-slate-300 focus:ring-blue-200 focus:border-blue-400'
+                            }`}
+                        />
+                        {applyAtError && <p className="text-xs text-red-500 mt-1">{applyAtError}</p>}
+                        <p className="text-xs text-slate-400 mt-1">紙本申請可依郵戳日期調整；案號不會隨申請日變更。</p>
+                    </div>
+
                     {/* 姓名 */}
                     <div>
                         <label className="block text-sm font-semibold text-slate-700 mb-1">

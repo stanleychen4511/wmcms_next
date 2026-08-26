@@ -22,6 +22,7 @@ import { writeAuditLog } from './auditActions';
 // 'use server' 檔案不可 export 非 async function；常數與型別搬到 lib/paymentDisbursementConstants.ts
 import { REVIEW_STAGE_LABEL, type ReviewStage } from '../../lib/paymentDisbursementConstants';
 import { formatDateOnly } from '../../lib/dateOnly';
+import { canViewApplication } from '../../lib/applicationAccess';
 import {
     getNotificationAttachmentContentType,
     hasValidNotificationAttachmentContent,
@@ -329,6 +330,9 @@ export async function fetchDisbursements(
 
     const client = await pool.connect();
     try {
+        if (!(await canViewApplication(client, operatorUserId, applicationId))) {
+            return { success: false, error: '權限不足' };
+        }
         const appRes = await client.query(
             `SELECT approved_amount FROM applications WHERE id = $1::bigint`,
             [applicationId]
@@ -1040,6 +1044,9 @@ export async function fetchCaseAuxiliaryData(
 
     const client = await pool.connect();
     try {
+        if (!(await canViewApplication(client, operatorUserId, applicationId))) {
+            return { success: false, error: '權限不足' };
+        }
         // 申請表（doc id=1, case-level）
         const docRes = await client.query(
             `SELECT file_path FROM application_documents

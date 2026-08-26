@@ -3,6 +3,7 @@
 import { pool } from '../../lib/db';
 import { writeAuditLog } from './auditActions';
 import { formatDateOnly } from '../../lib/dateOnly';
+import { canViewApplication } from '../../lib/applicationAccess';
 
 const VIEW_ROLES_FOR_HISTORY = ['case_officer', 'supervisor', 'accountant', 'executive', 'admin', 'volunteer'];
 
@@ -150,9 +151,10 @@ export interface HomeVisitData {
     visitor_recommendations_other?: string;
 }
 
-export async function fetchHomeVisit(applicationId: string): Promise<HomeVisitData | null> {
+export async function fetchHomeVisit(applicationId: string, operatorUserId: string): Promise<HomeVisitData | null> {
     const client = await pool.connect();
     try {
+        if (!(await canViewApplication(client, operatorUserId, applicationId))) return null;
         const res = await client.query(
             `SELECT * FROM home_visit WHERE application_id = $1 LIMIT 1`,
             [applicationId]

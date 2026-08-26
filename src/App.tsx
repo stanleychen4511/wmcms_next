@@ -391,12 +391,13 @@ function App() {
         }
         const scrollY = silent ? window.scrollY : 0;
         try {
-            const detail = await fetchApplicationDetail(id);
+            if (!loggedInUser) throw new Error('尚未登入');
+            const detail = await fetchApplicationDetail(id, loggedInUser.id, role);
             if (seq !== detailLoadSeqRef.current) return;
             setAppDetail(detail);
 
             try {
-                const docs = await fetchApplicationDocuments(id);
+                const docs = await fetchApplicationDocuments(id, loggedInUser.id);
                 if (seq !== detailLoadSeqRef.current) return;
                 setDbDocs(docs);
             } catch (docErr) {
@@ -444,7 +445,7 @@ function App() {
                 requestAnimationFrame(() => window.scrollTo({ top: scrollY, behavior: 'instant' as ScrollBehavior }));
             }
         }
-    }, [pushToast]);
+    }, [loggedInUser, pushToast, role]);
 
     // Per-application pending-doc reminder counter (for detail-view banner)
     const [reminderStatus, setReminderStatus] = useState<{ count: number; threshold: number; lastReminderAt: string | null } | null>(null);
@@ -682,10 +683,11 @@ function App() {
     useEffect(() => {
         const currentDisplayedStage = viewedStage ?? (appDetail?.stage as WorkflowStage | undefined) ?? 'admin_review';
         if (view !== 'detail' || !selectedAppId || currentDisplayedStage !== 'board_review' || !canViewRejectedClosedAllStages) return;
-        fetchBoardReviewSignatures(selectedAppId).then(res => {
+        if (!loggedInUser) return;
+        fetchBoardReviewSignatures(selectedAppId, loggedInUser.id).then(res => {
             if (res.success && res.data) setSignatureStatus(res.data);
         });
-    }, [view, selectedAppId, viewedStage, appDetail?.stage, canViewRejectedClosedAllStages]);
+    }, [view, selectedAppId, viewedStage, appDetail?.stage, canViewRejectedClosedAllStages, loggedInUser]);
 
     useEffect(() => {
         // 載入兩個子類型的補助上限（取代舊 max_apply_amount 設定）
@@ -820,9 +822,11 @@ function App() {
             // 注意：判定的是「目前正在操作的 role」而非「使用者被授權的所有角色」，
             // 這樣多角色帳號（例：volunteer + case_officer）切到 volunteer 視野時也會生效。
             const isActingAsVolunteer = role === 'volunteer';
-            const data = await fetchCaseSummaries(
-                isActingAsVolunteer && loggedInUser ? { volunteerOnlyFilterUserId: loggedInUser.id } : undefined
-            );
+            const data = await fetchCaseSummaries({
+                operatorUserId: loggedInUser?.id ?? '',
+                actingRole: role,
+                volunteerOnlyFilterUserId: isActingAsVolunteer ? loggedInUser?.id : undefined,
+            });
             setDbCases(data);
             
             // Also fetch officer list for filtering and assignment
@@ -847,12 +851,12 @@ function App() {
     const loadApplicantHistory = useCallback(async (id: string) => {
         setHistoryLoading(true);
         try {
-            const data = await fetchApplicantHistory(id);
+            const data = await fetchApplicantHistory(id, loggedInUser?.id ?? '', role);
             setDbHistory(data);
         } finally {
             setHistoryLoading(false);
         }
-    }, []);
+    }, [loggedInUser?.id, role]);
 
     useEffect(() => {
         if (view === 'history' && selectedPersonId) {
@@ -1810,7 +1814,7 @@ function App() {
                             readOnly={contentReadOnly || (!hasPermission('case_officer') && !hasPermission('admin') && !hasPermission('supervisor'))}
                             onRefresh={() => {
                                 if (selectedAppId) {
-                                    fetchApplicationDocuments(selectedAppId).then(setDbDocs);
+                                    if (loggedInUser) fetchApplicationDocuments(selectedAppId, loggedInUser.id).then(setDbDocs);
                                 }
                             }}
                         />
@@ -2475,7 +2479,7 @@ function App() {
                             readOnly={contentReadOnly || (!hasPermission('accountant') && !hasPermission('case_officer') && !hasPermission('admin') && !hasPermission('supervisor'))}
                             onRefresh={() => {
                                 if (selectedAppId) {
-                                    fetchApplicationDocuments(selectedAppId).then(setDbDocs);
+                                    if (loggedInUser) fetchApplicationDocuments(selectedAppId, loggedInUser.id).then(setDbDocs);
                                 }
                             }}
                         />
@@ -2503,7 +2507,7 @@ function App() {
         setLastDocs([]);
         // Reload documents
         if (selectedAppId) {
-            fetchApplicationDocuments(selectedAppId).then(setDbDocs);
+            if (loggedInUser) fetchApplicationDocuments(selectedAppId, loggedInUser.id).then(setDbDocs);
         }
     };
 
@@ -3001,7 +3005,7 @@ function App() {
                                 emphasize={true}
                                 onSaved={() => loadAppDetail(selectedAppId, true)}
                             />
-                            <BoardVoteCard applicationId={selectedAppId} refreshKey={boardRefreshKey} />
+                            <BoardVoteCard applicationId={selectedAppId} currentUserId={loggedInUser!.id} refreshKey={boardRefreshKey} />
                             {appDetail.boardReviewRounds && appDetail.boardReviewRounds.length > 0 && (
                                 <div className="bg-white rounded-lg border border-purple-100 shadow-sm p-4 space-y-3">
                                     <div>
@@ -3608,6 +3612,7 @@ function App() {
                     applicationId={selectedAppId}
                     operatorUserId={loggedInUser.id}
                     initial={{
+                        applyAt: appDetail.applyAt ?? '',
                         applicantName: appDetail.applicantName ?? '',
                         applicantEmail: appDetail.applicantEmail ?? '',
                         applicantPhone: appDetail.applicantPhone ?? '',
@@ -3657,6 +3662,7 @@ function App() {
                     operatorUserId={loggedInUser.id}
                     stage={appDetail?.stage}
                     mode="early"
+                    hasCompletedDisbursements={appDetail?.hasCompletedDisbursements}
                     onClose={() => setShowEarlyCloseModal(false)}
                     onClosed={async () => {
                         setShowEarlyCloseModal(false);

@@ -11,6 +11,7 @@ import {
 } from '../../lib/stageMaps';
 import { writeAuditLog } from './auditActions';
 import { fetchSetting } from './settingsActions';
+import { canViewApplication } from '../../lib/applicationAccess';
 
 export interface BoardReconsiderationRequest {
     id: string;
@@ -97,6 +98,8 @@ export interface ApplicationDetail {
     approvedAmount?: number | null;
     /** 通過案件未全額撥款即結案時的原因；NULL 表示正常核銷結案 */
     earlyCloseReason?: string | null;
+    /** 是否已有完成撥款；有則不可改列為不通過歸檔 */
+    hasCompletedDisbursements?: boolean;
     boardReviewComments?: string | null;
     boardReviewRounds?: BoardReviewRound[];
     boardReconsideration?: BoardReconsiderationRequest | null;
@@ -419,11 +422,16 @@ async function checkBoardSignatureGate(
     return { ok: true };
 }
 
-export async function fetchApplicationDetail(applicationId: string): Promise<ApplicationDetail | null> {
+export async function fetchApplicationDetail(
+    applicationId: string,
+    operatorUserId: string,
+    actingRole?: string,
+): Promise<ApplicationDetail | null> {
     // Reject mock store IDs (e.g. 'app-010-a') which are not valid bigints
-    if (!isValidDbId(applicationId)) return null;
+    if (!isValidDbId(applicationId) || !isValidDbId(operatorUserId)) return null;
     const client = await pool.connect();
     try {
+        if (!(await canViewApplication(client, operatorUserId, applicationId, actingRole))) return null;
         // Join with application_workflow to get the ACTUAL current stage
         const res = await client.query(`
             SELECT
@@ -445,6 +453,10 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
                 a.age, a.moveable_property, a.immoveable_property,
                 a.annual_income, a.marital_status, a.has_children, a.underage_children_count, a.adult_children_count,
                 a.apply_amount, a.approved_amount, a.early_close_reason, a.board_review_comments,
+                EXISTS (
+                    SELECT 1 FROM payment_disbursements paid_pd
+                    WHERE paid_pd.application_id = a.id AND paid_pd.review_stage = '9'
+                ) AS has_completed_disbursements,
                 a.application_way, a.referral_unit_id,
                 ru.name AS referral_unit_name_legacy,
                 a.referral_unit_name      AS referral_unit_name_text,
@@ -724,6 +736,7 @@ export async function fetchApplicationDetail(applicationId: string): Promise<App
             applyAmount: row.apply_amount != null ? Number(row.apply_amount) : null,
             approvedAmount: row.approved_amount != null ? Number(row.approved_amount) : null,
             earlyCloseReason: row.early_close_reason ?? null,
+            hasCompletedDisbursements: row.has_completed_disbursements === true,
             boardReviewComments,
             boardReviewRounds,
             boardReconsideration: boardReconsiderationHistory[0] ?? null,
@@ -1872,6 +1885,18 @@ export async function closeCaseWithReasons(
     const client = await pool.connect();
     try {
         await client.query('BEGIN');
+
+        // 已完成撥款的案件不可改列不通過；避免財務紀錄與案件結果互相矛盾。
+        const completedPaymentRes = await client.query(
+            `SELECT 1 FROM payment_disbursements
+             WHERE application_id = $1::bigint AND review_stage = '9'
+             LIMIT 1`,
+            [applicationId]
+        );
+        if ((completedPaymentRes.rowCount ?? 0) > 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '此案件已有完成撥款，不可列入不通過歸檔；請改用「停止後續補助」' };
+        }
 
         // 取當下 stage（若 caller 沒傳）；append-only 後須取「最新一列」
         let actualStage = stage ?? null;

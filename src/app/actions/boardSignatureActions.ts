@@ -5,6 +5,7 @@ import { pool } from '../../lib/db';
 import { hashPassword } from '../../lib/crypto';
 import { decryptAES } from '../../lib/crypto';
 import { writeAuditLog } from './auditActions';
+import { canViewApplication } from '../../lib/applicationAccess';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -513,10 +514,14 @@ export async function submitBoardSignature(
 
 export async function fetchBoardReviewSignatures(
     applicationId: string,
+    operatorUserId: string,
 ): Promise<ActionResult<BoardReviewSignatureStatus>> {
-    if (!/^\d+$/.test(applicationId)) return { success: false, error: '無效的案件 ID' };
+    if (!/^\d+$/.test(applicationId) || !/^\d+$/.test(operatorUserId)) return { success: false, error: '無效的案件或操作人員 ID' };
     const client = await pool.connect();
     try {
+        if (!(await canViewApplication(client, operatorUserId, applicationId))) {
+            return { success: false, error: '無權限查看此案件' };
+        }
         const groupId = await loadAssignedGroupId(client, applicationId);
         if (!groupId) {
             return {

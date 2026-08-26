@@ -30,6 +30,7 @@ export interface ContactRecord {
     callerName: string | null;
     callerGender: 'M' | 'F' | 'U' | null;
     callerPhone: string | null;
+    callerPhoneFromCallerId: boolean;
 
     applicationId: string | null;
     caseNumber: string | null;
@@ -70,6 +71,7 @@ export interface ContactRecordInput {
     callerName?: string | null;
     callerGender?: 'M' | 'F' | 'U' | null;
     callerPhone?: string | null;
+    callerPhoneFromCallerId?: boolean;
     applicationId?: string | null;
     fromSource?: string | null;
     consultantType?: string | null;
@@ -180,6 +182,7 @@ function rowToContactRecord(r: any): ContactRecord {
         callerName: r.caller_name ?? null,
         callerGender: r.caller_gender ?? null,
         callerPhone: r.caller_phone ?? null,
+        callerPhoneFromCallerId: r.caller_phone_from_caller_id === true,
         applicationId: r.application_id != null ? String(r.application_id) : null,
         caseNumber: r.case_number ?? null,
         fromSource: r.from_source ?? null,
@@ -207,6 +210,7 @@ const SELECT_COLS = `
     cr.caller_name,
     cr.caller_gender,
     cr.caller_phone,
+    cr.caller_phone_from_caller_id,
     cr.application_id,
     a.case_number,
     cr.from_source,
@@ -316,6 +320,9 @@ export async function createContactRecord(
     const summary = (input.summary ?? '').trim();
     const callerName = (input.callerName ?? '').trim();
     const callerPhone = (input.callerPhone ?? '').trim();
+    const callerPhoneFromCallerId = input.recordType === '1'
+        && !!callerPhone
+        && input.callerPhoneFromCallerId === true;
     // 來電紀錄：caller_name 與 caller_phone 至少一項；關懷紀錄：applicant_user_id 必填
     if (input.recordType === '1' && !callerName && !callerPhone) {
         return { success: false, error: '來電紀錄至少需填寫姓名或聯絡方式' };
@@ -348,15 +355,15 @@ export async function createContactRecord(
         const insRes = await client.query(
             `INSERT INTO contact_records
                 (record_type, contact_date, handler_user_id,
-                 applicant_user_id, caller_name, caller_gender, caller_phone,
+                 applicant_user_id, caller_name, caller_gender, caller_phone, caller_phone_from_caller_id,
                  application_id, from_source, consultant_type, consult_program,
                  reject_reasons, summary, is_special_attention, special_attention_note, media_urls,
                  contacted_party, contacted_party_other)
              VALUES ($1, $2::date, $3::bigint,
-                     $4, $5, $6, $7,
-                     $8, $9, $10, $11,
-                     $12::text[], $13, $14, $15, $16::text[],
-                     $17, $18)
+                     $4, $5, $6, $7, $8,
+                     $9, $10, $11, $12,
+                     $13::text[], $14, $15, $16, $17::text[],
+                     $18, $19)
              RETURNING id::text`,
             [
                 input.recordType, input.contactDate, operatorUserId,
@@ -364,6 +371,7 @@ export async function createContactRecord(
                 callerName || null,
                 input.callerGender ?? null,
                 callerPhone || null,
+                callerPhoneFromCallerId,
                 input.applicationId ?? null,
                 input.fromSource ?? null,
                 input.consultantType ?? null,
@@ -939,6 +947,9 @@ export async function updateContactRecord(
     const summary = (input.summary ?? '').trim();
     const callerName = (input.callerName ?? '').trim();
     const callerPhone = (input.callerPhone ?? '').trim();
+    const callerPhoneFromCallerId = input.recordType === '1'
+        && !!callerPhone
+        && input.callerPhoneFromCallerId === true;
     if (input.recordType === '1' && !callerName && !callerPhone) {
         return { success: false, error: '來電紀錄至少需填寫姓名或聯絡方式' };
     }
@@ -970,18 +981,20 @@ export async function updateContactRecord(
             `UPDATE contact_records
              SET record_type = $1, contact_date = $2::date,
                  applicant_user_id = $3, caller_name = $4, caller_gender = $5, caller_phone = $6,
-                 application_id = $7, from_source = $8, consultant_type = $9, consult_program = $10,
-                 reject_reasons = $11::text[], summary = $12,
-                 is_special_attention = $13, special_attention_note = $14, media_urls = $15::text[],
-                 contacted_party = $16, contacted_party_other = $17,
+                 caller_phone_from_caller_id = $7,
+                 application_id = $8, from_source = $9, consultant_type = $10, consult_program = $11,
+                 reject_reasons = $12::text[], summary = $13,
+                 is_special_attention = $14, special_attention_note = $15, media_urls = $16::text[],
+                 contacted_party = $17, contacted_party_other = $18,
                  updated_at = NOW()
-             WHERE id = $18::bigint`,
+              WHERE id = $19::bigint`,
             [
                 input.recordType, input.contactDate,
                 input.applicantUserId ?? null,
                 callerName || null,
                 input.callerGender ?? null,
                 callerPhone || null,
+                callerPhoneFromCallerId,
                 input.applicationId ?? null,
                 input.fromSource ?? null,
                 input.consultantType ?? null,

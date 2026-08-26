@@ -14,6 +14,7 @@ import { pool } from '../../lib/db';
 import { decryptAES } from '../../lib/crypto';
 import { CLOSE_REASON_LABEL } from '../../lib/closeReasonConstants';
 import { formatDateOnly } from '../../lib/dateOnly';
+import { boardApplicationAccessSql, isRestrictedBoardViewer } from '../../lib/applicationAccess';
 
 const ALLOWED_ROLES = ['admin', 'supervisor', 'board_member', 'executive', 'chairman'];
 
@@ -190,6 +191,10 @@ export async function fetchSelfPayMedicalReport(
 
     const client = await pool.connect();
     try {
+        if (await isRestrictedBoardViewer(client, operatorUserId)) {
+            params.push(operatorUserId);
+            where.push(boardApplicationAccessSql('a', `$${params.length}`));
+        }
         // append-only workflow 語意：每筆 row 的 stage = 「案件推進到此 stage 的事件」（target stage）。
         // 「行政審核通過」記錄在 stage='home_visit' AND is_approved=true 的列（離開 admin_review、進入家訪）；
         // 「董事審核通過」記錄在 stage='reimbursement' AND is_approved=true 的列（離開董事審核、進入核銷）。
@@ -333,6 +338,10 @@ export async function fetchDisbursementReport(
 
     const client = await pool.connect();
     try {
+        if (await isRestrictedBoardViewer(client, operatorUserId)) {
+            params.push(operatorUserId);
+            where.push(boardApplicationAccessSql('a', `$${params.length}`));
+        }
         // 先查每案的撥款記錄（包含 0 筆撥款的案件 → 仍出現在報表，撥款欄位空）
         const sql = `
             SELECT a.id, a.case_number, a.apply_at, a.application_way,
@@ -424,6 +433,11 @@ export async function fetchRejectedReport(
 
     const client = await pool.connect();
     try {
+        const restrictBoard = await isRestrictedBoardViewer(client, operatorUserId);
+        if (restrictBoard) {
+            params.push(operatorUserId);
+            where.push(boardApplicationAccessSql('a', `$${params.length}`));
+        }
         const sql = `
             WITH reasons AS (
                 SELECT application_id,
@@ -479,7 +493,10 @@ export async function fetchRejectedReport(
             ORDER BY ra.apply_at ASC, ra.id ASC
             LIMIT 5000
         `;
-        const archiveRes = await client.query(archiveSql, archiveParams);
+        // 獨立建立的未通過歸檔沒有董事簽核關聯；一般董事不得看到。
+        const archiveRows = restrictBoard
+            ? []
+            : (await client.query(archiveSql, archiveParams)).rows;
 
         const out: Array<RejectedReportRow & { _sortAt: string; _sortKey: string }> = res.rows.map((r) => {
             const reasonRows: Array<{ code: string; detail: string | null }> = Array.isArray(r.reason_rows)
@@ -504,7 +521,7 @@ export async function fetchRejectedReport(
                 _sortKey: r.case_number ?? '',
             };
         });
-        for (const r of archiveRes.rows) {
+        for (const r of archiveRows) {
             const reasonRows: Array<{ code: string; detail: string | null }> = Array.isArray(r.reason_rows)
                 ? r.reason_rows.map((j: any) => ({ code: j.code, detail: j.detail ?? null }))
                 : [];

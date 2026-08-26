@@ -172,6 +172,11 @@ export function ApplicationCareRecordsModal({ applicationId, applicantUserId, ca
                                                     <Phone className="w-3 h-3" />{r.callerPhone}
                                                 </span>
                                             )}
+                                            {isPhone && r.callerPhoneFromCallerId && (
+                                                <span className="text-[10px] px-1.5 py-0.5 rounded bg-indigo-50 text-indigo-700 border border-indigo-200 shrink-0">
+                                                    來電顯示
+                                                </span>
+                                            )}
                                             <span className="text-xs text-slate-700 truncate flex-1">{summary}</span>
                                         </button>
                                         {expanded && (

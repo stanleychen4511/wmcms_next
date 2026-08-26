@@ -1,11 +1,12 @@
 'use server';
 
 import { pool } from '../../lib/db';
-import { formatDateOnly } from '../../lib/dateOnly';
+import { formatDateOnly, todayDateOnly } from '../../lib/dateOnly';
 import { generateBlindIndex } from '../../lib/crypto';
 import { CaseSummary, ApplicationRecord, WorkflowStage, ApplicationStatus } from '../../types';
 import { STATUS_TO_STAGE, DB_STAGE_TO_FRONTEND, STATUS_LABEL } from '../../lib/stageMaps';
 import { writeAuditLog } from './auditActions';
+import { boardApplicationAccessSql, isRestrictedBoardViewer } from '../../lib/applicationAccess';
 
 export interface ApplicationStatusResult {
     found: boolean;
@@ -178,6 +179,15 @@ function generateTempPassword(): string {
     return Math.random().toString(36).substring(2, 12);
 }
 
+function isValidDateOnly(value: string): boolean {
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(value)) return false;
+    const [year, month, day] = value.split('-').map(Number);
+    const parsed = new Date(Date.UTC(year, month - 1, day));
+    return parsed.getUTCFullYear() === year
+        && parsed.getUTCMonth() === month - 1
+        && parsed.getUTCDate() === day;
+}
+
 export async function createNewApplication(
     name: string,
     idNumber: string,
@@ -210,6 +220,8 @@ export async function createNewApplication(
     treatmentPhase: 'B' | 'A' | 'X' | '' = '',
     _emailVerificationToken: string = '',
     _referralEmailVerificationToken: string = '',
+    /** 實際申請日（紙本可依郵戳填寫），YYYY-MM-DD；案號仍以建檔日編排 */
+    applicationDate: string = '',
 ): Promise<{ success: boolean; caseId?: string; error?: string }> {
     const isEconomicWeak = subsidySubtype === '1';
     // 內部新增案件不需 Email 驗證；經濟弱勢主要聯繫轉介單位，申請人 Email 可空白。
@@ -240,6 +252,13 @@ export async function createNewApplication(
     }
     if (treatmentPhase !== 'B' && treatmentPhase !== 'A' && treatmentPhase !== 'X') {
         return { success: false, error: '請選擇欲申請治療項目（治療完成三個月以內／治療未開始／兩者皆有）' };
+    }
+    const trimmedApplicationDate = (applicationDate ?? '').trim();
+    if (!isValidDateOnly(trimmedApplicationDate)) {
+        return { success: false, error: '請填寫有效的申請日（YYYY-MM-DD）' };
+    }
+    if (trimmedApplicationDate > todayDateOnly()) {
+        return { success: false, error: '申請日不可晚於今天' };
     }
     // 案件來源與轉介單位驗證：way='1' 時一律寫 NULL；way='2' 時須提供轉介單位
     //   - 可從 referral_units 表選（referralUnitId）
@@ -374,15 +393,27 @@ export async function createNewApplication(
         }
 
         // 3. Generate sequential case_number (format: A<民國年3碼><流水號3碼>, total 7 chars)
-        const now = new Date();
         // Taiwanese calendar year = Western year - 1911
-        const rocYear = String(now.getFullYear() - 1911).padStart(3, '0');
+        const createdYear = Number(todayDateOnly().slice(0, 4));
+        const rocYear = String(createdYear - 1911).padStart(3, '0');
         const typePrefix = applicationType.toUpperCase();
-        const countRes = await client.query(
-            `SELECT count(*) as total FROM applications WHERE case_number LIKE $1`,
-            [`${typePrefix}${rocYear}%`]
+        // 同一類別、同一建檔年度共用交易鎖，避免同時建案產生重複案號。
+        await client.query(
+            `SELECT pg_advisory_xact_lock(hashtext($1)::bigint)`,
+            [`case-number:${typePrefix}:${rocYear}`]
         );
-        const count = parseInt(countRes.rows[0].total) + 1;
+        const countRes = await client.query(
+            `SELECT COALESCE(MAX(RIGHT(case_number, 3)::integer), 0) AS max_sequence
+             FROM applications
+             WHERE case_number LIKE $1
+               AND case_number ~ $2`,
+            [`${typePrefix}${rocYear}%`, `^${typePrefix}${rocYear}[0-9]{3}$`]
+        );
+        const count = Number(countRes.rows[0].max_sequence) + 1;
+        if (count > 999) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '本年度此類別案號已達 999 筆上限，請聯絡系統管理員' };
+        }
         const caseNumber = `${typePrefix}${rocYear}${count.toString().padStart(3, '0')}`; // e.g. D115003 (7 chars)
 
         // 4. Create the application — status '1' = 審核中 (per spec)
@@ -401,10 +432,10 @@ export async function createNewApplication(
                 subsidy_subtype, applicant_phone,
                 applicant_dob, cancer_type, cancer_stage,
                 application_form, treatment_phase
-            ) VALUES ($1, $2, $3, '1', NOW(), $4, $5, $6, $7::bigint, $8, $9, $10, $11, $12, $13, $14, $15::date, $16, $17, $18, $19)
+            ) VALUES ($1, $2, $3, '1', $4::date, $5, $6, $7, $8::bigint, $9, $10, $11, $12, $13, $14, $15, $16::date, $17, $18, $19, $20)
             RETURNING id;
         `, [
-            caseNumber, applicantId, officerId, typePrefix, applyAmount ?? null, way, effectiveUnitId,
+            caseNumber, applicantId, officerId, trimmedApplicationDate, typePrefix, applyAmount ?? null, way, effectiveUnitId,
             referralInfo?.unitName?.trim() || null,
             referralInfo?.contactName?.trim() || null,
             referralInfo?.contactTitle?.trim() || null,
@@ -433,7 +464,7 @@ export async function createNewApplication(
             action: 'application.create',
             targetType: 'application',
             targetId: String(newCaseId),
-            detail: { caseNumber, officerAccount },
+            detail: { caseNumber, officerAccount, applicationDate: trimmedApplicationDate },
         });
         return { success: true, caseId: newCaseId };
 
@@ -451,24 +482,37 @@ export async function createNewApplication(
  * Used for the main inquiry list page.
  */
 export async function fetchCaseSummaries(
-    options?: { volunteerOnlyFilterUserId?: string }
+    options: { volunteerOnlyFilterUserId?: string; operatorUserId: string; actingRole?: string }
 ): Promise<CaseSummary[]> {
     // 志工視野過濾（#11）：只回家訪指派為該志工的案件
     // 上層應只在「使用者僅有 volunteer 角色，沒有 case_officer/admin 等廣權限」時傳入此參數
-    const volunteerFilter = options?.volunteerOnlyFilterUserId;
+    const volunteerFilter = options.volunteerOnlyFilterUserId;
     const useVolunteerFilter = !!(volunteerFilter && /^\d+$/.test(volunteerFilter));
+    const operatorUserId = options.operatorUserId;
+    if (!/^\d+$/.test(operatorUserId)) return [];
 
     const client = await pool.connect();
     try {
-        // applicants_for_volunteer：依 home_visit_assignee_id 比對，只看這位志工被指派的案件
+        const params: unknown[] = [];
+        const accessWhere: string[] = [];
+        if (useVolunteerFilter) {
+            params.push(volunteerFilter);
+            accessWhere.push(`a.home_visit_assignee_id = $${params.length}::bigint`);
+        }
+        const restrictBoard = await isRestrictedBoardViewer(client, operatorUserId, options.actingRole);
+        if (restrictBoard) {
+            params.push(operatorUserId);
+            accessWhere.push(boardApplicationAccessSql('a', `$${params.length}`));
+        }
+
+        // 先建立授權案件集合，後續統計與最新案件都只能使用集合內資料。
         const queryText = `
-            ${useVolunteerFilter ? `
-            WITH applicants_for_volunteer AS (
-                SELECT DISTINCT a.applicant_id
+            WITH authorized_apps AS (
+                SELECT a.*
                 FROM applications a
-                WHERE a.home_visit_assignee_id = $1::bigint
+                ${accessWhere.length > 0 ? `WHERE ${accessWhere.join(' AND ')}` : ''}
             ),
-            ` : 'WITH '}consumed_amounts AS (
+            consumed_amounts AS (
                 SELECT
                     a.applicant_id,
                     a.subsidy_subtype,
@@ -477,7 +521,7 @@ export async function fetchCaseSummaries(
                         WHEN a.status = '4' THEN COALESCE(a.approved_amount, 0)
                         ELSE 0
                     END AS amount
-                FROM applications a
+                FROM authorized_apps a
                 LEFT JOIN LATERAL (
                     SELECT SUM(amount) AS total_amount
                     FROM payment_disbursements pd
@@ -485,7 +529,6 @@ export async function fetchCaseSummaries(
                       AND pd.review_stage IS DISTINCT FROM 'X'
                 ) pd ON TRUE
                 WHERE a.status IN ('3', '4')
-                ${useVolunteerFilter ? 'AND a.applicant_id IN (SELECT applicant_id FROM applicants_for_volunteer)' : ''}
             ),
             consumed_stats AS (
                 SELECT
@@ -499,9 +542,8 @@ export async function fetchCaseSummaries(
                     a.applicant_id,
                     COUNT(*) as app_count,
                     COALESCE(cs.total_approved, 0) as total_approved
-                FROM applications a
+                FROM authorized_apps a
                 LEFT JOIN consumed_stats cs ON cs.applicant_id = a.applicant_id
-                ${useVolunteerFilter ? 'WHERE a.applicant_id IN (SELECT applicant_id FROM applicants_for_volunteer)' : ''}
                 GROUP BY a.applicant_id, cs.total_approved
             ),
             latest_apps AS (
@@ -519,7 +561,7 @@ export async function fetchCaseSummaries(
                     u_off.account as officer_account,
                     w.stage as wf_stage,
                     bra.group_id AS board_group_id
-                FROM applications a
+                FROM authorized_apps a
                 LEFT JOIN users u_off ON u_off.id = a.officer_id
                 LEFT JOIN LATERAL (
                     SELECT stage FROM application_workflow
@@ -527,7 +569,6 @@ export async function fetchCaseSummaries(
                     ORDER BY id DESC LIMIT 1
                 ) w ON TRUE
                 LEFT JOIN board_review_assignments bra ON bra.application_id = a.id
-                ${useVolunteerFilter ? 'WHERE a.applicant_id IN (SELECT applicant_id FROM applicants_for_volunteer)' : ''}
                 ORDER BY a.applicant_id, a.apply_at DESC
             )
             SELECT
@@ -569,7 +610,6 @@ export async function fetchCaseSummaries(
             ) latest_attention ON TRUE
             ORDER BY l.apply_at DESC NULLS LAST
         `;
-        const params = useVolunteerFilter ? [volunteerFilter] : [];
         const res = await client.query(queryText, params);
 
         const { decryptAES } = await import('../../lib/crypto');
@@ -663,9 +703,21 @@ export async function assignOfficerBatch(
 /**
  * Fetch all historical application records for a specific applicant.
  */
-export async function fetchApplicantHistory(applicantId: string): Promise<ApplicationRecord[]> {
+export async function fetchApplicantHistory(
+    applicantId: string,
+    operatorUserId: string,
+    actingRole?: string,
+): Promise<ApplicationRecord[]> {
+    if (!/^\d+$/.test(applicantId) || !/^\d+$/.test(operatorUserId)) return [];
     const client = await pool.connect();
     try {
+        const params: unknown[] = [applicantId];
+        const restrictBoard = await isRestrictedBoardViewer(client, operatorUserId, actingRole);
+        let boardWhere = '';
+        if (restrictBoard) {
+            params.push(operatorUserId);
+            boardWhere = ` AND ${boardApplicationAccessSql('a', `$${params.length}`)}`;
+        }
         // Append-only workflow：每案多列；用 LATERAL 取最新一列當作目前 stage
         const res = await client.query(`
             SELECT
@@ -673,7 +725,7 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
                 u_off.name_enc as off_name_enc, u_off.name_iv as off_name_iv,
                 u_off.account as officer_account,
                 w.stage as wf_stage,
-                latest_attention.special_attention_note
+                ${restrictBoard ? 'NULL::text' : 'latest_attention.special_attention_note'} AS special_attention_note
             FROM applications a
             LEFT JOIN users u_off ON u_off.id = a.officer_id
             LEFT JOIN LATERAL (
@@ -681,17 +733,17 @@ export async function fetchApplicantHistory(applicantId: string): Promise<Applic
                 WHERE application_id = a.id
                 ORDER BY id DESC LIMIT 1
             ) w ON TRUE
-            LEFT JOIN LATERAL (
+            ${restrictBoard ? '' : `LEFT JOIN LATERAL (
                 SELECT cr.special_attention_note
                 FROM contact_records cr
                 WHERE cr.applicant_user_id = a.applicant_id
                   AND cr.is_special_attention = TRUE
                 ORDER BY cr.contact_date DESC, cr.created_at DESC
                 LIMIT 1
-            ) latest_attention ON TRUE
-            WHERE a.applicant_id = $1
+            ) latest_attention ON TRUE`}
+            WHERE a.applicant_id = $1${boardWhere}
             ORDER BY a.apply_at DESC
-        `, [applicantId]);
+        `, params);
 
         // Get applicant name for the record (we could also pass it in or fetch once)
         const nameRes = await client.query('SELECT name_enc, name_iv FROM users WHERE id = $1', [applicantId]);
@@ -946,6 +998,8 @@ export async function updateApplicantContact(
 }
 
 export interface UpdateApplicationBasicsPatch {
+    /** 實際申請日 YYYY-MM-DD；僅行政初審階段可修改 */
+    applyAt?: string;
     applicantName?: string;
     applicantEmail?: string | null;
     /** 申請人聯絡電話；不可清空 */
@@ -1028,7 +1082,7 @@ export async function updateApplicationBasics(
 
         // ── Step a: load current values + workflow stage ───────────────────
         const caseRes = await client.query(
-            `SELECT a.status, a.officer_id, a.applicant_id,
+            `SELECT a.status, a.officer_id, a.applicant_id, a.apply_at,
                     a.application_type, a.application_way, a.referral_unit_id,
                     a.referral_unit_name, a.referral_contact_name,
                     a.referral_contact_title, a.referral_contact_phone, a.referral_contact_email,
@@ -1091,6 +1145,29 @@ export async function updateApplicationBasics(
         // ── Step d: normalize & validate referral fields ───────────────────
         // 申請類別不可修改（鎖住與 case_number 首字母的對應），僅讀取現值供後續 UPDATE 使用
         const currentType = row.application_type;
+
+        const currentApplyAt = formatDateOnly(row.apply_at) ?? '';
+        let applyAtChanged = false;
+        let nextApplyAt = currentApplyAt;
+        if (patch.applyAt !== undefined) {
+            const value = patch.applyAt.trim();
+            if (row.wf_stage !== 'admin_review') {
+                await client.query('ROLLBACK');
+                return { success: false, error: '申請日僅能在行政初審階段修改' };
+            }
+            if (!isValidDateOnly(value)) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '請填寫有效的申請日（YYYY-MM-DD）' };
+            }
+            if (value > todayDateOnly()) {
+                await client.query('ROLLBACK');
+                return { success: false, error: '申請日不可晚於今天' };
+            }
+            if (value !== currentApplyAt) {
+                applyAtChanged = true;
+                nextApplyAt = value;
+            }
+        }
 
         const nextWay: '1' | '2' = (patch.applicationWay ?? row.application_way ?? '1') as '1' | '2';
         if (nextWay !== '1' && nextWay !== '2') {
@@ -1300,6 +1377,12 @@ export async function updateApplicationBasics(
         const before: Record<string, unknown> = {};
         const after: Record<string, unknown> = {};
 
+        if (applyAtChanged) {
+            changedFields.push('applyAt');
+            before.applyAt = currentApplyAt || null;
+            after.applyAt = nextApplyAt;
+        }
+
         if (nameActuallyChanged) {
             changedFields.push('applicantName');
             before.applicantName = oldApplicantName;
@@ -1443,6 +1526,10 @@ export async function updateApplicationBasics(
             if (treatmentPhaseChanged) {
                 params.push(nextTreatmentPhase);
                 sets.push(`treatment_phase = $${params.length}`);
+            }
+            if (applyAtChanged) {
+                params.push(nextApplyAt);
+                sets.push(`apply_at = $${params.length}::date`);
             }
             params.push(applicationId);
             await client.query(

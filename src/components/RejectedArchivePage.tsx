@@ -139,7 +139,7 @@ export function RejectedArchivePage({ username, operatorUserId, onBack, onGoHome
                             不通過原因 <span className="text-rose-500">*</span>
                         </h3>
                         <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
-                            {CLOSE_REASON_OPTIONS.filter(opt => opt.code !== '99').map(opt => {
+                            {CLOSE_REASON_OPTIONS.map(opt => {
                                 const checked = !!reasons[opt.code]?.checked;
                                 return (
                                     <label

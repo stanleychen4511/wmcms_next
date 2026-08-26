@@ -9,6 +9,7 @@ import { formatRocDateTime } from '../lib/rocDate';
 
 interface Props {
     applicationId: string;
+    currentUserId: string;
     /** Forces re-fetch when parent signals a refresh (e.g. after re-assignment). */
     refreshKey?: number;
 }
@@ -18,14 +19,14 @@ interface Props {
  * This component has NO vote interface — voting per member was removed in
  * favor of the collaborative draft model (see saveBoardReviewDraft).
  */
-export function BoardVoteCard({ applicationId, refreshKey }: Props) {
+export function BoardVoteCard({ applicationId, currentUserId, refreshKey }: Props) {
     const [info, setInfo] = useState<CaseBoardInfo | null>(null);
     const [loading, setLoading] = useState(true);
     const [error, setError] = useState<string | null>(null);
 
     const load = useCallback(async () => {
         setLoading(true);
-        const res = await fetchBoardGroupForCase(applicationId);
+        const res = await fetchBoardGroupForCase(applicationId, currentUserId);
         if (res.success) {
             setInfo(res.data ?? null);
             setError(null);
@@ -33,7 +34,7 @@ export function BoardVoteCard({ applicationId, refreshKey }: Props) {
             setError(res.error ?? '載入派組資訊失敗');
         }
         setLoading(false);
-    }, [applicationId]);
+    }, [applicationId, currentUserId]);
 
     useEffect(() => { void load(); }, [load, refreshKey]);
 

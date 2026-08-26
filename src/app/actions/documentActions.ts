@@ -4,6 +4,7 @@ import { pool } from '../../lib/db';
 import path from 'path';
 import { writeAuditLog } from './auditActions';
 import { uploadFile } from '../../lib/storage';
+import { canViewApplication } from '../../lib/applicationAccess';
 
 /**
  * Count pages in a file buffer by extension.
@@ -653,12 +654,13 @@ export async function updateDocumentStatus(
     }
 }
 
-export async function fetchApplicationDocuments(applicationId: string): Promise<DocumentEntry[]> {
+export async function fetchApplicationDocuments(applicationId: string, operatorUserId: string): Promise<DocumentEntry[]> {
     // Reject mock store IDs (e.g. 'app-010-a') which are not valid bigints
-    if (!/^\d+$/.test(applicationId)) return [];
+    if (!/^\d+$/.test(applicationId) || !/^\d+$/.test(operatorUserId)) return [];
 
     const client = await pool.connect();
     try {
+        if (!(await canViewApplication(client, operatorUserId, applicationId))) return [];
         // Load document type config from DB (with storage location path)
         const configRes = await client.query(`
             WITH RECURSIVE loc_path AS (

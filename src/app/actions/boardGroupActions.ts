@@ -3,6 +3,7 @@
 import { pool } from '../../lib/db';
 import { decryptAES } from '../../lib/crypto';
 import { writeAuditLog } from './auditActions';
+import { canViewApplication } from '../../lib/applicationAccess';
 import { fetchSetting } from './settingsActions';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
@@ -548,10 +549,14 @@ export async function batchAutoAssignCases(
 
 export async function fetchBoardGroupForCase(
     applicationId: string,
+    operatorUserId: string,
 ): Promise<ActionResult<CaseBoardInfo | null>> {
-    if (!/^\d+$/.test(applicationId)) return { success: false, error: '無效的案件 ID' };
+    if (!/^\d+$/.test(applicationId) || !/^\d+$/.test(operatorUserId)) return { success: false, error: '無效的案件或操作人員 ID' };
     const client = await pool.connect();
     try {
+        if (!(await canViewApplication(client, operatorUserId, applicationId))) {
+            return { success: false, error: '無權限查看此案件' };
+        }
         const assignRes = await client.query(
             `SELECT a.group_id::text, g.name AS group_name,
                     a.assigned_at, a.assigned_by::text, a.assign_mode

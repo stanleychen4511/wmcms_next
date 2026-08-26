@@ -34,7 +34,7 @@ export function BoardSignaturePanel({ applicationId, currentUserId, refreshKey, 
 
     const load = useCallback(async () => {
         setLoading(true);
-        const res = await fetchBoardReviewSignatures(applicationId);
+        const res = await fetchBoardReviewSignatures(applicationId, currentUserId);
         if (res.success && res.data) {
             setStatus(res.data);
             setError(null);
@@ -43,7 +43,7 @@ export function BoardSignaturePanel({ applicationId, currentUserId, refreshKey, 
             setError(res.error ?? '載入簽章狀態失敗');
         }
         setLoading(false);
-    }, [applicationId, onChange]);
+    }, [applicationId, currentUserId, onChange]);
 
     useEffect(() => { void load(); }, [load, refreshKey]);
 

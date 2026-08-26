@@ -7,6 +7,7 @@ import { useToast } from './FloatingToast';
 import { ApplicationForm } from './ApplicationForm';
 import { ContactSearchModal } from './ContactSearchModal';
 import { DateInput } from './DateInput';
+import { todayDateOnly } from '../lib/dateOnly';
 import type { ApplicantFormValues } from '../schemas/applicant';
 
 interface NewApplicationPageProps {
@@ -150,6 +151,8 @@ export function NewApplicationPage({
     const [contactSearchOpen, setContactSearchOpen] = useState(false);
     const { push: pushToast } = useToast();
     const [name, setName] = useState('');
+    const [applicationDate, setApplicationDate] = useState(todayDateOnly());
+    const [applicationDateError, setApplicationDateError] = useState('');
     const [idNumber, setIdNumber] = useState('');
     const [email, setEmail] = useState('');
     const [emailError, setEmailError] = useState('');
@@ -354,6 +357,15 @@ export function NewApplicationPage({
             ok = false;
         } else {
             setNameError('');
+        }
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(applicationDate)) {
+            setApplicationDateError('請選擇申請日');
+            ok = false;
+        } else if (applicationDate > todayDateOnly()) {
+            setApplicationDateError('申請日不可晚於今天');
+            ok = false;
+        } else {
+            setApplicationDateError('');
         }
         const trimmedEmail = email.trim();
         if (subsidySubtype === '1') {
@@ -573,6 +585,7 @@ export function NewApplicationPage({
                 treatmentPhase || '',
                 '',
                 '',
+                applicationDate,
             );
             if (res.success && res.caseId) {
                 // 寫入資格預審資料（婚姻 / 子女 / 收入 / 動產 / 不動產 / 經濟弱勢專屬）
@@ -798,6 +811,23 @@ export function NewApplicationPage({
 
                 {/* ===== 詳細資料 card — 查詢後再填寫 ===== */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-6 space-y-5">
+                    <div>
+                        <label className="block text-sm font-semibold text-slate-700 mb-1.5">
+                            申請日（民國）<span className="text-red-500 ml-1">*</span>
+                        </label>
+                        <DateInput
+                            value={applicationDate}
+                            onChange={value => { setApplicationDate(value); setApplicationDateError(''); }}
+                            className={`w-full px-3 py-2.5 rounded-lg border text-sm focus:outline-none focus:ring-2 transition ${
+                                applicationDateError
+                                    ? 'border-red-400 focus:ring-red-200 bg-red-50'
+                                    : 'border-gray-300 focus:ring-blue-200 focus:border-blue-400'
+                            }`}
+                        />
+                        {applicationDateError && <p className="text-xs text-red-500 mt-1">{applicationDateError}</p>}
+                        <p className="text-xs text-slate-400 mt-1">紙本申請請依郵戳日期填寫；案號仍依系統建檔日期編排。</p>
+                    </div>
+
                     {/* 姓名 */}
                     <div>
                         <label className="block text-sm font-semibold text-slate-700 mb-1.5">
