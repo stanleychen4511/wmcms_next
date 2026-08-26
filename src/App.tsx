@@ -508,9 +508,7 @@ function App() {
         if (id) {
             queueMicrotask(() => { void loadAppDetail(id, true); });
         }
-    // loadAppDetail 在這個檔案是 useCallback 且 deps=[]，identity 穩定
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, []);
+    }, [loadAppDetail]);
     // 核銷階段：撥款是否已全部回收（DisbursementPanel callback 設定），決定能否結案
     const [canCloseCase, setCanCloseCase] = useState(false);
     const [closeCaseBlockReason, setCloseCaseBlockReason] = useState<string | null>(null);
@@ -655,7 +653,7 @@ function App() {
             setDetailError(null);
             return;
         }
-        if (view === 'detail' && selectedAppId) {
+        if (view === 'detail' && selectedAppId && loggedInUser) {
             const timer = window.setTimeout(() => {
                 loadAppDetail(selectedAppId);
                 loadNotifLogs(selectedAppId);
@@ -669,7 +667,7 @@ function App() {
             });
             return () => window.clearTimeout(timer);
         }
-    }, [view, selectedAppId, loadAppDetail, loadNotifLogs, loadReminderStatus]);
+    }, [view, selectedAppId, loggedInUser, loadAppDetail, loadNotifLogs, loadReminderStatus]);
 
     // Refresh "is group member?" whenever the app detail shows a board_review case
     useEffect(() => {
