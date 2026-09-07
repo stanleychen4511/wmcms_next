@@ -198,12 +198,10 @@ export async function fetchCaseStatistics(
 
     const client = await pool.connect();
     try {
+        // 統計總覽只回傳彙總數字，不含個案姓名或逐案資料。
+        // 一般董事也應看到全體案件的整體統計；只有 drill-down 明細才套用
+        // 「獲派／已簽章案件」的董事資料範圍限制。
         const queryParams: unknown[] = [fromDate, toDate];
-        let boardAccessWhere = '';
-        if (await isRestrictedBoardViewer(client, operatorUserId)) {
-            queryParams.push(operatorUserId);
-            boardAccessWhere = `AND ${boardApplicationAccessSql('a', `$${queryParams.length}`)}`;
-        }
         // 一次撈出範圍內所有案件 + 必要關聯
         // 含 application_type, case_number, status, officer_id, application_way,
         //    referral_unit_id, apply_at；以及 officer 姓名 / referral unit 名稱
@@ -226,8 +224,7 @@ export async function fetchCaseStatistics(
              LEFT JOIN referral_units ru  ON ru.id = a.referral_unit_id
              WHERE a.apply_at IS NOT NULL
                AND a.apply_at >= $1::date
-               AND a.apply_at <  ($2::date + INTERVAL '1 day')
-               ${boardAccessWhere}`,
+               AND a.apply_at <  ($2::date + INTERVAL '1 day')`,
             queryParams
         );
 
