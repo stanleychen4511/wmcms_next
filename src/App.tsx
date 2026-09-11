@@ -591,7 +591,7 @@ function App() {
 
     // 董事審核 tab：可見成員清單 + 預設選自己（若有），否則第一位
     //   - 自己是組員 → 只看自己 + 其他組員（chairman 第三審時要能看到其他董事的決定當參考）
-    //   - supervisor / admin / chairman → 看全部
+    //   - supervisor / admin / chairman / executive → 看全部
     //   - 其他角色 → 空清單（顯示「您不在派組成員中」）
     const userRolesListForTabs = (loggedInUser?.roles ?? []) as Role[];
     const canViewRejectedClosedAllStages = !!(
@@ -609,6 +609,7 @@ function App() {
     const canViewAllMemberTabs = userRolesListForTabs.includes('supervisor')
         || userRolesListForTabs.includes('admin')
         || userRolesListForTabs.includes('chairman' as Role)
+        || userRolesListForTabs.includes('executive')
         || canViewRejectedClosedAllStages;
     const visibleBoardMembers = (() => {
         const all = signatureStatus?.members ?? [];
@@ -680,12 +681,13 @@ function App() {
 
     useEffect(() => {
         const currentDisplayedStage = viewedStage ?? (appDetail?.stage as WorkflowStage | undefined) ?? 'admin_review';
-        if (view !== 'detail' || !selectedAppId || currentDisplayedStage !== 'board_review' || !canViewRejectedClosedAllStages) return;
+        const signaturePanelHandlesLoad = appDetail?.stage === 'board_review' && appDetail?.status === '1';
+        if (view !== 'detail' || !selectedAppId || currentDisplayedStage !== 'board_review' || signaturePanelHandlesLoad) return;
         if (!loggedInUser) return;
         fetchBoardReviewSignatures(selectedAppId, loggedInUser.id).then(res => {
             if (res.success && res.data) setSignatureStatus(res.data);
         });
-    }, [view, selectedAppId, viewedStage, appDetail?.stage, canViewRejectedClosedAllStages, loggedInUser]);
+    }, [view, selectedAppId, viewedStage, appDetail?.stage, appDetail?.status, loggedInUser]);
 
     useEffect(() => {
         // 載入兩個子類型的補助上限（取代舊 max_apply_amount 設定）
