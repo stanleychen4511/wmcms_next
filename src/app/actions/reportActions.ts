@@ -6,6 +6,7 @@
  * 1. fetchSelfPayMedicalReport     — 自費醫療（status IN '1','3','4'）
  * 2. fetchDisbursementReport       — 自費醫療補助款項（一筆撥款一列）
  * 3. fetchRejectedReport           — 自費醫療_未通過（status='2'）
+ * 4. fetchContactStatsReport       — 來電紀錄統計（WMCMS-1）
  *
  * 權限：admin / supervisor / board_member / executive / chairman
  */
@@ -15,6 +16,7 @@ import { decryptAES } from '../../lib/crypto';
 import { CLOSE_REASON_LABEL } from '../../lib/closeReasonConstants';
 import { formatDateOnly } from '../../lib/dateOnly';
 import { boardApplicationAccessSql, isRestrictedBoardViewer } from '../../lib/applicationAccess';
+import { aggregateContactStats, type ContactStatsRow, type ContactStatsSummary } from '../../lib/contactStats';
 
 const ALLOWED_ROLES = ['admin', 'supervisor', 'board_member', 'executive', 'chairman'];
 
@@ -552,6 +554,61 @@ export async function fetchRejectedReport(
         };
     } catch (err: any) {
         console.error('fetchRejectedReport', err);
+        return { success: false, error: err.message ?? '查詢失敗' };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── Report 4: 來電紀錄統計（WMCMS-1 #75） ──────────────────────────────────
+
+export interface ContactStatsReport {
+    summary: ContactStatsSummary;
+    /** 明細（不含姓名／電話等個資），依來電日期排序 */
+    rows: ContactStatsRow[];
+}
+
+/**
+ * 來電紀錄統計：依來電日期（contact_date）區間，彙總性別、聯絡方式類別、
+ * 從何得知本補助、諮詢方案、無法申請原因。僅統計 record_type='1'（來電）。
+ */
+export async function fetchContactStatsReport(
+    operatorUserId: string,
+    filter: Pick<ReportFilter, 'from' | 'to'>,
+): Promise<ActionResult<ContactStatsReport>> {
+    if (!(await hasAnyRole(operatorUserId, ALLOWED_ROLES))) {
+        return { success: false, error: '權限不足' };
+    }
+    const params: unknown[] = [];
+    const where: string[] = [`cr.record_type = '1'`];
+    const dateWhere = buildDateWhere('cr.contact_date', params, filter.from, filter.to);
+    if (dateWhere) where.push(dateWhere);
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT cr.contact_date, cr.caller_gender, cco.name AS channel_name,
+                    cr.from_source, cr.consult_program, cr.reject_reasons
+               FROM contact_records cr
+               LEFT JOIN contact_channel_options cco ON cco.id = cr.contact_channel_id
+              WHERE ${where.join(' AND ')}
+              ORDER BY cr.contact_date, cr.id`,
+            params
+        );
+        const optRes = await client.query(
+            `SELECT name FROM contact_channel_options ORDER BY sort_order, id`
+        );
+        const rows: ContactStatsRow[] = res.rows.map((r: any) => ({
+            contactDate: formatDate(r.contact_date) ?? '',
+            gender: r.caller_gender === 'M' || r.caller_gender === 'F' || r.caller_gender === 'U' ? r.caller_gender : null,
+            channelName: r.channel_name ?? null,
+            fromSource: r.from_source ? String(r.from_source).trim() : null,
+            consultProgram: r.consult_program ?? null,
+            rejectReasons: Array.isArray(r.reject_reasons) ? r.reject_reasons : [],
+        }));
+        const summary = aggregateContactStats(rows, optRes.rows.map((o: any) => o.name));
+        return { success: true, data: { summary, rows } };
+    } catch (err: any) {
+        console.error('fetchContactStatsReport', err);
         return { success: false, error: err.message ?? '查詢失敗' };
     } finally {
         client.release();

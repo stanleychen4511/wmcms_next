@@ -1069,6 +1069,27 @@ ALTER TABLE contact_records
 COMMENT ON COLUMN contact_records.contacted_party       IS '關懷紀錄專用：聯絡對象與申請人之關係（1=本人 2=配偶 9=其他）';
 COMMENT ON COLUMN contact_records.contacted_party_other IS '當 contacted_party=9 時的補充描述';
 
+-- 2c-3. contact_channel_options（WMCMS-1 #75：來電紀錄「聯絡方式類別」，後台可管理）
+CREATE TABLE IF NOT EXISTS contact_channel_options (
+    id          BIGSERIAL PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    sort_order  INT NOT NULL DEFAULT 0,
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+COMMENT ON TABLE contact_channel_options IS '來電紀錄「聯絡方式類別」選項（電話/LINE/Email…），由後台維護；停用後不再出現在下拉選單但保留歷史統計';
+-- 只在表為空時放預設選項，避免管理員改名後重跑 init 又被補回
+INSERT INTO contact_channel_options (name, sort_order)
+SELECT v.name, v.sort_order
+FROM (VALUES ('電話', 1), ('LINE', 2), ('Email', 3), ('親洽', 4), ('其他', 99)) AS v(name, sort_order)
+WHERE NOT EXISTS (SELECT 1 FROM contact_channel_options);
+
+ALTER TABLE contact_records
+    ADD COLUMN IF NOT EXISTS contact_channel_id BIGINT REFERENCES contact_channel_options(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_contact_records_channel ON contact_records (contact_channel_id);
+COMMENT ON COLUMN contact_records.contact_channel_id IS '聯絡方式類別（來電紀錄用；NULL=未填，舊資料皆為 NULL）';
+
 ALTER TABLE contact_records
     ADD COLUMN IF NOT EXISTS is_special_attention BOOLEAN NOT NULL DEFAULT FALSE,
     ADD COLUMN IF NOT EXISTS special_attention_note TEXT;
