@@ -783,6 +783,18 @@ ALTER TABLE payment_disbursements
     ADD COLUMN IF NOT EXISTS donor_disclosure_consent BOOLEAN;
 COMMENT ON COLUMN payment_disbursements.donor_disclosure_consent IS '是否同意公開捐贈者姓名（每筆撥款獨立記錄；NULL=未填；false 時需配套上傳聲明書）';
 
+-- 7f-1a-1. payment_disbursements: 支出帳戶（WMCMS-14 #89）
+--   以陣列儲存：目前 UI 為單選，日後若需複選只改 UI，不需搬資料
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS expense_accounts TEXT[] NOT NULL DEFAULT '{}';
+DO $$ BEGIN
+    ALTER TABLE payment_disbursements
+        ADD CONSTRAINT payment_disbursements_expense_accounts_chk
+        CHECK (expense_accounts <@ ARRAY['general', 'fundraising']::TEXT[]);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+COMMENT ON COLUMN payment_disbursements.expense_accounts IS '支出帳戶：general=一般、fundraising=勸募；個管送出前必填（空陣列=未填）';
+
 -- 7f-1b. payment_disbursements 外部隱碼（refine-disbursement-flow，2026-04）
 --   receipt_number = 內部可讀流水號（YYYY-MM-NNNN）
 --   external_code  = 對外的不可預測短碼（6 字元 base32，UNIQUE）

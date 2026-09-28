@@ -31,6 +31,7 @@ import {
     rejectDisbursement,
     setDisbursementChecklist,
     setDisbursementDonorConsent,
+    setDisbursementExpenseAccounts,
     setDisbursementMedicalReceiptStatus,
     confirmOfficialMedicalReceiptReplacement,
     updateDisbursementRemittanceSlip,
@@ -54,7 +55,7 @@ import {
     type NotificationTemplate,
 } from '../app/actions/notificationActions';
 import { InfoSheetModal, type InfoSection } from './InfoSheetModal';
-import { REVIEW_STAGE_LABEL, type ReviewStage } from '../lib/paymentDisbursementConstants';
+import { REVIEW_STAGE_LABEL, EXPENSE_ACCOUNT_LABEL, EXPENSE_ACCOUNT_OPTIONS, type ExpenseAccount, type ReviewStage } from '../lib/paymentDisbursementConstants';
 import { linkApplicationDocumentByUrl } from '../app/actions/documentActions';
 import { uploadFileToBlob, type UploadedBlob } from '../lib/uploadClient';
 import { Role } from '../types';
@@ -985,6 +986,12 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
         }
     };
 
+    const handleSetExpenseAccounts = async (accounts: ExpenseAccount[]) => {
+        const res = await setDisbursementExpenseAccounts(operatorUserId, d.id, accounts);
+        if (res.success) onChanged();
+        else pushToast({ type: 'error', msg: res.error });
+    };
+
     const handleSetDonorConsent = async (consent: boolean) => {
         const res = await setDisbursementDonorConsent(operatorUserId, d.id, consent);
         if (res.success) onChanged();
@@ -1189,6 +1196,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
             if (!effectiveMedicalReceiptStatus) return '請先選擇醫療收據狀態（正式收據 / 未繳款領據）';
             if (d.lastReceiptEmailStatus !== 'sent') return '尚未成功寄送領款收據 email';
             if (!d.passbookCoverUploaded) return '尚未上傳存摺封面（每次撥款都需上傳）';
+            if (d.expenseAccounts.length === 0) return '請先勾選本次撥款的「支出帳戶」（一般／勸募）';
             if (d.donorDisclosureConsent === null) return '請先選擇是否同意公開捐贈者姓名';
             if (d.donorDisclosureConsent === false && !d.donorConsentLetterUploaded) {
                 return '勾選「不同意公開捐贈者姓名」時，需上傳捐贈/受補助者聲明書';
@@ -1316,6 +1324,11 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                         {d.sentAt && <span>· 寄出 {formatRocDateOnly(d.sentAt)}</span>}
                     </div>
                     {d.notes && <p className="text-xs text-slate-600 mt-1">備註：{d.notes}</p>}
+                    {d.expenseAccounts.length > 0 && (
+                        <p className="text-xs text-slate-600 mt-0.5">
+                            支出帳戶：{d.expenseAccounts.map(a => EXPENSE_ACCOUNT_LABEL[a] ?? a).join('、')}
+                        </p>
+                    )}
                     {/* 「檢視」按鈕群（領款收據 / 醫療收據 / 申請表 / 家訪 / 董事審核）：
                         - 進行中（reviewStage 1~4）的當事人可看
                         - 已完成（reviewStage='9'）：所有撥款流程參與角色均可繼續檢視
@@ -1857,6 +1870,22 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                                     <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded">
                                         <CheckCircle className="w-3 h-3" />已上傳
                                     </span>
+                                )}
+                            </div>
+                            {/* 支出帳戶（WMCMS-14）：DB 存陣列，目前單選；改複選只需換成 checkbox */}
+                            <div className="flex items-center gap-3 flex-wrap text-xs">
+                                <span className="text-slate-700 font-medium">支出帳戶</span>
+                                {EXPENSE_ACCOUNT_OPTIONS.map(opt => (
+                                    <label key={opt.value} className="inline-flex items-center gap-1 cursor-pointer">
+                                        <input type="radio" name={`expenseAccount-${d.id}`}
+                                            checked={d.expenseAccounts.includes(opt.value)}
+                                            onChange={() => handleSetExpenseAccounts([opt.value])}
+                                            className="accent-blue-600" />
+                                        <span>{opt.label}</span>
+                                    </label>
+                                ))}
+                                {d.expenseAccounts.length === 0 && (
+                                    <span className="text-rose-600">（未填）</span>
                                 )}
                             </div>
                             {/* 是否同意公開捐贈者姓名 */}

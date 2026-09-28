@@ -20,3 +20,16 @@ export const REVIEW_STAGE_LABEL: Record<ReviewStage, string> = {
     '9': '已完成',
     'X': '已退件廢棄',
 };
+
+/** 支出帳戶（WMCMS-14）：DB 以陣列儲存，目前 UI 單選 */
+export type ExpenseAccount = 'general' | 'fundraising';
+
+export const EXPENSE_ACCOUNT_OPTIONS: { value: ExpenseAccount; label: string }[] = [
+    { value: 'general', label: '一般' },
+    { value: 'fundraising', label: '勸募' },
+];
+
+export const EXPENSE_ACCOUNT_LABEL: Record<ExpenseAccount, string> = {
+    general: '一般',
+    fundraising: '勸募',
+};

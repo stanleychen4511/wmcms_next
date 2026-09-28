@@ -20,7 +20,7 @@ import * as crypto from 'crypto';
 import { after } from 'next/server';
 import { writeAuditLog } from './auditActions';
 // 'use server' 檔案不可 export 非 async function；常數與型別搬到 lib/paymentDisbursementConstants.ts
-import { REVIEW_STAGE_LABEL, type ReviewStage } from '../../lib/paymentDisbursementConstants';
+import { REVIEW_STAGE_LABEL, EXPENSE_ACCOUNT_OPTIONS, type ExpenseAccount, type ReviewStage } from '../../lib/paymentDisbursementConstants';
 import { formatDateOnly } from '../../lib/dateOnly';
 import { canViewApplication } from '../../lib/applicationAccess';
 import {
@@ -96,6 +96,9 @@ export interface PaymentDisbursement {
     donorConsentLetterUrl: string | null;      // 聲明書 file_path（供檢視按鈕）
     passbookCoverUploaded: boolean;            // 是否已上傳「存摺封面影本」（doc id=21, disbursement_id=X）
     passbookCoverUrl: string | null;           // 存摺封面 file_path（供檢視按鈕）
+
+    // WMCMS-14：支出帳戶（一般／勸募）；空陣列=未填
+    expenseAccounts: ExpenseAccount[];
 }
 
 export interface DisbursementSummary {
@@ -284,6 +287,7 @@ function rowToDisbursement(r: any): PaymentDisbursement {
         donorConsentLetterUrl:            r.donor_consent_letter_url ?? null,
         passbookCoverUploaded:            !!r.passbook_cover_uploaded,
         passbookCoverUrl:                 r.passbook_cover_url ?? null,
+        expenseAccounts:                  Array.isArray(r.expense_accounts) ? r.expense_accounts : [],
     };
 }
 
@@ -294,7 +298,7 @@ const SELECT_ALL_COLS = `
     sent_at, received_at, receipt_file_path, remittance_slip_file_path, medical_receipt_status,
     official_receipt_replaced_at, official_receipt_replaced_by,
     official_receipt_accountant_confirmed_at, official_receipt_accountant_confirmed_by,
-    notes, is_legacy_import,
+    notes, is_legacy_import, expense_accounts,
     created_by, created_at, updated_at,
     review_stage, officer_signed_at,
     supervisor_user_id, supervisor_signed_at,
@@ -718,9 +722,13 @@ async function checkOfficerGate(client: any, disbursementId: string, cur: any): 
     }
     // 若不同意公開捐贈者姓名，需上傳「捐贈/受補助者聲明書」（doc id=22）
     const consentRes = await client.query(
-        `SELECT donor_disclosure_consent FROM payment_disbursements WHERE id = $1::bigint`,
+        `SELECT donor_disclosure_consent, expense_accounts FROM payment_disbursements WHERE id = $1::bigint`,
         [disbursementId]
     );
+    const expenseAccounts = consentRes.rows[0]?.expense_accounts;
+    if (!Array.isArray(expenseAccounts) || expenseAccounts.length === 0) {
+        return '請先勾選本次撥款的「支出帳戶」（一般／勸募）';
+    }
     const consent = consentRes.rows[0]?.donor_disclosure_consent;
     if (consent === null || consent === undefined) {
         return '請先確認「是否同意公開捐贈者姓名」';
@@ -1803,6 +1811,44 @@ export async function setDisbursementDonorConsent(
         return { success: true, data: undefined };
     } catch (err: any) {
         console.error('setDisbursementDonorConsent error:', err);
+        return { success: false, error: err.message ?? '更新失敗' };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── 設定支出帳戶（WMCMS-14；officer only, stage='1'） ───────────────
+export async function setDisbursementExpenseAccounts(
+    operatorUserId: string,
+    disbursementId: string,
+    accounts: ExpenseAccount[],
+): Promise<ActionResult> {
+    if (!/^\d+$/.test(disbursementId)) return { success: false, error: '無效的撥款 ID' };
+    const allowed = new Set<string>(EXPENSE_ACCOUNT_OPTIONS.map(o => o.value));
+    const normalized = Array.from(new Set(accounts));
+    if (normalized.length === 0 || normalized.some(a => !allowed.has(a))) {
+        return { success: false, error: '支出帳戶選項不正確' };
+    }
+    const client = await pool.connect();
+    try {
+        const cur = await client.query(
+            `SELECT review_stage FROM payment_disbursements WHERE id = $1::bigint`,
+            [disbursementId]
+        );
+        if (cur.rowCount === 0) return { success: false, error: '撥款紀錄不存在' };
+        if (cur.rows[0].review_stage !== '1') {
+            return { success: false, error: '僅在「待送出」階段可設定' };
+        }
+        if (!(await hasAnyRole(operatorUserId, rolesForStage('1')))) {
+            return { success: false, error: '僅承辦人可設定' };
+        }
+        await client.query(
+            `UPDATE payment_disbursements SET expense_accounts = $1::text[], updated_at = NOW() WHERE id = $2::bigint`,
+            [normalized, disbursementId]
+        );
+        return { success: true, data: undefined };
+    } catch (err: any) {
+        console.error('setDisbursementExpenseAccounts error:', err);
         return { success: false, error: err.message ?? '更新失敗' };
     } finally {
         client.release();
