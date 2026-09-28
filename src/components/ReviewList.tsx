@@ -33,10 +33,6 @@ function isPdfFile(url: string) {
 
 const ZOOM_STEPS = [50, 75, 100, 125, 150, 175, 200];
 
-function clampZoom(z: number) {
-    return Math.min(ZOOM_STEPS[ZOOM_STEPS.length - 1], Math.max(ZOOM_STEPS[0], z));
-}
-
 function stepZoom(current: number, delta: number): number {
     // delta > 0 = zoom in, delta < 0 = zoom out
     if (delta > 0) return ZOOM_STEPS.find(s => s > current) ?? current;
@@ -46,8 +42,8 @@ function stepZoom(current: number, delta: number): number {
 
 
 /** Renders a .docx file into a container div using docx-preview (client-side only) */
-function DocxViewer({ fileUrl, zoom = 100, onZoomChange }: {
-    fileUrl: string; zoom?: number; onZoomChange?: (z: number) => void;
+function DocxViewer({ fileUrl, zoom = 100 }: {
+    fileUrl: string; zoom?: number;
 }) {
     const containerRef = useRef<HTMLDivElement>(null);
     const outerRef = useRef<HTMLDivElement>(null);
@@ -131,10 +127,6 @@ function DocxViewer({ fileUrl, zoom = 100, onZoomChange }: {
                 last.current = { x: e.clientX, y: e.clientY };
                 document.body.style.cursor = 'grabbing';
                 e.preventDefault();
-            }}
-            onWheel={e => {
-                e.preventDefault();
-                onZoomChange?.(stepZoom(zoom, -e.deltaY));
             }}
             style={{
                 position: 'relative', width: '100%', height: '100%', minHeight: '200px',
@@ -274,7 +266,6 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
 
     const zoomIn  = () => setZoom(z => stepZoom(z, 1));
     const zoomOut = () => setZoom(z => stepZoom(z, -1));
-    const handleZoomChange = (z: number) => setZoom(clampZoom(z));
 
     // Reset zoom when a new file is opened
     useEffect(() => { if (preview) setZoom(100); }, [preview?.url]);
@@ -629,17 +620,16 @@ export function ReviewList({ applicationId, caseNumber, readOnly = false, caseCl
                         {/* Modal content — flex-1 fills remaining height, overflow-hidden lets children manage their own scroll */}
                         <div className="flex-1 bg-slate-100 relative" style={{ overflow: 'hidden', minHeight: 0 }}>
                             {isPdfFile(preview.url) && (
-                                <PdfViewer url={getPreviewUrl(preview.url)} zoom={zoom} label={preview.label} onZoomChange={handleZoomChange} />
+                                <PdfViewer url={getPreviewUrl(preview.url)} zoom={zoom} label={preview.label} />
                             )}
                             {isWordFile(preview.url) && (
-                                <DocxViewer fileUrl={preview.url} zoom={zoom} onZoomChange={handleZoomChange} />
+                                <DocxViewer fileUrl={preview.url} zoom={zoom} />
                             )}
                             {isImageFile(preview.url) && (
                                 <SecureImageViewer
                                     url={getPreviewUrl(preview.url)}
                                     label={preview.label}
                                     zoom={zoom}
-                                    onZoomChange={handleZoomChange}
                                 />
                             )}
                         </div>

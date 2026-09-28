@@ -1,37 +1,29 @@
 'use client';
 
 /**
- * 安全圖片預覽 — 支援滑鼠拖曳 + 滾輪縮放 + 浮水印 + 防右鍵 / 防下載。
+ * 安全圖片預覽 — 支援滑鼠拖曳 + 按鈕縮放 + 浮水印 + 防右鍵 / 防下載。
  *
  * 用法：
  *   <SecureImageViewer
  *       url="/api/preview?path=..."
  *       label="身分證影本"
  *       zoom={zoom}
- *       onZoomChange={handleZoomChange}
  *   />
  *
- * 與 PdfViewer / DocxViewer 一致的拖曳 + 滾輪 UX：
+ * 與 PdfViewer / DocxViewer 一致的拖曳 UX：
  *   - 滑鼠左鍵按住拖移 → 改變容器 scrollLeft / scrollTop
- *   - 滾輪 → 縮放（不會傳到背景頁面）
+ *   - 滾輪 → 捲動（縮放只透過工具列 +/- 按鈕，避免捲頁時誤觸縮放）
  */
 import { useEffect, useRef } from 'react';
 import { WatermarkOverlay } from './WatermarkOverlay';
-
-const ZOOM_STEPS = [50, 75, 100, 125, 150, 175, 200];
-function stepZoom(current: number, delta: number): number {
-    if (delta > 0) return ZOOM_STEPS.find(s => s > current) ?? current;
-    return [...ZOOM_STEPS].reverse().find(s => s < current) ?? current;
-}
 
 interface Props {
     url: string;
     label: string;
     zoom: number;
-    onZoomChange: (z: number) => void;
 }
 
-export function SecureImageViewer({ url, label, zoom, onZoomChange }: Props) {
+export function SecureImageViewer({ url, label, zoom }: Props) {
     const outerRef = useRef<HTMLDivElement>(null);
     const dragging = useRef(false);
     const last = useRef({ x: 0, y: 0 });
@@ -65,10 +57,6 @@ export function SecureImageViewer({ url, label, zoom, onZoomChange }: Props) {
                 last.current = { x: e.clientX, y: e.clientY };
                 document.body.style.cursor = 'grabbing';
                 e.preventDefault();
-            }}
-            onWheel={e => {
-                e.preventDefault();
-                onZoomChange(stepZoom(zoom, -e.deltaY));
             }}
             className="w-full h-full overflow-auto select-none"
             style={{ cursor: 'grab', background: '#e5e7eb' }}

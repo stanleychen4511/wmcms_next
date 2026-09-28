@@ -8,21 +8,13 @@ import { WatermarkOverlay, usePreviewGuards } from './WatermarkOverlay';
 
 pdfjs.GlobalWorkerOptions.workerSrc = '/pdf.worker.min.mjs';
 
-const ZOOM_STEPS = [50, 75, 100, 125, 150, 175, 200];
-
-function stepZoom(current: number, delta: number): number {
-    if (delta > 0) return ZOOM_STEPS.find(s => s > current) ?? current;
-    return [...ZOOM_STEPS].reverse().find(s => s < current) ?? current;
-}
-
 interface PdfViewerProps {
     url: string;
     zoom: number;
     label: string;
-    onZoomChange: (z: number) => void;
 }
 
-export function PdfViewer({ url, zoom, label, onZoomChange }: PdfViewerProps) {
+export function PdfViewer({ url, zoom, label }: PdfViewerProps) {
     const outerRef = useRef<HTMLDivElement>(null);
     const [numPages, setNumPages] = useState<number>(0);
     const [pdfError, setPdfError] = useState<string | null>(null);
@@ -69,10 +61,6 @@ export function PdfViewer({ url, zoom, label, onZoomChange }: PdfViewerProps) {
                 last.current = { x: e.clientX, y: e.clientY };
                 document.body.style.cursor = 'grabbing';
                 e.preventDefault();
-            }}
-            onWheel={e => {
-                e.preventDefault();
-                onZoomChange(stepZoom(zoom, -e.deltaY));
             }}
             style={{ width: '100%', height: '100%', overflowY: 'auto', overflowX: 'auto', cursor: 'grab', background: '#e5e7eb' }}
         >
