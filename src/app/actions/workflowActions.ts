@@ -707,7 +707,11 @@ export async function fetchApplicationDetail(
             };
         };
         const boardReconsiderationHistory = reconsiderHistoryRes.rows.map(mapReconsideration);
-        const supervisorReviewHistory: SupervisorReviewEntry[] = supervisorReviewRes.rows.map((r: any) => ({
+        type SupervisorReviewDbRow = {
+            id: string; action: SupervisorReviewEntry['action']; note: string | null; created_at: Date | null;
+            actor_account: string | null; actor_name_enc: Buffer | null; actor_name_iv: Buffer | null;
+        };
+        const supervisorReviewHistory: SupervisorReviewEntry[] = supervisorReviewRes.rows.map((r: SupervisorReviewDbRow) => ({
             id: String(r.id),
             action: r.action,
             note: r.note ?? null,

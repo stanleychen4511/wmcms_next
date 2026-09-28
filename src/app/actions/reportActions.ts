@@ -597,7 +597,15 @@ export async function fetchContactStatsReport(
         const optRes = await client.query(
             `SELECT name FROM contact_channel_options ORDER BY sort_order, id`
         );
-        const rows: ContactStatsRow[] = res.rows.map((r: any) => ({
+        type StatsDbRow = {
+            contact_date: Date | string | null;
+            caller_gender: string | null;
+            channel_name: string | null;
+            from_source: string | null;
+            consult_program: string | null;
+            reject_reasons: string[] | null;
+        };
+        const rows: ContactStatsRow[] = res.rows.map((r: StatsDbRow) => ({
             contactDate: formatDate(r.contact_date) ?? '',
             gender: r.caller_gender === 'M' || r.caller_gender === 'F' || r.caller_gender === 'U' ? r.caller_gender : null,
             channelName: r.channel_name ?? null,
@@ -605,11 +613,11 @@ export async function fetchContactStatsReport(
             consultProgram: r.consult_program ?? null,
             rejectReasons: Array.isArray(r.reject_reasons) ? r.reject_reasons : [],
         }));
-        const summary = aggregateContactStats(rows, optRes.rows.map((o: any) => o.name));
+        const summary = aggregateContactStats(rows, optRes.rows.map((o: { name: string }) => o.name));
         return { success: true, data: { summary, rows } };
-    } catch (err: any) {
+    } catch (err) {
         console.error('fetchContactStatsReport', err);
-        return { success: false, error: err.message ?? '查詢失敗' };
+        return { success: false, error: err instanceof Error ? err.message : '查詢失敗' };
     } finally {
         client.release();
     }

@@ -1855,9 +1855,9 @@ export async function setDisbursementExpenseAccounts(
             [normalized, disbursementId]
         );
         return { success: true, data: undefined };
-    } catch (err: any) {
+    } catch (err) {
         console.error('setDisbursementExpenseAccounts error:', err);
-        return { success: false, error: err.message ?? '更新失敗' };
+        return { success: false, error: err instanceof Error ? err.message : '更新失敗' };
     } finally {
         client.release();
     }

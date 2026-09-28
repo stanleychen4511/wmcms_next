@@ -274,7 +274,7 @@ async function buildRejected(wb: ExcelJS.Workbook, operatorUserId: string, filte
 }
 
 /** 來電紀錄統計（WMCMS-1）：「統計」工作表放各欄位計數，「明細」工作表放每筆來電（不含姓名、電話） */
-async function buildContactStats(wb: ExcelJS.Workbook, operatorUserId: string, filter: any) {
+async function buildContactStats(wb: ExcelJS.Workbook, operatorUserId: string, filter: { from?: string; to?: string }) {
     const res = await fetchContactStatsReport(operatorUserId, filter);
     if (!res.success) throw new Error(res.error);
     const { summary, rows } = res.data;
