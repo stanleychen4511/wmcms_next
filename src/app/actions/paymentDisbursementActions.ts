@@ -1760,21 +1760,46 @@ export async function setDisbursementDonorConsent(
     const client = await pool.connect();
     try {
         const cur = await client.query(
-            `SELECT review_stage FROM payment_disbursements WHERE id = $1::bigint`,
+            `SELECT pd.review_stage, pd.application_id::text AS application_id,
+                    pd.donor_disclosure_consent, a.officer_id::text AS officer_id
+               FROM payment_disbursements pd
+               JOIN applications a ON a.id = pd.application_id
+              WHERE pd.id = $1::bigint`,
             [disbursementId]
         );
         if (cur.rowCount === 0) return { success: false, error: '撥款紀錄不存在' };
         const stage = cur.rows[0].review_stage as ReviewStage;
-        if (stage !== '1') {
-            return { success: false, error: '僅在「待送出」階段可設定' };
-        }
-        if (!(await hasAnyRole(operatorUserId, rolesForStage('1')))) {
-            return { success: false, error: '僅承辦人可設定' };
+        if (stage === '1') {
+            if (!(await hasAnyRole(operatorUserId, rolesForStage('1')))) {
+                return { success: false, error: '僅承辦人可設定' };
+            }
+        } else if (stage === '9') {
+            // 已完成撥款（含已結案）：由該案承辦或系統管理員補登公開意願並補傳聲明書
+            const roles = await getUserRoles(operatorUserId);
+            const isOwnOfficer = roles.includes('case_officer') && cur.rows[0].officer_id === operatorUserId;
+            if (!roles.includes('admin') && !isOwnOfficer) {
+                return { success: false, error: '已完成撥款僅限該案承辦或系統管理員修改' };
+            }
+        } else {
+            return { success: false, error: '僅在「待送出」或「已完成」階段可設定' };
         }
         await client.query(
             `UPDATE payment_disbursements SET donor_disclosure_consent = $1, updated_at = NOW() WHERE id = $2::bigint`,
             [consent, disbursementId]
         );
+        if (stage === '9') {
+            void writeAuditLog({
+                userId: operatorUserId,
+                action: 'payment_disbursement.donor_consent_updated',
+                targetType: 'payment_disbursement',
+                targetId: disbursementId,
+                detail: {
+                    application_id: cur.rows[0].application_id,
+                    from: cur.rows[0].donor_disclosure_consent,
+                    to: consent,
+                },
+            });
+        }
         return { success: true, data: undefined };
     } catch (err: any) {
         console.error('setDisbursementDonorConsent error:', err);

@@ -763,6 +763,8 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
     const isFinal = d.reviewStage === '9';
     const isAccountant = operatorRoles.includes('accountant');
     const canUploadRemittanceSlip = isFinal && (operatorRoles.includes('case_officer') || operatorRoles.includes('admin'));
+    // 已完成撥款（含已結案）仍可補登公開意願並補傳不同意公開聲明書；伺服器端限該案承辦或 admin
+    const canManageDonorLetterAfterCompleted = isFinal && (operatorRoles.includes('case_officer') || operatorRoles.includes('admin'));
     const hasPendingOfficialReceiptConfirmation = !!d.officialReceiptReplacedAt && !d.officialReceiptAccountantConfirmedAt;
     const canReplaceOfficialReceipt = isFinal
         && d.medicalReceiptStatus === 'unpaid'
@@ -2125,6 +2127,42 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                         >
                             <Eye className="w-3 h-3" />檢視匯款單
                         </button>
+                    )}
+                </div>
+            )}
+
+            {canManageDonorLetterAfterCompleted && (
+                <div className="mt-2 pt-2 border-t border-slate-100 space-y-1.5 text-xs">
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <span className="text-slate-700 font-medium">是否同意公開受補助</span>
+                        <label className="inline-flex items-center gap-1 cursor-pointer">
+                            <input type="radio" name={`donorConsentFinal-${d.id}`} checked={d.donorDisclosureConsent === true}
+                                onChange={() => handleSetDonorConsent(true)} className="accent-emerald-600" />
+                            <span>同意</span>
+                        </label>
+                        <label className="inline-flex items-center gap-1 cursor-pointer">
+                            <input type="radio" name={`donorConsentFinal-${d.id}`} checked={d.donorDisclosureConsent === false}
+                                onChange={() => handleSetDonorConsent(false)} className="accent-rose-600" />
+                            <span>不同意</span>
+                        </label>
+                        {d.donorDisclosureConsent === null && (
+                            <span className="text-slate-500">（未填）</span>
+                        )}
+                    </div>
+                    {d.donorDisclosureConsent === false && (
+                        <div className="flex items-center gap-2 flex-wrap pl-4">
+                            <span className="text-slate-700">捐贈/受補助者聲明書：</span>
+                            <label className={`inline-flex items-center gap-1 px-2 py-1 text-xs border rounded cursor-pointer ${uploading ? 'opacity-50' : 'hover:bg-slate-50'} ${d.donorConsentLetterUploaded ? 'border-emerald-300 text-emerald-700' : 'border-rose-300 text-rose-700'}`}>
+                                <Upload className="w-3 h-3" />
+                                {d.donorConsentLetterUploaded ? '補傳聲明書' : '上傳聲明書'}
+                                <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={handleDonorLetterFileChange} disabled={uploading} />
+                            </label>
+                            {d.donorConsentLetterUploaded && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded">
+                                    <CheckCircle className="w-3 h-3" />已上傳
+                                </span>
+                            )}
+                        </div>
                     )}
                 </div>
             )}

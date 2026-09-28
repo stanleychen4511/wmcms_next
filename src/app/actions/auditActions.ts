@@ -94,7 +94,8 @@ export type AuditAction =
     | 'payment_disbursement.receipt_email_sent'
     | 'payment_disbursement.official_receipt_replaced'
     | 'payment_disbursement.official_receipt_accountant_confirmed'
-    | 'payment_disbursement.print_merged';
+    | 'payment_disbursement.print_merged'
+    | 'payment_disbursement.donor_consent_updated';
 
 export type AuditTargetType =
     | 'application'
