@@ -13,7 +13,13 @@ export type NotificationEventType =
     | 'case_assigned_to_board_group'
     | 'case_assigned_to_officer'
     | 'case_payment_receipt_to_applicant'
-    | 'disbursement_completed';
+    | 'disbursement_completed'
+    // WMCMS-6：各角色輪到處理時提醒
+    | 'case_board_approved'
+    | 'case_returned_to_officer'
+    | 'disbursement_to_accountant'
+    | 'disbursement_returned_to_accountant'
+    | 'disbursement_to_executive';
 
 type Channel = 'email' | 'line';
 
@@ -22,6 +28,10 @@ interface EventContext {
     groupId?: string;
     disbursementId?: string;
     officerUserId?: string;
+    /** 退件原因（{{退件原因}}） */
+    reason?: string;
+    /** 退回項目說明，例如「送董事前主管審閱」「撥款 2026-09-0001」（{{退件項目}}） */
+    returnItem?: string;
 }
 
 interface TemplateRow {
@@ -181,6 +191,11 @@ async function resolveLegacyRecipients(eventType: NotificationEventType, ctx: Ev
     if (eventType === 'case_assigned_to_officer') return resolveAssignedOfficer(ctx);
     if (eventType === 'case_payment_receipt_to_applicant') return resolveApplicant(ctx.applicationId);
     if (eventType === 'disbursement_completed') return resolveDisbursementRelatedUsers(ctx.disbursementId);
+    if (eventType === 'case_board_approved' || eventType === 'case_returned_to_officer') return resolveAssignedOfficer(ctx);
+    if (eventType === 'disbursement_to_accountant' || eventType === 'disbursement_returned_to_accountant') {
+        return resolveRoleUsers('accountant');
+    }
+    if (eventType === 'disbursement_to_executive') return resolveRoleUsers('executive');
     return [];
 }
 
@@ -283,9 +298,10 @@ async function loadPlaceholderVars(eventType: NotificationEventType, ctx: EventC
 
         let thisDisbursementAmount = '';
         let cumulativeDisbursementAmount = '';
-        if (eventType === 'disbursement_completed' && ctx.disbursementId) {
+        let disbursementCode = '';
+        if (ctx.disbursementId) {
             const disbursementRes = await client.query(
-                `SELECT pd.amount,
+                `SELECT pd.amount, COALESCE(NULLIF(pd.external_code, ''), pd.receipt_number) AS code,
                         COALESCE((
                             SELECT SUM(amount)
                             FROM payment_disbursements
@@ -299,6 +315,7 @@ async function loadPlaceholderVars(eventType: NotificationEventType, ctx: EventC
             if (disbursementRes.rowCount && disbursementRes.rowCount > 0) {
                 thisDisbursementAmount = Number(disbursementRes.rows[0].amount).toLocaleString();
                 cumulativeDisbursementAmount = Number(disbursementRes.rows[0].total_completed).toLocaleString();
+                disbursementCode = disbursementRes.rows[0].code ?? '';
             }
         }
 
@@ -325,6 +342,9 @@ async function loadPlaceholderVars(eventType: NotificationEventType, ctx: EventC
             '系統連結': caseLink,
             '本次撥款金額': thisDisbursementAmount,
             '累計撥款金額': cumulativeDisbursementAmount,
+            '撥款編號': disbursementCode,
+            '退件原因': ctx.reason ?? '',
+            '退件項目': ctx.returnItem ?? '',
         };
     } finally {
         client.release();

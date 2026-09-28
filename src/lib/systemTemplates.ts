@@ -19,6 +19,16 @@ export const SYSTEM_TEMPLATE_NAMES = new Set<string>([
     'email_case_disbursement_approval_to_applicant',
     'email_disbursement_completed',
     'line_disbursement_completed',
+    'line_case_board_approved',
+    'email_case_board_approved',
+    'line_case_returned_to_officer',
+    'email_case_returned_to_officer',
+    'line_disbursement_to_accountant',
+    'email_disbursement_to_accountant',
+    'line_disbursement_returned_to_accountant',
+    'email_disbursement_returned_to_accountant',
+    'line_disbursement_to_executive',
+    'email_disbursement_to_executive',
 ]);
 
 const TEMPLATE_LABELS: Record<string, string> = {
@@ -32,6 +42,16 @@ const TEMPLATE_LABELS: Record<string, string> = {
     email_case_disbursement_approval_to_applicant: 'Email：寄送申請通過通知',
     email_disbursement_completed: 'Email：撥款完成通知',
     line_disbursement_completed: 'LINE：撥款完成通知',
+    line_case_board_approved: 'LINE：董事審核通過通知承辦人',
+    email_case_board_approved: 'Email：董事審核通過通知承辦人',
+    line_case_returned_to_officer: 'LINE：案件退回承辦人通知',
+    email_case_returned_to_officer: 'Email：案件退回承辦人通知',
+    line_disbursement_to_accountant: 'LINE：撥款待會計審核通知',
+    email_disbursement_to_accountant: 'Email：撥款待會計審核通知',
+    line_disbursement_returned_to_accountant: 'LINE：撥款退回會計通知',
+    email_disbursement_returned_to_accountant: 'Email：撥款退回會計通知',
+    line_disbursement_to_executive: 'LINE：撥款待執行長核准通知',
+    email_disbursement_to_executive: 'Email：撥款待執行長核准通知',
 };
 
 export function getNotificationTemplateLabel(name: string | null | undefined): string {

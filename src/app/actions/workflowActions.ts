@@ -1105,6 +1105,11 @@ export async function advanceWorkflowStage(
                 console.error('[advanceWorkflowStage] aggregate member opinions failed:', e);
             }
 
+            // WMCMS-6：董事審核通過 → 輪到承辦人辦理撥款
+            const { notifyEvent } = await import('./notificationDispatcher');
+            runAfterResponse('notify case_board_approved',
+                () => notifyEvent('case_board_approved', { applicationId }));
+
             // refine-disbursement-flow（2026-04）：移除 case_payment_receipt_to_applicant 自動觸發。
             // 改由個管師於每筆 payment_disbursements 手動觸發 sendDisbursementPaymentReceiptEmail。
         }
@@ -1489,6 +1494,14 @@ export async function supervisorReviewForBoard(
             if (!advRes.success) return advRes;
         } else {
             await client.query('COMMIT');
+            // WMCMS-6：主管退件 → 輪到承辦人修正
+            const { notifyEvent } = await import('./notificationDispatcher');
+            runAfterResponse('notify case_returned_to_officer',
+                () => notifyEvent('case_returned_to_officer', {
+                    applicationId,
+                    returnItem: '送董事審核前主管審閱',
+                    reason: trimmedNote,
+                }));
         }
 
         void writeAuditLog({
@@ -1682,6 +1695,14 @@ export async function reviewBoardReconsideration(
                 targetId: applicationId,
                 detail: { requestId, note: trimmedNote },
             });
+            // WMCMS-6：退回董事再審申請未通過 → 通知承辦人
+            const { notifyEvent } = await import('./notificationDispatcher');
+            runAfterResponse('notify case_returned_to_officer',
+                () => notifyEvent('case_returned_to_officer', {
+                    applicationId,
+                    returnItem: '退回董事再次審核申請',
+                    reason: trimmedNote,
+                }));
             return { success: true };
         }
 

@@ -903,6 +903,17 @@ async function advanceStageInternal(
             logNotificationStub('submitted',
                 cur.rows[0].application_id, disbursementId,
                 [roleMap[cfg.toStage] ?? '']);
+            // WMCMS-6：撥款送達會計／執行長 → 通知該角色
+            const turnEvent = cfg.toStage === '3' ? 'disbursement_to_accountant'
+                : cfg.toStage === '4' ? 'disbursement_to_executive'
+                : null;
+            if (turnEvent) {
+                const applicationId = cur.rows[0].application_id;
+                runAfterResponse(`notify ${turnEvent}`, async () => {
+                    const { notifyEvent } = await import('./notificationDispatcher');
+                    await notifyEvent(turnEvent, { applicationId, disbursementId });
+                });
+            }
         }
         return { success: true, data: undefined };
     } catch (err: any) {
@@ -2078,6 +2089,29 @@ export async function rejectDisbursement(
         // 通知：被退回的層
         const roleMap: Record<string, string> = { '1': 'case_officer', '2': 'supervisor', '3': 'accountant' };
         logNotificationStub('rejected', cur.rows[0].application_id, disbursementId, [roleMap[targetStage] ?? '']);
+        // WMCMS-6：退回個管 / 退回會計 → 通知被退回的角色
+        const applicationId: string = cur.rows[0].application_id;
+        const receiptNumber: string = cur.rows[0].receipt_number ?? '';
+        if (targetStage === '1') {
+            runAfterResponse('notify case_returned_to_officer', async () => {
+                const { notifyEvent } = await import('./notificationDispatcher');
+                await notifyEvent('case_returned_to_officer', {
+                    applicationId,
+                    disbursementId,
+                    returnItem: `撥款 ${receiptNumber}（${REVIEW_STAGE_LABEL[curStage]}退回）`,
+                    reason: cleanReason,
+                });
+            });
+        } else if (targetStage === '3') {
+            runAfterResponse('notify disbursement_returned_to_accountant', async () => {
+                const { notifyEvent } = await import('./notificationDispatcher');
+                await notifyEvent('disbursement_returned_to_accountant', {
+                    applicationId,
+                    disbursementId,
+                    reason: cleanReason,
+                });
+            });
+        }
         return { success: true, data: undefined };
     } catch (err: any) {
         try { await client.query('ROLLBACK'); } catch { /* ignore */ }

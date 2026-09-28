@@ -31,7 +31,7 @@ const CHANNEL_META: Record<string, { label: string; icon: React.ReactNode; color
     sms:   { label: '簡訊 (SMS)', icon: <Smartphone className="w-5 h-5" />, color: 'text-purple-600 bg-purple-50', future: true },
 };
 
-const PLACEHOLDER_HINT = '可用佔位符：{{案號}} {{申請人}} {{階段}} {{申請日期}} {{申請金額}} {{承辦人}}';
+const PLACEHOLDER_HINT = '可用佔位符：{{案號}} {{申請人}} {{階段}} {{申請日期}} {{申請金額}} {{承辦人}}；系統事件另有 {{核定金額}} {{案件連結}} {{撥款編號}} {{本次撥款金額}} {{退件項目}} {{退件原因}}';
 
 // ─── SMTP Settings Form ───────────────────────────────────────────────────────
 
