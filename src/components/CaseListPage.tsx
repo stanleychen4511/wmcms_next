@@ -24,6 +24,11 @@ interface CaseListPageProps {
     myTurnAppIds?: Set<string>;
     /** 「輪到我處理」filter 開關 */
     myTurnFilterActive?: boolean;
+    /** 「可撥款」案件 id 集合（WMCMS-7；case_officer 名下 status='3' 且尚未建立撥款） */
+    disbursableAppIds?: Set<string>;
+    /** 「可撥款」filter 開關（從首頁可撥款 modal 點進來自動勾起） */
+    disbursableOnlyActive?: boolean;
+    onToggleDisbursableOnly?: (v: boolean) => void;
     onToggleMyTurnFilter?: (v: boolean) => void;
     /** 「未補件」filter 開關（從首頁未補件 modal 點進來自動勾起） */
     pendingOnlyActive?: boolean;
@@ -113,6 +118,7 @@ export function CaseListPage({
     username, userId, userRoles, cases, allOfficers, officersWithId,
     isLoading, pendingAlertIds = new Set(), thresholdReminderCounts = new Map(),
     myTurnAppIds = new Set<string>(), myTurnFilterActive = false, onToggleMyTurnFilter,
+    disbursableAppIds = new Set<string>(), disbursableOnlyActive, onToggleDisbursableOnly,
     pendingOnlyActive, onTogglePendingOnly,
     unassignedFilterActive, onToggleUnassignedFilter,
     subtypeMaxAmounts = { '1': 30000, '2': 350000 },
@@ -164,6 +170,12 @@ export function CaseListPage({
         if (unassignedFilterActive === true) setAssignFilter('unassigned');
         else if (unassignedFilterActive === false) setAssignFilter('all');
     }, [unassignedFilterActive]);
+    const [disbursableOnly, setDisbursableOnly] = useState<boolean>(false);
+    useEffect(() => {
+        if (disbursableOnlyActive !== undefined) setDisbursableOnly(disbursableOnlyActive);
+    }, [disbursableOnlyActive]);
+    // 「未補件」「可撥款」資料只為承辦人載入；「輪到我處理」各角色皆有
+    const showOfficerQuickFilters = userRoles.includes('case_officer');
     const [thresholdOnly,  setThresholdOnly]  = useState<boolean>(false);
     const [boardUnassignedOnly, setBoardUnassignedOnly] = useState<boolean>(false);
     const [batchAssignResult, setBatchAssignResult] = useState<string | null>(null);
@@ -220,7 +232,7 @@ export function CaseListPage({
     };
 
     // Clear selection when filter changes
-    useEffect(() => { setSelectedIds(new Set()); }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter, pendingOnly, specialAttentionOnly, thresholdOnly]);
+    useEffect(() => { setSelectedIds(new Set()); }, [nameQuery, dateFrom, dateTo, stageFilter, officerFilter, assignFilter, pendingOnly, specialAttentionOnly, thresholdOnly, myTurnFilterActive, disbursableOnly, boardUnassignedOnly]);
 
     const filteredCases = useMemo(() => {
         return cases.filter((c) => {
@@ -245,6 +257,7 @@ export function CaseListPage({
             if (specialAttentionOnly && !c.hasSpecialAttention) return false;
             if (thresholdOnly && !thresholdReminderCounts.has(c.applicationId)) return false;
             if (myTurnFilterActive && !myTurnAppIds.has(c.applicationId)) return false;
+            if (disbursableOnly && !disbursableAppIds.has(c.applicationId)) return false;
             if (boardUnassignedOnly) {
                 if (c.stage !== 'board_review') return false;
                 if (c.assignedBoardGroupId) return false;
@@ -273,7 +286,7 @@ export function CaseListPage({
             }
             return 0;
         });
-    }, [cases, nameQuery, idMatchApplicantId, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, specialAttentionOnly, thresholdOnly, thresholdReminderCounts, myTurnFilterActive, myTurnAppIds, boardUnassignedOnly, sortStack, subtypeMaxAmounts]);
+    }, [cases, nameQuery, idMatchApplicantId, stageFilter, effectiveOfficerFilter, dateFrom, dateTo, effectiveAssignFilter, pendingOnly, pendingAlertIds, specialAttentionOnly, thresholdOnly, thresholdReminderCounts, myTurnFilterActive, myTurnAppIds, disbursableOnly, disbursableAppIds, boardUnassignedOnly, sortStack, subtypeMaxAmounts]);
 
     const allFilteredSelected = filteredCases.length > 0 &&
         filteredCases.every(c => selectedIds.has(c.applicationId));
@@ -342,6 +355,35 @@ export function CaseListPage({
 
                 {/* Filter Card */}
                 <div className="bg-white rounded-xl shadow-sm border border-gray-200 p-5">
+                    {/* 快速篩選（WMCMS-7）：輪到我處理／可撥款／未補件 常駐顯示，數量為 0 時停用 */}
+                    <div className="flex flex-wrap items-center gap-2 mb-4 pb-4 border-b border-gray-100">
+                        <span className="text-xs font-semibold text-gray-500 uppercase tracking-wider mr-1">快速篩選</span>
+                        <QuickFilterChip
+                            label="輪到我處理"
+                            count={myTurnAppIds.size}
+                            active={myTurnFilterActive}
+                            tone="indigo"
+                            onToggle={v => onToggleMyTurnFilter?.(v)}
+                        />
+                        {showOfficerQuickFilters && (
+                            <QuickFilterChip
+                                label="可撥款"
+                                count={disbursableAppIds.size}
+                                active={disbursableOnly}
+                                tone="emerald"
+                                onToggle={v => { setDisbursableOnly(v); onToggleDisbursableOnly?.(v); }}
+                            />
+                        )}
+                        {showOfficerQuickFilters && (
+                            <QuickFilterChip
+                                label="未補件"
+                                count={pendingAlertIds.size}
+                                active={pendingOnly}
+                                tone="orange"
+                                onToggle={v => { setPendingOnly(v); onTogglePendingOnly?.(v); }}
+                            />
+                        )}
+                    </div>
                     <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-6 gap-4">
                         {/* Name search */}
                         <div className="sm:col-span-1">
@@ -434,27 +476,6 @@ export function CaseListPage({
                             </div>
                         )}
 
-                        {/* Pending doc filter — only shown when there are alerts */}
-                        {pendingAlertIds.size > 0 && (
-                            <div className="sm:col-span-1 flex items-end">
-                                <label className="flex items-center gap-2 cursor-pointer select-none w-full border border-orange-200 bg-orange-50 rounded-lg px-3 py-2 hover:bg-orange-100 transition">
-                                    <input
-                                        type="checkbox"
-                                        checked={pendingOnly}
-                                        onChange={e => { setPendingOnly(e.target.checked); onTogglePendingOnly?.(e.target.checked); }}
-                                        className="w-4 h-4 accent-orange-500"
-                                    />
-                                    <span className="text-sm font-medium text-orange-700 flex items-center gap-1">
-                                        <AlertTriangle className="w-3.5 h-3.5" />
-                                        僅顯示未補件
-                                        <span className="ml-1 bg-orange-500 text-white text-xs rounded-full px-1.5 py-0.5 leading-none">
-                                            {pendingAlertIds.size}
-                                        </span>
-                                    </span>
-                                </label>
-                            </div>
-                        )}
-
                         {/* Board-review unassigned filter (chairman/admin only) */}
                         {isChairmanOrAdminView && (
                             <div className="sm:col-span-1 flex items-end">
@@ -467,26 +488,6 @@ export function CaseListPage({
                                     />
                                     <span className="text-sm font-medium text-purple-700">
                                         僅顯示未派案的董事審核案件
-                                    </span>
-                                </label>
-                            </div>
-                        )}
-
-                        {/* 「輪到我處理」filter — user feedback #12 */}
-                        {myTurnAppIds.size > 0 && (
-                            <div className="sm:col-span-1 flex items-end">
-                                <label className="flex items-center gap-2 cursor-pointer select-none w-full border border-indigo-200 bg-indigo-50 rounded-lg px-3 py-2 hover:bg-indigo-100 transition">
-                                    <input
-                                        type="checkbox"
-                                        checked={myTurnFilterActive}
-                                        onChange={e => onToggleMyTurnFilter?.(e.target.checked)}
-                                        className="w-4 h-4 accent-indigo-500"
-                                    />
-                                    <span className="text-sm font-medium text-indigo-700 flex items-center gap-1">
-                                        僅顯示輪到我處理
-                                        <span className="ml-1 bg-indigo-600 text-white text-xs rounded-full px-1.5 py-0.5 leading-none">
-                                            {myTurnAppIds.size}
-                                        </span>
                                     </span>
                                 </label>
                             </div>
@@ -644,6 +645,8 @@ export function CaseListPage({
                                             lockReason="非此案承辦人，僅可查看列表基礎資料"
                                             selected={selectedIds.has(c.applicationId)}
                                             isPending={pendingAlertIds.has(c.applicationId)}
+                                            isMyTurn={isMyTurnCase}
+                                            isDisbursable={disbursableAppIds.has(c.applicationId)}
                                             thresholdReminderCount={thresholdReminderCounts.get(c.applicationId) ?? 0}
                                             maxApplyAmount={subtypeMaxAmounts[c.subsidySubtype as '1' | '2']
                                                 ?? Math.max(subtypeMaxAmounts['1'], subtypeMaxAmounts['2'])}
@@ -770,11 +773,44 @@ function ThCenter({ children }: { children: React.ReactNode }) {
     );
 }
 
+const QUICK_FILTER_TONES = {
+    indigo:  { on: 'bg-indigo-600 text-white border-indigo-600',   off: 'bg-indigo-50 text-indigo-700 border-indigo-200 hover:bg-indigo-100',   badgeOff: 'bg-indigo-600 text-white' },
+    emerald: { on: 'bg-emerald-600 text-white border-emerald-600', off: 'bg-emerald-50 text-emerald-700 border-emerald-200 hover:bg-emerald-100', badgeOff: 'bg-emerald-600 text-white' },
+    orange:  { on: 'bg-orange-500 text-white border-orange-500',   off: 'bg-orange-50 text-orange-700 border-orange-200 hover:bg-orange-100',   badgeOff: 'bg-orange-500 text-white' },
+} as const;
+
+function QuickFilterChip({ label, count, active, tone, onToggle }: {
+    label: string; count: number; active: boolean;
+    tone: keyof typeof QUICK_FILTER_TONES;
+    onToggle: (v: boolean) => void;
+}) {
+    const t = QUICK_FILTER_TONES[tone];
+    // 數量為 0 且未啟用時停用；已啟用時仍可點擊取消
+    const disabled = count === 0 && !active;
+    const chipTone = disabled ? 'bg-gray-50 text-gray-400 border-gray-200 cursor-not-allowed' : (active ? t.on : t.off);
+    const badgeTone = disabled ? 'bg-gray-200 text-gray-500' : (active ? 'bg-white/25 text-white' : t.badgeOff);
+    return (
+        <button
+            type="button"
+            aria-pressed={active}
+            disabled={disabled}
+            onClick={() => onToggle(!active)}
+            className={`inline-flex items-center gap-1.5 rounded-full border px-3 py-1 text-sm font-medium transition ${chipTone}`}
+        >
+            {label}
+            <span className={`text-xs rounded-full px-1.5 py-0.5 leading-none ${badgeTone}`}>
+                {count}
+            </span>
+        </button>
+    );
+}
+
 function CaseRow({
-    case: c, isLast, canAssign, canOpen, lockReason, selected, isPending, thresholdReminderCount, maxApplyAmount, onToggle, onClick, onSpecialAttentionEnter, onSpecialAttentionLeave,
+    case: c, isLast, canAssign, canOpen, lockReason, selected, isPending, isMyTurn, isDisbursable, thresholdReminderCount, maxApplyAmount, onToggle, onClick, onSpecialAttentionEnter, onSpecialAttentionLeave,
 }: {
     case: CaseSummary; isLast: boolean;
     canAssign: boolean; canOpen: boolean; lockReason: string; selected: boolean; isPending: boolean;
+    isMyTurn: boolean; isDisbursable: boolean;
     thresholdReminderCount: number;
     maxApplyAmount: number;
     onToggle: () => void; onClick: () => void;
@@ -827,6 +863,16 @@ function CaseRow({
                             <span className="inline-flex items-center gap-0.5 text-xs bg-amber-100 text-amber-800 border border-amber-300 rounded-full px-1.5 py-0.5 font-medium">
                                 <AlertTriangle className="w-3 h-3" />特殊注意
                             </span>
+                        </span>
+                    )}
+                    {isMyTurn && (
+                        <span className="inline-flex items-center text-xs bg-indigo-100 text-indigo-700 border border-indigo-200 rounded-full px-1.5 py-0.5 font-medium shrink-0">
+                            輪到我
+                        </span>
+                    )}
+                    {isDisbursable && (
+                        <span className="inline-flex items-center text-xs bg-emerald-100 text-emerald-700 border border-emerald-200 rounded-full px-1.5 py-0.5 font-medium shrink-0">
+                            可撥款
                         </span>
                     )}
                     {isPending && (

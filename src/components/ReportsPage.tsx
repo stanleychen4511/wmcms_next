@@ -7,6 +7,7 @@
  *   - 自費醫療        （status IN '1','3','4'）
  *   - 自費醫療補助款項（status IN '3','4'，每筆撥款一列）
  *   - 自費醫療_未通過（status='2' + 結構化原因）
+ *   - 來電紀錄統計（WMCMS-1：依來電日期彙總各欄位）
  *
  * 每個 tab 提供：
  *   - 篩選器（日期區間 / 子類型 / 結案原因）
@@ -26,11 +27,15 @@ import {
     fetchSelfPayMedicalReport,
     fetchDisbursementReport,
     fetchRejectedReport,
+    fetchContactStatsReport,
+    type ContactStatsReport,
     type SelfPayReportRow,
     type DisbursementReportRow,
     type RejectedReportRow,
 } from '../app/actions/reportActions';
 import { CLOSE_REASON_OPTIONS } from '../lib/closeReasonConstants';
+import { CONTACT_STATS_SECTIONS } from '../lib/contactStats';
+import { GENDER_LABEL, FROM_SOURCE_LABEL, CONSULT_PROGRAM_LABEL, REJECT_REASON_LABEL } from '../lib/contactRecordConstants';
 import { DateInput } from './DateInput';
 import { formatRocDateOnly as toRoc, formatRocDateTime as toRocDateTime } from '../lib/rocDate';
 
@@ -42,12 +47,13 @@ interface Props {
     onLogout: () => void;
 }
 
-type Tab = 'self_pay' | 'disbursement' | 'rejected';
+type Tab = 'self_pay' | 'disbursement' | 'rejected' | 'contact_stats';
 
 const TAB_LABEL: Record<Tab, string> = {
     self_pay: '自費醫療',
     disbursement: '自費醫療補助款項',
     rejected: '自費醫療_未通過',
+    contact_stats: '來電紀錄統計',
 };
 const SUBSIDY_LABEL: Record<string, string> = { '1': '經濟弱勢', '2': '小康家庭' };
 const APP_FORM_LABEL: Record<string, string> = { P: '紙本', E: '電子郵件' };
@@ -146,6 +152,7 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
     const [selfPayRows, setSelfPayRows] = useState<SelfPayReportRow[]>([]);
     const [disbursementRows, setDisbursementRows] = useState<DisbursementReportRow[]>([]);
     const [rejectedRows, setRejectedRows] = useState<RejectedReportRow[]>([]);
+    const [contactStats, setContactStats] = useState<ContactStatsReport | null>(null);
     const [appliedFilter, setAppliedFilter] = useState({ from: initialRange.from, to: initialRange.to, subsidy: '' as '1' | '2' | '', reason: new Set<string>() });
 
     const buildFilter = () => ({
@@ -168,6 +175,10 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
                 } else if (tab === 'disbursement') {
                     const res = await fetchDisbursementReport(operatorUserId, buildFilter());
                     if (!cancelled) setDisbursementRows(res.success ? res.data : []);
+                    if (!cancelled && !res.success) pushToast({ type: 'error', msg: res.error });
+                } else if (tab === 'contact_stats') {
+                    const res = await fetchContactStatsReport(operatorUserId, buildFilter());
+                    if (!cancelled) setContactStats(res.success ? res.data : null);
                     if (!cancelled && !res.success) pushToast({ type: 'error', msg: res.error });
                 } else {
                     const res = await fetchRejectedReport(operatorUserId, buildFilter());
@@ -236,6 +247,7 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
 
     const totalCount = tab === 'self_pay' ? selfPayRows.length
                        : tab === 'disbursement' ? disbursementRows.length
+                       : tab === 'contact_stats' ? (contactStats?.summary.total ?? 0)
                        : rejectedRows.length;
 
     return (
@@ -263,7 +275,7 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
                 {/* Tab switcher */}
                 <div className="border-b border-slate-200">
                     <div className="flex gap-1">
-                        {(['self_pay', 'disbursement', 'rejected'] as Tab[]).map(t => (
+                        {(['self_pay', 'disbursement', 'rejected', 'contact_stats'] as Tab[]).map(t => (
                             <button
                                 key={t}
                                 type="button"
@@ -288,7 +300,7 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
                     </h3>
                     <div className="grid grid-cols-1 md:grid-cols-4 gap-3">
                         <div>
-                            <label className="block text-xs font-medium text-slate-600 mb-1">起始日（申請日期）</label>
+                            <label className="block text-xs font-medium text-slate-600 mb-1">{tab === 'contact_stats' ? '起始日（來電日期）' : '起始日（申請日期）'}</label>
                             <DateInput value={from} onChange={setFrom}
                                 className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
                         </div>
@@ -297,7 +309,7 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
                             <DateInput value={to} onChange={setTo}
                                 className="w-full border border-slate-300 rounded px-2 py-1.5 text-sm" />
                         </div>
-                        {tab !== 'rejected' && (
+                        {tab !== 'rejected' && tab !== 'contact_stats' && (
                             <div>
                                 <label className="block text-xs font-medium text-slate-600 mb-1">補助子類型</label>
                                 <select value={subsidy} onChange={e => setSubsidy(e.target.value as '1' | '2' | '')}
@@ -365,11 +377,16 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
                     共 {totalCount} 筆{totalCount > 100 ? '（畫面預覽前 100 筆，匯出含全部）' : ''}
                 </div>
 
+                {tab === 'contact_stats' && contactStats && (
+                    <ContactStatsSummaryGrid report={contactStats} loading={loading} />
+                )}
+
                 {/* 表格 */}
                 <div className={`bg-white border border-slate-200 rounded-lg overflow-x-auto transition-opacity ${loading ? 'opacity-60' : 'opacity-100'}`}>
                     {tab === 'self_pay' && <SelfPayTable rows={selfPayRows.slice(0, 100)} />}
                     {tab === 'disbursement' && <DisbursementTable rows={disbursementRows.slice(0, 100)} flatten={flatten} />}
                     {tab === 'rejected' && <RejectedTable rows={rejectedRows.slice(0, 100)} />}
+                    {tab === 'contact_stats' && <ContactStatsDetailTable rows={(contactStats?.rows ?? []).slice(0, 100)} />}
                 </div>
             </main>
         </div>
@@ -377,6 +394,75 @@ export function ReportsPage({ operatorUserId, username, onBack, onGoHome, onLogo
 }
 
 // ─── Tables ─────────────────────────────────────────────────────────────────
+
+/** 來電紀錄統計：各欄位計數表（含占比） */
+function ContactStatsSummaryGrid({ report, loading }: { report: ContactStatsReport; loading: boolean }) {
+    const total = report.summary.total;
+    return (
+        <div className={`grid grid-cols-1 md:grid-cols-2 xl:grid-cols-3 gap-4 transition-opacity ${loading ? 'opacity-60' : 'opacity-100'}`}>
+            {CONTACT_STATS_SECTIONS.map(section => {
+                const items = report.summary[section.key];
+                return (
+                    <div key={section.key} className="bg-white border border-slate-200 rounded-lg overflow-hidden">
+                        <div className="px-3 py-2 bg-slate-50 border-b border-slate-200 text-sm font-semibold text-slate-700">
+                            {section.title}
+                        </div>
+                        {items.length === 0 ? (
+                            <p className="px-3 py-4 text-xs text-slate-400">無資料</p>
+                        ) : (
+                            <table className="w-full text-xs">
+                                <tbody className="divide-y divide-slate-100">
+                                    {items.map(item => (
+                                        <tr key={item.label} className={item.count === 0 ? 'text-slate-400' : 'text-slate-700'}>
+                                            <td className="px-3 py-1.5">{item.label}</td>
+                                            <td className="px-3 py-1.5 text-right tabular-nums w-16">{item.count}</td>
+                                            <td className="px-3 py-1.5 text-right tabular-nums w-20 text-slate-400">
+                                                {total > 0 ? `${Math.round((item.count / total) * 1000) / 10}%` : '—'}
+                                            </td>
+                                        </tr>
+                                    ))}
+                                </tbody>
+                            </table>
+                        )}
+                    </div>
+                );
+            })}
+        </div>
+    );
+}
+
+/** 來電紀錄統計：明細（不含姓名、電話） */
+function ContactStatsDetailTable({ rows }: { rows: ContactStatsReport['rows'] }) {
+    if (rows.length === 0) {
+        return <p className="px-4 py-8 text-center text-sm text-slate-400">此區間沒有來電紀錄</p>;
+    }
+    return (
+        <table className="w-full text-xs">
+            <thead className="bg-slate-50 border-b border-slate-200">
+                <tr className="text-left text-slate-600">
+                    <th className="px-3 py-2 font-semibold">來電日期</th>
+                    <th className="px-3 py-2 font-semibold">性別</th>
+                    <th className="px-3 py-2 font-semibold">聯絡方式</th>
+                    <th className="px-3 py-2 font-semibold">從何得知本補助</th>
+                    <th className="px-3 py-2 font-semibold">諮詢方案</th>
+                    <th className="px-3 py-2 font-semibold">無法申請原因</th>
+                </tr>
+            </thead>
+            <tbody className="divide-y divide-slate-100">
+                {rows.map((r, idx) => (
+                    <tr key={idx} className="text-slate-700">
+                        <td className="px-3 py-1.5 whitespace-nowrap">{toRoc(r.contactDate) || '—'}</td>
+                        <td className="px-3 py-1.5">{r.gender ? GENDER_LABEL[r.gender] : '—'}</td>
+                        <td className="px-3 py-1.5">{r.channelName ?? '—'}</td>
+                        <td className="px-3 py-1.5">{r.fromSource ? (FROM_SOURCE_LABEL[r.fromSource] ?? r.fromSource) : '—'}</td>
+                        <td className="px-3 py-1.5">{r.consultProgram ? (CONSULT_PROGRAM_LABEL[r.consultProgram] ?? r.consultProgram) : '—'}</td>
+                        <td className="px-3 py-1.5">{r.rejectReasons.length > 0 ? r.rejectReasons.map(c => REJECT_REASON_LABEL[c] ?? c).join('、') : '—'}</td>
+                    </tr>
+                ))}
+            </tbody>
+        </table>
+    );
+}
 
 const SELF_PAY_COLUMNS: ColumnDef[] = [
     { key: 'officer', width: 76 },

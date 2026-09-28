@@ -274,6 +274,7 @@ function sanitizeForFilename(str: string): string {
  *   scope='D' → disbursementId 必須非 null（disbursement-level），且依文件類型強制角色 + review_stage：
  *     id=18 領款收據：case_officer + review_stage='1'
  *     id=17 醫療收據：case_officer + review_stage='1'，或已完成未繳款領據由該案承辦/admin 補正式收據
+ *     id=22 不同意公開聲明書：case_officer + review_stage='1'，或已完成（含已結案）由該案承辦/admin 補傳
  *
  * 若 disbursementId 提供 → 需傳入 operatorUserId 以做角色檢查。
  */
@@ -281,7 +282,8 @@ async function checkDocumentScopeAndRole(
     client: any,
     documentId: string,
     disbursementId: string | null | undefined,
-    operatorUserId: string | null | undefined
+    operatorUserId: string | null | undefined,
+    applicationId?: string,
 ): Promise<{ ok: true } | { ok: false; error: string }> {
     const cfgRes = await client.query(
         `SELECT scope FROM document_type_config WHERE id = $1`,
@@ -309,7 +311,8 @@ async function checkDocumentScopeAndRole(
                 pd.medical_receipt_status,
                 pd.official_receipt_replaced_at,
                 pd.official_receipt_accountant_confirmed_at,
-                a.officer_id::text AS officer_id
+                a.officer_id::text AS officer_id,
+                pd.application_id::text AS application_id
            FROM payment_disbursements pd
            JOIN applications a ON a.id = pd.application_id
           WHERE pd.id = $1`,
@@ -320,6 +323,9 @@ async function checkDocumentScopeAndRole(
     }
     const disb = disbRes.rows[0];
     const stage: string = disb.review_stage;
+    if (applicationId && disb.application_id !== applicationId) {
+        return { ok: false, error: '撥款不屬於此案件' };
+    }
 
     const rolesRes = await client.query(
         `SELECT r.code FROM user_roles ur JOIN roles r ON r.id = ur.role_id WHERE ur.user_id = $1`,
@@ -343,6 +349,15 @@ async function checkDocumentScopeAndRole(
             && (roles.has('admin') || (roles.has('case_officer') && disb.officer_id === operatorUserId));
         if (!canUploadAtOfficerStage && !canReplaceAfterCompleted) {
             return { ok: false, error: '僅個管階段可上傳醫療收據；已完成且待補正/待確認的醫療收據僅限該案承辦修正' };
+        }
+    }
+    // 不同意公開聲明書（id=22）：個管階段；或已完成（含已結案）由該案承辦/admin 補傳
+    if (Number(documentId) === 22) {
+        const canUploadAtOfficerStage = stage === '1' && roles.has('case_officer');
+        const canUploadAfterCompleted = stage === '9'
+            && (roles.has('admin') || (roles.has('case_officer') && disb.officer_id === operatorUserId));
+        if (!canUploadAtOfficerStage && !canUploadAfterCompleted) {
+            return { ok: false, error: '僅個管階段可上傳聲明書；已完成撥款僅限該案承辦或系統管理員補傳' };
         }
     }
     return { ok: true };
@@ -402,7 +417,7 @@ export async function uploadApplicationDocument(
             const client = await pool.connect();
             try {
                 const check = await checkDocumentScopeAndRole(
-                    client, documentId, disbursementId, operatorUserId
+                    client, documentId, disbursementId, operatorUserId, applicationId
                 );
                 if (!check.ok) return { success: false, error: check.error };
             } finally {
@@ -538,7 +553,7 @@ export async function linkApplicationDocumentByUrl(
             const client = await pool.connect();
             try {
                 const check = await checkDocumentScopeAndRole(
-                    client, documentId, disbursementId, operatorUserId
+                    client, documentId, disbursementId, operatorUserId, applicationId
                 );
                 if (!check.ok) return { success: false, error: check.error };
             } finally {

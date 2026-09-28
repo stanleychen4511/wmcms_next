@@ -19,8 +19,9 @@ import { pool } from '../../lib/db';
 import * as crypto from 'crypto';
 import { after } from 'next/server';
 import { writeAuditLog } from './auditActions';
+import { runAfterResponse } from '../../lib/afterResponse';
 // 'use server' 檔案不可 export 非 async function；常數與型別搬到 lib/paymentDisbursementConstants.ts
-import { REVIEW_STAGE_LABEL, type ReviewStage } from '../../lib/paymentDisbursementConstants';
+import { REVIEW_STAGE_LABEL, EXPENSE_ACCOUNT_OPTIONS, type ExpenseAccount, type ReviewStage } from '../../lib/paymentDisbursementConstants';
 import { formatDateOnly } from '../../lib/dateOnly';
 import { canViewApplication } from '../../lib/applicationAccess';
 import {
@@ -96,6 +97,9 @@ export interface PaymentDisbursement {
     donorConsentLetterUrl: string | null;      // 聲明書 file_path（供檢視按鈕）
     passbookCoverUploaded: boolean;            // 是否已上傳「存摺封面影本」（doc id=21, disbursement_id=X）
     passbookCoverUrl: string | null;           // 存摺封面 file_path（供檢視按鈕）
+
+    // WMCMS-14：支出帳戶（一般／勸募）；空陣列=未填
+    expenseAccounts: ExpenseAccount[];
 }
 
 export interface DisbursementSummary {
@@ -284,6 +288,7 @@ function rowToDisbursement(r: any): PaymentDisbursement {
         donorConsentLetterUrl:            r.donor_consent_letter_url ?? null,
         passbookCoverUploaded:            !!r.passbook_cover_uploaded,
         passbookCoverUrl:                 r.passbook_cover_url ?? null,
+        expenseAccounts:                  Array.isArray(r.expense_accounts) ? r.expense_accounts : [],
     };
 }
 
@@ -294,7 +299,7 @@ const SELECT_ALL_COLS = `
     sent_at, received_at, receipt_file_path, remittance_slip_file_path, medical_receipt_status,
     official_receipt_replaced_at, official_receipt_replaced_by,
     official_receipt_accountant_confirmed_at, official_receipt_accountant_confirmed_by,
-    notes, is_legacy_import,
+    notes, is_legacy_import, expense_accounts,
     created_by, created_at, updated_at,
     review_stage, officer_signed_at,
     supervisor_user_id, supervisor_signed_at,
@@ -718,9 +723,13 @@ async function checkOfficerGate(client: any, disbursementId: string, cur: any): 
     }
     // 若不同意公開捐贈者姓名，需上傳「捐贈/受補助者聲明書」（doc id=22）
     const consentRes = await client.query(
-        `SELECT donor_disclosure_consent FROM payment_disbursements WHERE id = $1::bigint`,
+        `SELECT donor_disclosure_consent, expense_accounts FROM payment_disbursements WHERE id = $1::bigint`,
         [disbursementId]
     );
+    const expenseAccounts = consentRes.rows[0]?.expense_accounts;
+    if (!Array.isArray(expenseAccounts) || expenseAccounts.length === 0) {
+        return '請先勾選本次撥款的「支出帳戶」（一般／勸募）';
+    }
     const consent = consentRes.rows[0]?.donor_disclosure_consent;
     if (consent === null || consent === undefined) {
         return '請先確認「是否同意公開捐贈者姓名」';
@@ -883,21 +892,28 @@ async function advanceStageInternal(
             },
         });
         if (isFinal) {
-            // 撥款完成通知（fire-and-forget；失敗不影響流程）
+            // 撥款完成通知（回應後背景執行；失敗不影響流程）
             const applicationId = cur.rows[0].application_id;
-            void (async () => {
-                try {
-                    const { notifyEvent } = await import('./notificationDispatcher');
-                    await notifyEvent('disbursement_completed', { applicationId, disbursementId });
-                } catch (err) {
-                    console.error('[disbursement] notify completed failed', err);
-                }
-            })();
+            runAfterResponse('notify disbursement_completed', async () => {
+                const { notifyEvent } = await import('./notificationDispatcher');
+                await notifyEvent('disbursement_completed', { applicationId, disbursementId });
+            });
         } else {
             const roleMap: Record<string, string> = { '2': 'supervisor', '3': 'accountant', '4': 'executive' };
             logNotificationStub('submitted',
                 cur.rows[0].application_id, disbursementId,
                 [roleMap[cfg.toStage] ?? '']);
+            // WMCMS-6：撥款送達會計／執行長 → 通知該角色
+            const turnEvent = cfg.toStage === '3' ? 'disbursement_to_accountant'
+                : cfg.toStage === '4' ? 'disbursement_to_executive'
+                : null;
+            if (turnEvent) {
+                const applicationId = cur.rows[0].application_id;
+                runAfterResponse(`notify ${turnEvent}`, async () => {
+                    const { notifyEvent } = await import('./notificationDispatcher');
+                    await notifyEvent(turnEvent, { applicationId, disbursementId });
+                });
+            }
         }
         return { success: true, data: undefined };
     } catch (err: any) {
@@ -1760,25 +1776,88 @@ export async function setDisbursementDonorConsent(
     const client = await pool.connect();
     try {
         const cur = await client.query(
-            `SELECT review_stage FROM payment_disbursements WHERE id = $1::bigint`,
+            `SELECT pd.review_stage, pd.application_id::text AS application_id,
+                    pd.donor_disclosure_consent, a.officer_id::text AS officer_id
+               FROM payment_disbursements pd
+               JOIN applications a ON a.id = pd.application_id
+              WHERE pd.id = $1::bigint`,
             [disbursementId]
         );
         if (cur.rowCount === 0) return { success: false, error: '撥款紀錄不存在' };
         const stage = cur.rows[0].review_stage as ReviewStage;
-        if (stage !== '1') {
+        if (stage === '1') {
+            if (!(await hasAnyRole(operatorUserId, rolesForStage('1')))) {
+                return { success: false, error: '僅承辦人可設定' };
+            }
+        } else if (stage === '9') {
+            // 已完成撥款（含已結案）：由該案承辦或系統管理員補登公開意願並補傳聲明書
+            const roles = await getUserRoles(operatorUserId);
+            const isOwnOfficer = roles.includes('case_officer') && cur.rows[0].officer_id === operatorUserId;
+            if (!roles.includes('admin') && !isOwnOfficer) {
+                return { success: false, error: '已完成撥款僅限該案承辦或系統管理員修改' };
+            }
+        } else {
+            return { success: false, error: '僅在「待送出」或「已完成」階段可設定' };
+        }
+        await client.query(
+            `UPDATE payment_disbursements SET donor_disclosure_consent = $1, updated_at = NOW() WHERE id = $2::bigint`,
+            [consent, disbursementId]
+        );
+        if (stage === '9') {
+            void writeAuditLog({
+                userId: operatorUserId,
+                action: 'payment_disbursement.donor_consent_updated',
+                targetType: 'payment_disbursement',
+                targetId: disbursementId,
+                detail: {
+                    application_id: cur.rows[0].application_id,
+                    from: cur.rows[0].donor_disclosure_consent,
+                    to: consent,
+                },
+            });
+        }
+        return { success: true, data: undefined };
+    } catch (err: any) {
+        console.error('setDisbursementDonorConsent error:', err);
+        return { success: false, error: err.message ?? '更新失敗' };
+    } finally {
+        client.release();
+    }
+}
+
+// ─── 設定支出帳戶（WMCMS-14；officer only, stage='1'） ───────────────
+export async function setDisbursementExpenseAccounts(
+    operatorUserId: string,
+    disbursementId: string,
+    accounts: ExpenseAccount[],
+): Promise<ActionResult> {
+    if (!/^\d+$/.test(disbursementId)) return { success: false, error: '無效的撥款 ID' };
+    const allowed = new Set<string>(EXPENSE_ACCOUNT_OPTIONS.map(o => o.value));
+    const normalized = Array.from(new Set(accounts));
+    if (normalized.length === 0 || normalized.some(a => !allowed.has(a))) {
+        return { success: false, error: '支出帳戶選項不正確' };
+    }
+    const client = await pool.connect();
+    try {
+        const cur = await client.query(
+            `SELECT review_stage FROM payment_disbursements WHERE id = $1::bigint`,
+            [disbursementId]
+        );
+        if (cur.rowCount === 0) return { success: false, error: '撥款紀錄不存在' };
+        if (cur.rows[0].review_stage !== '1') {
             return { success: false, error: '僅在「待送出」階段可設定' };
         }
         if (!(await hasAnyRole(operatorUserId, rolesForStage('1')))) {
             return { success: false, error: '僅承辦人可設定' };
         }
         await client.query(
-            `UPDATE payment_disbursements SET donor_disclosure_consent = $1, updated_at = NOW() WHERE id = $2::bigint`,
-            [consent, disbursementId]
+            `UPDATE payment_disbursements SET expense_accounts = $1::text[], updated_at = NOW() WHERE id = $2::bigint`,
+            [normalized, disbursementId]
         );
         return { success: true, data: undefined };
-    } catch (err: any) {
-        console.error('setDisbursementDonorConsent error:', err);
-        return { success: false, error: err.message ?? '更新失敗' };
+    } catch (err) {
+        console.error('setDisbursementExpenseAccounts error:', err);
+        return { success: false, error: err instanceof Error ? err.message : '更新失敗' };
     } finally {
         client.release();
     }
@@ -2010,6 +2089,29 @@ export async function rejectDisbursement(
         // 通知：被退回的層
         const roleMap: Record<string, string> = { '1': 'case_officer', '2': 'supervisor', '3': 'accountant' };
         logNotificationStub('rejected', cur.rows[0].application_id, disbursementId, [roleMap[targetStage] ?? '']);
+        // WMCMS-6：退回個管 / 退回會計 → 通知被退回的角色
+        const applicationId: string = cur.rows[0].application_id;
+        const receiptNumber: string = cur.rows[0].receipt_number ?? '';
+        if (targetStage === '1') {
+            runAfterResponse('notify case_returned_to_officer', async () => {
+                const { notifyEvent } = await import('./notificationDispatcher');
+                await notifyEvent('case_returned_to_officer', {
+                    applicationId,
+                    disbursementId,
+                    returnItem: `撥款 ${receiptNumber}（${REVIEW_STAGE_LABEL[curStage]}退回）`,
+                    reason: cleanReason,
+                });
+            });
+        } else if (targetStage === '3') {
+            runAfterResponse('notify disbursement_returned_to_accountant', async () => {
+                const { notifyEvent } = await import('./notificationDispatcher');
+                await notifyEvent('disbursement_returned_to_accountant', {
+                    applicationId,
+                    disbursementId,
+                    reason: cleanReason,
+                });
+            });
+        }
         return { success: true, data: undefined };
     } catch (err: any) {
         try { await client.query('ROLLBACK'); } catch { /* ignore */ }

@@ -31,6 +31,9 @@ export interface ContactRecord {
     callerGender: 'M' | 'F' | 'U' | null;
     callerPhone: string | null;
     callerPhoneFromCallerId: boolean;
+    /** 聯絡方式類別（WMCMS-1；contact_channel_options） */
+    contactChannelId: string | null;
+    contactChannelName: string | null;
 
     applicationId: string | null;
     caseNumber: string | null;
@@ -72,6 +75,7 @@ export interface ContactRecordInput {
     callerGender?: 'M' | 'F' | 'U' | null;
     callerPhone?: string | null;
     callerPhoneFromCallerId?: boolean;
+    contactChannelId?: string | null;
     applicationId?: string | null;
     fromSource?: string | null;
     consultantType?: string | null;
@@ -183,6 +187,8 @@ function rowToContactRecord(r: any): ContactRecord {
         callerGender: r.caller_gender ?? null,
         callerPhone: r.caller_phone ?? null,
         callerPhoneFromCallerId: r.caller_phone_from_caller_id === true,
+        contactChannelId: r.contact_channel_id != null ? String(r.contact_channel_id) : null,
+        contactChannelName: r.contact_channel_name ?? null,
         applicationId: r.application_id != null ? String(r.application_id) : null,
         caseNumber: r.case_number ?? null,
         fromSource: r.from_source ?? null,
@@ -211,6 +217,8 @@ const SELECT_COLS = `
     cr.caller_gender,
     cr.caller_phone,
     cr.caller_phone_from_caller_id,
+    cr.contact_channel_id,
+    cco.name AS contact_channel_name,
     cr.application_id,
     a.case_number,
     cr.from_source,
@@ -237,6 +245,7 @@ const FROM_JOIN = `
     LEFT JOIN users u     ON u.id     = cr.handler_user_id
     LEFT JOIN users u_app ON u_app.id = cr.applicant_user_id
     LEFT JOIN applications a ON a.id  = cr.application_id
+    LEFT JOIN contact_channel_options cco ON cco.id = cr.contact_channel_id
 `;
 
 // ─── 申請人搜尋（給首頁「新增關懷」flow 用） ────────────────────────────
@@ -323,6 +332,9 @@ export async function createContactRecord(
     const callerPhoneFromCallerId = input.recordType === '1'
         && !!callerPhone
         && input.callerPhoneFromCallerId === true;
+    // 聯絡方式類別只用於來電紀錄
+    const contactChannelId = input.recordType === '1' && input.contactChannelId && /^\d+$/.test(input.contactChannelId)
+        ? input.contactChannelId : null;
     // 來電紀錄：caller_name 與 caller_phone 至少一項；關懷紀錄：applicant_user_id 必填
     if (input.recordType === '1' && !callerName && !callerPhone) {
         return { success: false, error: '來電紀錄至少需填寫姓名或聯絡方式' };
@@ -358,12 +370,12 @@ export async function createContactRecord(
                  applicant_user_id, caller_name, caller_gender, caller_phone, caller_phone_from_caller_id,
                  application_id, from_source, consultant_type, consult_program,
                  reject_reasons, summary, is_special_attention, special_attention_note, media_urls,
-                 contacted_party, contacted_party_other)
+                 contacted_party, contacted_party_other, contact_channel_id)
              VALUES ($1, $2::date, $3::bigint,
                      $4, $5, $6, $7, $8,
                      $9, $10, $11, $12,
                      $13::text[], $14, $15, $16, $17::text[],
-                     $18, $19)
+                     $18, $19, $20::bigint)
              RETURNING id::text`,
             [
                 input.recordType, input.contactDate, operatorUserId,
@@ -379,6 +391,7 @@ export async function createContactRecord(
                 cleanReasons, summary || null,
                 specialAttention.isSpecialAttention, specialAttention.specialAttentionNote, cleanMedia,
                 contactedParty, contactedPartyOther,
+                contactChannelId,
             ],
         );
         const id = insRes.rows[0].id as string;
@@ -950,6 +963,9 @@ export async function updateContactRecord(
     const callerPhoneFromCallerId = input.recordType === '1'
         && !!callerPhone
         && input.callerPhoneFromCallerId === true;
+    // 聯絡方式類別只用於來電紀錄
+    const contactChannelId = input.recordType === '1' && input.contactChannelId && /^\d+$/.test(input.contactChannelId)
+        ? input.contactChannelId : null;
     if (input.recordType === '1' && !callerName && !callerPhone) {
         return { success: false, error: '來電紀錄至少需填寫姓名或聯絡方式' };
     }
@@ -986,8 +1002,9 @@ export async function updateContactRecord(
                  reject_reasons = $12::text[], summary = $13,
                  is_special_attention = $14, special_attention_note = $15, media_urls = $16::text[],
                  contacted_party = $17, contacted_party_other = $18,
+                 contact_channel_id = $19::bigint,
                  updated_at = NOW()
-              WHERE id = $19::bigint`,
+              WHERE id = $20::bigint`,
             [
                 input.recordType, input.contactDate,
                 input.applicantUserId ?? null,
@@ -1002,6 +1019,7 @@ export async function updateContactRecord(
                 cleanReasons, cur.rows[0].summary ?? null,
                 specialAttention.isSpecialAttention, specialAttention.specialAttentionNote, cleanMedia,
                 contactedParty, contactedPartyOther,
+                contactChannelId,
                 recordId,
             ],
         );

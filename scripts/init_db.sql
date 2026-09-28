@@ -417,6 +417,22 @@ INSERT INTO subsidy_amount_limits (subsidy_subtype, amount_max)
 VALUES ('1', 30000), ('2', 350000)
 ON CONFLICT (subsidy_subtype) DO NOTHING;
 
+-- annual_subsidy_budgets（WMCMS-8 #83：年度預算與警戒金額，依子類型分列）
+--   已撥款（review_stage='9'）依核發日期 sent_at 所屬年度扣除；剩餘 ≤ 警戒金額時提醒內部人員
+CREATE TABLE IF NOT EXISTS annual_subsidy_budgets (
+    fiscal_year     INT NOT NULL CHECK (fiscal_year BETWEEN 2000 AND 2200),
+    subsidy_subtype CHAR(1) NOT NULL CHECK (subsidy_subtype IN ('1', '2')),
+    budget_amount   NUMERIC(14, 0) NOT NULL CHECK (budget_amount >= 0),
+    warning_amount  NUMERIC(14, 0) NOT NULL CHECK (warning_amount >= 0),
+    updated_at      TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_by      BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    PRIMARY KEY (fiscal_year, subsidy_subtype)
+);
+COMMENT ON TABLE  annual_subsidy_budgets IS '年度補助預算（依子類型）；剩餘預算 = 預算 − 當年度已完成撥款（依核發日期）';
+COMMENT ON COLUMN annual_subsidy_budgets.fiscal_year IS '西元年（畫面顯示民國年）';
+COMMENT ON COLUMN annual_subsidy_budgets.subsidy_subtype IS '子類型：1=經濟弱勢、2=小康家庭';
+COMMENT ON COLUMN annual_subsidy_budgets.warning_amount IS '警戒金額：剩餘預算 ≤ 此值時提醒內部人員';
+
 CREATE TABLE IF NOT EXISTS mid_class_eligibility_matrix (
     marital_status   CHAR(1) NOT NULL CHECK (marital_status  IN ('1', '2', '3')),  -- 1=已婚 2=單親 3=單身
     children_status  CHAR(1) NOT NULL CHECK (children_status IN ('1', '2', '3')),  -- 1=未成年子女 2=已成年子女 3=無子女
@@ -635,6 +651,50 @@ WHERE attachment_url IS NOT NULL
   AND btrim(attachment_url) <> ''
   AND attachment_urls = '[]'::jsonb;
 
+-- 14c-1. application_supervisor_reviews（WMCMS-4 #79：送董事前主管審閱歷程，退件意見重送後仍可見）
+CREATE TABLE IF NOT EXISTS application_supervisor_reviews (
+    id                   BIGSERIAL PRIMARY KEY,
+    application_id       BIGINT NOT NULL REFERENCES applications(id) ON DELETE CASCADE,
+    action               TEXT NOT NULL,
+    note                 TEXT,
+    actor_id             BIGINT REFERENCES users(id) ON DELETE SET NULL,
+    created_at           TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    source_audit_log_id  BIGINT UNIQUE,
+    CONSTRAINT application_supervisor_reviews_action_chk
+        CHECK (action IN ('request', 'approve', 'reject'))
+);
+CREATE INDEX IF NOT EXISTS idx_application_supervisor_reviews_app
+    ON application_supervisor_reviews (application_id, created_at, id);
+COMMENT ON TABLE application_supervisor_reviews IS '送董事前主管審閱歷程（個管送審 / 主管通過 / 主管退件），只新增不覆蓋';
+COMMENT ON COLUMN application_supervisor_reviews.action IS 'request=個管送主管審核、approve=主管通過、reject=主管退件';
+COMMENT ON COLUMN application_supervisor_reviews.note IS '主管退件原因或通過備註';
+COMMENT ON COLUMN application_supervisor_reviews.source_audit_log_id IS '由 audit_logs 回補的來源 id（避免重複回補）';
+
+INSERT INTO application_supervisor_reviews (application_id, action, note, actor_id, created_at, source_audit_log_id)
+SELECT al.target_id::bigint,
+       CASE al.action
+           WHEN 'application.request_supervisor_review_board' THEN 'request'
+           WHEN 'application.supervisor_approve_board' THEN 'approve'
+           ELSE 'reject'
+       END,
+       NULLIF(btrim(al.detail->>'note'), ''),
+       al.user_id,
+       al.created_at,
+       al.id
+FROM audit_logs al
+JOIN applications a ON a.id::text = al.target_id
+WHERE al.target_type = 'application'
+  AND al.action IN ('application.request_supervisor_review_board',
+                    'application.supervisor_approve_board',
+                    'application.supervisor_reject_board')
+  AND al.target_id ~ '^[0-9]+$'
+  -- 已有系統直接寫入的紀錄（source_audit_log_id IS NULL）代表已上線新版，不再回補以免重複
+  AND NOT EXISTS (
+      SELECT 1 FROM application_supervisor_reviews r
+      WHERE r.application_id = a.id AND r.source_audit_log_id IS NULL
+  )
+ON CONFLICT (source_audit_log_id) DO NOTHING;
+
 -- 14d. board_review_rounds：董事審核多輪歷史（最新輪才是實際審核依據）
 CREATE TABLE IF NOT EXISTS board_review_rounds (
     id                         BIGSERIAL PRIMARY KEY,
@@ -738,6 +798,18 @@ CREATE INDEX IF NOT EXISTS idx_payment_disbursements_application_id
 ALTER TABLE payment_disbursements
     ADD COLUMN IF NOT EXISTS donor_disclosure_consent BOOLEAN;
 COMMENT ON COLUMN payment_disbursements.donor_disclosure_consent IS '是否同意公開捐贈者姓名（每筆撥款獨立記錄；NULL=未填；false 時需配套上傳聲明書）';
+
+-- 7f-1a-1. payment_disbursements: 支出帳戶（WMCMS-14 #89）
+--   以陣列儲存：目前 UI 為單選，日後若需複選只改 UI，不需搬資料
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS expense_accounts TEXT[] NOT NULL DEFAULT '{}';
+DO $$ BEGIN
+    ALTER TABLE payment_disbursements
+        ADD CONSTRAINT payment_disbursements_expense_accounts_chk
+        CHECK (expense_accounts <@ ARRAY['general', 'fundraising']::TEXT[]);
+EXCEPTION WHEN duplicate_object THEN NULL;
+END $$;
+COMMENT ON COLUMN payment_disbursements.expense_accounts IS '支出帳戶：general=一般、fundraising=勸募；個管送出前必填（空陣列=未填）';
 
 -- 7f-1b. payment_disbursements 外部隱碼（refine-disbursement-flow，2026-04）
 --   receipt_number = 內部可讀流水號（YYYY-MM-NNNN）
@@ -1012,6 +1084,27 @@ ALTER TABLE contact_records
     ADD COLUMN IF NOT EXISTS contacted_party_other TEXT;
 COMMENT ON COLUMN contact_records.contacted_party       IS '關懷紀錄專用：聯絡對象與申請人之關係（1=本人 2=配偶 9=其他）';
 COMMENT ON COLUMN contact_records.contacted_party_other IS '當 contacted_party=9 時的補充描述';
+
+-- 2c-3. contact_channel_options（WMCMS-1 #75：來電紀錄「聯絡方式類別」，後台可管理）
+CREATE TABLE IF NOT EXISTS contact_channel_options (
+    id          BIGSERIAL PRIMARY KEY,
+    name        TEXT NOT NULL UNIQUE,
+    sort_order  INT NOT NULL DEFAULT 0,
+    is_active   BOOLEAN NOT NULL DEFAULT TRUE,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
+);
+COMMENT ON TABLE contact_channel_options IS '來電紀錄「聯絡方式類別」選項（電話/LINE/Email…），由後台維護；停用後不再出現在下拉選單但保留歷史統計';
+-- 只在表為空時放預設選項，避免管理員改名後重跑 init 又被補回
+INSERT INTO contact_channel_options (name, sort_order)
+SELECT v.name, v.sort_order
+FROM (VALUES ('電話', 1), ('LINE', 2), ('Email', 3), ('親洽', 4), ('其他', 99)) AS v(name, sort_order)
+WHERE NOT EXISTS (SELECT 1 FROM contact_channel_options);
+
+ALTER TABLE contact_records
+    ADD COLUMN IF NOT EXISTS contact_channel_id BIGINT REFERENCES contact_channel_options(id) ON DELETE SET NULL;
+CREATE INDEX IF NOT EXISTS idx_contact_records_channel ON contact_records (contact_channel_id);
+COMMENT ON COLUMN contact_records.contact_channel_id IS '聯絡方式類別（來電紀錄用；NULL=未填，舊資料皆為 NULL）';
 
 ALTER TABLE contact_records
     ADD COLUMN IF NOT EXISTS is_special_attention BOOLEAN NOT NULL DEFAULT FALSE,
@@ -1427,6 +1520,107 @@ JOIN LATERAL (
 ON CONFLICT (rule_id, channel) DO UPDATE SET
     template_id = EXCLUDED.template_id;
 
+-- ▼▼ WMCMS-6 角色輪到提醒 ▼▼
+INSERT INTO notification_templates (name, channel, subject, body, description, status, sort_order)
+SELECT * FROM (VALUES
+    ('line_case_board_approved', 'line', '',
+     E'【萬美基金會】董事審核通過\n案號：{{案號}}\n申請人：{{申請人}}\n核定金額：NT$ {{核定金額}}\n\n案件已進入核銷撥款階段，請至系統辦理後續撥款作業。\n{{案件連結}}',
+     '系統範本：董事審核通過、案件進入核銷撥款時通知承辦人（LINE）', 1, 110),
+    ('email_case_board_approved', 'email', '【萬美基金會】董事審核通過，請辦理撥款',
+     E'{{承辦人}} 您好：\n\n以下案件已通過董事審核，進入核銷撥款階段：\n\n案號：{{案號}}\n申請人：{{申請人}}\n核定金額：NT$ {{核定金額}}\n\n請至系統辦理後續撥款作業：{{案件連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     '系統範本：董事審核通過、案件進入核銷撥款時通知承辦人（Email）', 1, 111),
+    ('line_case_returned_to_officer', 'line', '',
+     E'【萬美基金會】案件退回待處理\n案號：{{案號}}\n申請人：{{申請人}}\n退回項目：{{退件項目}}\n退回原因：{{退件原因}}\n\n請至系統修正後重新送出。\n{{案件連結}}',
+     '系統範本：案件或撥款退回承辦人時通知（LINE）', 1, 112),
+    ('email_case_returned_to_officer', 'email', '【萬美基金會】案件退回待處理',
+     E'{{承辦人}} 您好：\n\n以下案件已退回給您處理：\n\n案號：{{案號}}\n申請人：{{申請人}}\n退回項目：{{退件項目}}\n退回原因：{{退件原因}}\n\n請至系統修正後重新送出：{{案件連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     '系統範本：案件或撥款退回承辦人時通知（Email）', 1, 113),
+    ('line_disbursement_to_accountant', 'line', '',
+     E'【萬美基金會】撥款待會計審核\n案號：{{案號}}\n撥款編號：{{撥款編號}}\n本次撥款金額：NT$ {{本次撥款金額}}\n\n請至系統辦理會計審核。\n{{案件連結}}',
+     '系統範本：撥款送達會計審核時通知會計（LINE）', 1, 114),
+    ('email_disbursement_to_accountant', 'email', '【萬美基金會】撥款待會計審核',
+     E'您好：\n\n以下撥款已送達會計審核：\n\n案號：{{案號}}\n申請人：{{申請人}}\n撥款編號：{{撥款編號}}\n本次撥款金額：NT$ {{本次撥款金額}}\n\n請至系統辦理會計審核：{{案件連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     '系統範本：撥款送達會計審核時通知會計（Email）', 1, 115),
+    ('line_disbursement_returned_to_accountant', 'line', '',
+     E'【萬美基金會】撥款退回會計\n案號：{{案號}}\n撥款編號：{{撥款編號}}\n退回原因：{{退件原因}}\n\n請至系統確認後重新送出。\n{{案件連結}}',
+     '系統範本：執行長將撥款退回會計時通知會計（LINE）', 1, 116),
+    ('email_disbursement_returned_to_accountant', 'email', '【萬美基金會】撥款退回會計',
+     E'您好：\n\n以下撥款已由執行長退回會計：\n\n案號：{{案號}}\n申請人：{{申請人}}\n撥款編號：{{撥款編號}}\n本次撥款金額：NT$ {{本次撥款金額}}\n退回原因：{{退件原因}}\n\n請至系統確認後重新送出：{{案件連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     '系統範本：執行長將撥款退回會計時通知會計（Email）', 1, 117),
+    ('line_disbursement_to_executive', 'line', '',
+     E'【萬美基金會】撥款待執行長核准\n案號：{{案號}}\n撥款編號：{{撥款編號}}\n本次撥款金額：NT$ {{本次撥款金額}}\n\n請至系統辦理核准。\n{{案件連結}}',
+     '系統範本：撥款送達執行長核准時通知執行長（LINE）', 1, 118),
+    ('email_disbursement_to_executive', 'email', '【萬美基金會】撥款待執行長核准',
+     E'執行長 您好：\n\n以下撥款已送達執行長核准：\n\n案號：{{案號}}\n申請人：{{申請人}}\n撥款編號：{{撥款編號}}\n本次撥款金額：NT$ {{本次撥款金額}}\n\n請至系統辦理核准：{{案件連結}}\n\n──────────────\n財團法人萬美社會福利慈善事業基金會',
+     '系統範本：撥款送達執行長核准時通知執行長（Email）', 1, 119)
+) AS v(name, channel, subject, body, description, status, sort_order)
+WHERE NOT EXISTS (
+    SELECT 1 FROM notification_templates t WHERE t.name = v.name
+);
+
+INSERT INTO notification_events (code, module, name, description)
+VALUES
+    ('case_board_approved', 'application', '董事審核通過', '董事審核通過、案件進入核銷撥款時通知承辦人。'),
+    ('case_returned_to_officer', 'application', '案件退回承辦人', '主管送董事前退件、退回董事再審未通過、撥款退回個管時通知承辦人。'),
+    ('disbursement_to_accountant', 'payment', '撥款送達會計', '撥款由主管送出、進入會計審核時通知會計。'),
+    ('disbursement_returned_to_accountant', 'payment', '撥款退回會計', '執行長將撥款退回會計時通知會計。'),
+    ('disbursement_to_executive', 'payment', '撥款送達執行長', '撥款由會計送出、進入執行長核准時通知執行長。')
+ON CONFLICT (code) DO UPDATE SET
+    module = EXCLUDED.module,
+    name = EXCLUDED.name,
+    description = EXCLUDED.description;
+
+INSERT INTO notification_rules (event_code, name, is_enabled, recipient_policy, channels, sort_order)
+VALUES
+    ('case_board_approved', '通知承辦人董事審核通過', TRUE,
+     '{"recipient_types":["assigned_officer"],"respect_user_preferences":true}'::jsonb,
+     ARRAY['email', 'line']::text[], 40),
+    ('case_returned_to_officer', '通知承辦人案件退回', TRUE,
+     '{"recipient_types":["assigned_officer"],"respect_user_preferences":true}'::jsonb,
+     ARRAY['email', 'line']::text[], 45),
+    ('disbursement_to_accountant', '通知會計撥款待審', TRUE,
+     '{"recipient_types":["role:accountant"],"respect_user_preferences":true}'::jsonb,
+     ARRAY['email', 'line']::text[], 50),
+    ('disbursement_returned_to_accountant', '通知會計撥款退回', TRUE,
+     '{"recipient_types":["role:accountant"],"respect_user_preferences":true}'::jsonb,
+     ARRAY['email', 'line']::text[], 55),
+    ('disbursement_to_executive', '通知執行長撥款待核准', TRUE,
+     '{"recipient_types":["role:executive"],"respect_user_preferences":true}'::jsonb,
+     ARRAY['email', 'line']::text[], 60)
+ON CONFLICT (event_code, name) DO UPDATE SET
+    recipient_policy = EXCLUDED.recipient_policy,
+    channels = EXCLUDED.channels,
+    sort_order = EXCLUDED.sort_order,
+    updated_at = NOW();
+
+WITH desired(rule_event, rule_name, channel, template_name) AS (
+    VALUES
+        ('case_board_approved', '通知承辦人董事審核通過', 'email', 'email_case_board_approved'),
+        ('case_board_approved', '通知承辦人董事審核通過', 'line', 'line_case_board_approved'),
+        ('case_returned_to_officer', '通知承辦人案件退回', 'email', 'email_case_returned_to_officer'),
+        ('case_returned_to_officer', '通知承辦人案件退回', 'line', 'line_case_returned_to_officer'),
+        ('disbursement_to_accountant', '通知會計撥款待審', 'email', 'email_disbursement_to_accountant'),
+        ('disbursement_to_accountant', '通知會計撥款待審', 'line', 'line_disbursement_to_accountant'),
+        ('disbursement_returned_to_accountant', '通知會計撥款退回', 'email', 'email_disbursement_returned_to_accountant'),
+        ('disbursement_returned_to_accountant', '通知會計撥款退回', 'line', 'line_disbursement_returned_to_accountant'),
+        ('disbursement_to_executive', '通知執行長撥款待核准', 'email', 'email_disbursement_to_executive'),
+        ('disbursement_to_executive', '通知執行長撥款待核准', 'line', 'line_disbursement_to_executive')
+)
+INSERT INTO notification_rule_templates (rule_id, channel, template_id)
+SELECT r.id, d.channel, t.id
+FROM desired d
+JOIN notification_rules r ON r.event_code = d.rule_event AND r.name = d.rule_name
+JOIN LATERAL (
+    SELECT id
+    FROM notification_templates
+    WHERE name = d.template_name
+    ORDER BY id
+    LIMIT 1
+) t ON TRUE
+ON CONFLICT (rule_id, channel) DO UPDATE SET
+    template_id = EXCLUDED.template_id;
+-- ▲▲ WMCMS-6 角色輪到提醒 ▲▲
+
 -- ── 檔案儲存位置 ──────────────────────────────────────────────
 -- 先插入無 parent 的根節點，再插入子節點
 INSERT INTO file_storage_location (id, parent_id, location_name, status, description, sort_order) VALUES
@@ -1468,7 +1662,7 @@ VALUES
     (17, '醫療收據',             'reimbursement', TRUE,  NULL, 1, TRUE, FALSE, 'D', NULL, 'original'),  -- 每筆撥款一份
     (18, '領款收據',             'reimbursement', TRUE,  NULL, 2, TRUE, FALSE, 'D', NULL, 'original'),  -- 每筆撥款一份
     (19, '保險給付通知單',       'reimbursement', FALSE, NULL, 3, TRUE, FALSE, 'C', NULL, 'original'),
-    (20, '生命故事同意刊登截圖證明', 'reimbursement', FALSE, NULL, 4, TRUE, FALSE, 'C', NULL, 'original'),
+    (20, '生命故事暨同意刊登截圖證明', 'reimbursement', FALSE, NULL, 4, TRUE, FALSE, 'C', NULL, 'original'),
     (21, '存摺封面影本',         'reimbursement', TRUE,  NULL, 5, TRUE, TRUE,  'D', NULL, 'original'),  -- 2026-05 改為每次撥款必備
     (22, '捐贈/受補助者聲明書（不同意公開姓名時必附）', 'reimbursement', FALSE, NULL, 6, TRUE, FALSE, 'D', NULL, 'original')  -- 2026-05 新增；UI conditionally required
 ON CONFLICT (id) DO UPDATE SET

@@ -5,6 +5,7 @@ import { decryptAES } from '../../lib/crypto';
 import { writeAuditLog } from './auditActions';
 import { canViewApplication } from '../../lib/applicationAccess';
 import { fetchSetting } from './settingsActions';
+import { runAfterResponse } from '../../lib/afterResponse';
 
 // ─── Types ───────────────────────────────────────────────────────────────────
 
@@ -461,11 +462,11 @@ export async function assignCaseToBoardGroup(
             detail: { group_id: groupId, mode },
         });
 
-        // Phase 3: 觸發 case_assigned_to_board_group 事件通知（fire-and-forget）
+        // Phase 3: 觸發 case_assigned_to_board_group 事件通知（回應後背景執行）
         // Reassignment 使用新 groupId，舊組成員不會被通知
         const { notifyEvent } = await import('./notificationDispatcher');
-        void notifyEvent('case_assigned_to_board_group', { applicationId, groupId })
-            .catch(err => console.error('[notify] case_assigned_to_board_group failed:', err));
+        runAfterResponse('notify case_assigned_to_board_group',
+            () => notifyEvent('case_assigned_to_board_group', { applicationId, groupId }));
 
         return { success: true, data: { reassigned } };
     } catch (err: any) {

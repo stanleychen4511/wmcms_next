@@ -1,5 +1,6 @@
 'use client';
-import { useState, useEffect, useCallback } from 'react';
+import { useState, useEffect, useCallback, useRef } from 'react';
+import { EmailFormatToolbar } from './EmailFormatToolbar';
 import {
     Bell, Mail, MessageSquare, Smartphone,
     ToggleLeft, ToggleRight, Settings, Plus,
@@ -31,7 +32,7 @@ const CHANNEL_META: Record<string, { label: string; icon: React.ReactNode; color
     sms:   { label: '簡訊 (SMS)', icon: <Smartphone className="w-5 h-5" />, color: 'text-purple-600 bg-purple-50', future: true },
 };
 
-const PLACEHOLDER_HINT = '可用佔位符：{{案號}} {{申請人}} {{階段}} {{申請日期}} {{申請金額}} {{承辦人}}';
+const PLACEHOLDER_HINT = '可用佔位符：{{案號}} {{申請人}} {{階段}} {{申請日期}} {{申請金額}} {{承辦人}}；系統事件另有 {{核定金額}} {{案件連結}} {{撥款編號}} {{本次撥款金額}} {{退件項目}} {{退件原因}}';
 
 // ─── SMTP Settings Form ───────────────────────────────────────────────────────
 
@@ -145,6 +146,7 @@ function TemplateModal({ mode, tpl, userId, onClose, onSaved }: TplModalProps) {
     const [channel, setChannel] = useState(tpl?.channel ?? 'email');
     const [subject, setSubject] = useState(tpl?.subject ?? '');
     const [body, setBody] = useState(tpl?.body ?? '');
+    const bodyRef = useRef<HTMLTextAreaElement>(null);
     const [description, setDescription] = useState(tpl?.description ?? '');
     const [sortOrder, setSortOrder] = useState(tpl?.sort_order ?? 1);
     const [saving, setSaving] = useState(false);
@@ -196,7 +198,12 @@ function TemplateModal({ mode, tpl, userId, onClose, onSaved }: TplModalProps) {
                     </div>
                     <div>
                         <label className="block text-sm font-medium text-slate-700 mb-1">內文 <span className="text-red-500">*</span></label>
-                        <textarea className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
+                        {channel === 'email' && (
+                            <div className="mb-1.5">
+                                <EmailFormatToolbar textareaRef={bodyRef} value={body} onChange={setBody} />
+                            </div>
+                        )}
+                        <textarea ref={bodyRef} className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"
                             rows={6} value={body} onChange={e => setBody(e.target.value)} />
                         <p className="text-xs text-slate-400 mt-1">{PLACEHOLDER_HINT}</p>
                     </div>

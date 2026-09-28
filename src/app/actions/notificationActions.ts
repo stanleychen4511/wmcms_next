@@ -5,6 +5,7 @@ import { writeAuditLog } from './auditActions';
 import { SYSTEM_TEMPLATE_NAMES } from '../../lib/systemTemplates';
 import { NOTIFICATION_MANAGER_ROLES } from '../../lib/notificationPermissions';
 import { formatRocDateOnly } from '../../lib/rocDate';
+import { renderEmailHtml, markdownToPlainText } from '../../lib/emailMarkdown';
 import { after } from 'next/server';
 import {
     getNotificationAttachmentContentType,
@@ -636,8 +637,9 @@ export async function sendNotificationEmail(
                 : `"${cfg.from_name}" <${cfg.from_email}>`,
             ...(bccRecipients.length > 0 ? { bcc: formatAddresses(bccRecipients) } : {}),
             subject,
-            text: body,
-            html: body.replace(/\n/g, '<br>'),
+            // WMCMS-12：支援 **粗體** ++底線++ 清單與連結；escape-first，內容無法注入 HTML
+            text: markdownToPlainText(body),
+            html: renderEmailHtml(body),
             ...(attachments && attachments.length > 0 ? { attachments } : {}),
         });
     } catch (err: any) {
@@ -712,6 +714,7 @@ async function sendScheduledEmail(opts: {
     to: { name: string; address: string }[];
     subject: string;
     html: string;
+    text?: string;
 }): Promise<{ success: boolean; error?: string }> {
     const cfgRes = await loadSmtpConfigForDelivery();
     if (!cfgRes.success || !cfgRes.data) {
@@ -733,6 +736,7 @@ async function sendScheduledEmail(opts: {
             to: toAddresses,
             subject: opts.subject,
             html: opts.html,
+            ...(opts.text ? { text: opts.text } : {}),
         });
         return { success: true };
     } catch (err: any) {
@@ -1069,7 +1073,8 @@ async function executeScheduleInternal(
             const result = await sendScheduledEmail({
                 to: [{ name: applicantName, address: `${row.account}@placeholder.local` }],
                 subject,
-                html: body,
+                html: renderEmailHtml(body),
+                text: markdownToPlainText(body),
             });
             if (result.success) sent++; else failed++;
         }

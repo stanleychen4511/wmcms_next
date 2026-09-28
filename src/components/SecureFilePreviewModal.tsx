@@ -3,7 +3,7 @@
 /**
  * 安全檔案預覽 modal — 與行政初審階段檔案 preview 同樣機制：
  *   ✓ 浮水印
- *   ✓ 縮放（按鈕 + 滾輪）
+ *   ✓ 縮放（工具列 +/- 按鈕；滾輪只負責捲動）
  *   ✓ 防右鍵
  *   ✓ 防 Ctrl+P 列印
  *   ✓ 防下載（透過 /api/preview Content-Disposition: inline）
@@ -41,9 +41,6 @@ function isWordFile(url: string)  { return /\.docx?(\?|$)/i.test(url); }
 function isImageFile(url: string) { return /\.(jpe?g|png|gif|webp)(\?|$)/i.test(url); }
 
 const ZOOM_STEPS = [50, 75, 100, 125, 150, 175, 200];
-function clampZoom(z: number) {
-    return Math.min(ZOOM_STEPS[ZOOM_STEPS.length - 1], Math.max(ZOOM_STEPS[0], z));
-}
 function stepZoom(current: number, delta: number): number {
     if (delta > 0) return ZOOM_STEPS.find(s => s > current) ?? current;
     return [...ZOOM_STEPS].reverse().find(s => s < current) ?? current;
@@ -51,8 +48,8 @@ function stepZoom(current: number, delta: number): number {
 
 // ─── DOCX viewer ──────────────────────────────────────────────────────────
 
-function DocxViewer({ fileUrl, zoom = 100, onZoomChange }: {
-    fileUrl: string; zoom?: number; onZoomChange?: (z: number) => void;
+function DocxViewer({ fileUrl, zoom = 100 }: {
+    fileUrl: string; zoom?: number;
 }) {
     const containerRef = useRef<HTMLDivElement>(null);
     const outerRef = useRef<HTMLDivElement>(null);
@@ -134,10 +131,6 @@ function DocxViewer({ fileUrl, zoom = 100, onZoomChange }: {
                 document.body.style.cursor = 'grabbing';
                 e.preventDefault();
             }}
-            onWheel={e => {
-                e.preventDefault();
-                onZoomChange?.(stepZoom(zoom, -e.deltaY));
-            }}
             style={{
                 position: 'relative', width: '100%', height: '100%', minHeight: '200px',
                 overflowY: 'auto', overflowX: 'auto', background: '#e5e7eb',
@@ -193,7 +186,6 @@ export function SecureFilePreviewModal({ url, label, onClose }: Props) {
 
     const zoomIn = () => setZoom(z => stepZoom(z, 1));
     const zoomOut = () => setZoom(z => stepZoom(z, -1));
-    const handleZoomChange = (z: number) => setZoom(clampZoom(z));
 
     return (
         <div
@@ -253,17 +245,16 @@ export function SecureFilePreviewModal({ url, label, onClose }: Props) {
                 {/* Content */}
                 <div className="flex-1 bg-slate-100 relative" style={{ overflow: 'hidden', minHeight: 0 }}>
                     {isPdfFile(url) && (
-                        <PdfViewer url={getPreviewUrl(url)} zoom={zoom} label={label} onZoomChange={handleZoomChange} />
+                        <PdfViewer url={getPreviewUrl(url)} zoom={zoom} label={label} />
                     )}
                     {isWordFile(url) && (
-                        <DocxViewer fileUrl={url} zoom={zoom} onZoomChange={handleZoomChange} />
+                        <DocxViewer fileUrl={url} zoom={zoom} />
                     )}
                     {isImageFile(url) && (
                         <SecureImageViewer
                             url={getPreviewUrl(url)}
                             label={label}
                             zoom={zoom}
-                            onZoomChange={handleZoomChange}
                         />
                     )}
                     {!isPdfFile(url) && !isWordFile(url) && !isImageFile(url) && (

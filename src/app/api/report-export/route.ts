@@ -3,7 +3,7 @@
  *
  * POST /api/report-export
  *   body: {
- *     reportType: 'self_pay' | 'disbursement' | 'rejected',
+ *     reportType: 'self_pay' | 'disbursement' | 'rejected' | 'contact_stats',
  *     operatorUserId: string,
  *     filter: { from?, to?, subsidySubtype?, officerId?, reasonCodes? },
  *     flatten?: boolean,   // 報表 2 專用：是否展開為平面格式（每列重複案件資訊）
@@ -23,7 +23,10 @@ import {
     fetchSelfPayMedicalReport,
     fetchDisbursementReport,
     fetchRejectedReport,
+    fetchContactStatsReport,
 } from '../../actions/reportActions';
+import { CONTACT_STATS_SECTIONS } from '../../../lib/contactStats';
+import { GENDER_LABEL, FROM_SOURCE_LABEL, CONSULT_PROGRAM_LABEL, REJECT_REASON_LABEL } from '../../../lib/contactRecordConstants';
 
 const SUBSIDY_LABEL: Record<string, string> = { '1': '經濟弱勢', '2': '小康家庭' };
 const APP_FORM_LABEL: Record<string, string> = { P: '紙本', E: '電子郵件' };
@@ -270,6 +273,56 @@ async function buildRejected(wb: ExcelJS.Workbook, operatorUserId: string, filte
     applyDataBorders(ws, 2, ws.rowCount);
 }
 
+/** 來電紀錄統計（WMCMS-1）：「統計」工作表放各欄位計數，「明細」工作表放每筆來電（不含姓名、電話） */
+async function buildContactStats(wb: ExcelJS.Workbook, operatorUserId: string, filter: { from?: string; to?: string }) {
+    const res = await fetchContactStatsReport(operatorUserId, filter);
+    if (!res.success) throw new Error(res.error);
+    const { summary, rows } = res.data;
+
+    const ws = wb.addWorksheet('統計');
+    ws.columns = [{ width: 28 }, { width: 10 }, { width: 10 }];
+    const rangeText = `來電日期：${toRoc(filter?.from) || '不限'} ～ ${toRoc(filter?.to) || '不限'}　共 ${summary.total} 筆`;
+    ws.addRow([rangeText]).font = { bold: true };
+    for (const section of CONTACT_STATS_SECTIONS) {
+        ws.addRow([]);
+        const header = ws.addRow([section.title, '筆數', '占比']);
+        applyHeaderStyle(header);
+        const first = ws.rowCount + 1;
+        for (const item of summary[section.key]) {
+            const row = ws.addRow([
+                item.label,
+                item.count,
+                summary.total > 0 ? item.count / summary.total : 0,
+            ]);
+            row.getCell(3).numFmt = '0.0%';
+        }
+        applyDataBorders(ws, first, ws.rowCount);
+    }
+
+    const detail = wb.addWorksheet('明細');
+    detail.columns = [
+        { header: '來電日期（民國）', width: 16 },
+        { header: '性別', width: 8 },
+        { header: '聯絡方式', width: 12 },
+        { header: '從何得知本補助', width: 18 },
+        { header: '諮詢方案', width: 12 },
+        { header: '無法申請原因', width: 40 },
+    ];
+    applyHeaderStyle(detail.getRow(1));
+    detail.views = [{ state: 'frozen', ySplit: 1 }];
+    for (const r of rows) {
+        detail.addRow([
+            toRoc(r.contactDate),
+            r.gender ? GENDER_LABEL[r.gender] : '',
+            r.channelName ?? '',
+            r.fromSource ? (FROM_SOURCE_LABEL[r.fromSource] ?? r.fromSource) : '',
+            r.consultProgram ? (CONSULT_PROGRAM_LABEL[r.consultProgram] ?? r.consultProgram) : '',
+            r.rejectReasons.map(c => REJECT_REASON_LABEL[c] ?? c).join('、'),
+        ]);
+    }
+    applyDataBorders(detail, 2, detail.rowCount);
+}
+
 // ─── Handler ───────────────────────────────────────────────────────────────
 
 export async function POST(req: NextRequest) {
@@ -294,6 +347,9 @@ export async function POST(req: NextRequest) {
         } else if (reportType === 'rejected') {
             await buildRejected(wb, operatorUserId, filter ?? {});
             filename = '自費醫療_未通過.xlsx';
+        } else if (reportType === 'contact_stats') {
+            await buildContactStats(wb, operatorUserId, filter ?? {});
+            filename = '來電紀錄統計.xlsx';
         } else {
             return NextResponse.json({ error: 'unknown reportType' }, { status: 400 });
         }

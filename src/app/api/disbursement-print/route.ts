@@ -3,7 +3,7 @@
  *
  * POST /api/disbursement-print
  *   body: { disbursementId: string, operatorUserId: string,
- *           documents: ('opinion'|'medical'|'payment')[] }
+ *           documents: ('opinion'|'medical'|'payment'|'passbook'|'insurance')[] }
  *
  * 守門：
  *   - operatorUserId 必須具 accountant 角色（admin 不再 bypass，與其他撥款守門一致）
@@ -15,6 +15,8 @@
  *      'opinion' → ReviewOpinionPdf 渲染
  *      'medical' → 從 application_documents (id=17, disbursement_id=X) 抓所有檔案
  *      'payment' → 從 application_documents (id=18, disbursement_id=X) 抓檔案
+ *      'passbook'  → 存摺封面影本（id=21, disbursement_id=X），可多檔
+ *      'insurance' → 保險給付通知單（id=19, 案件層級），可多檔
  *      （'medical' / 'payment' 的來源若是 image，用 pdf-lib embedJpg/embedPng 包成 PDF 頁）
  *   2) 用 pdf-lib 合併所有頁面為單一 PDF
  *   3) 寫 audit_logs（detail.selected = documents 陣列、disbursement_id、operator）
@@ -26,7 +28,7 @@ import { promises as fs } from 'node:fs';
 import { pool } from '../../../lib/db';
 import { writeAuditLog } from '../../actions/auditActions';
 
-const ALLOWED_DOC_KEYS = ['opinion', 'medical', 'payment'] as const;
+const ALLOWED_DOC_KEYS = ['opinion', 'medical', 'payment', 'passbook', 'insurance'] as const;
 type DocKey = typeof ALLOWED_DOC_KEYS[number];
 
 async function hasAccountantRole(userId: string): Promise<boolean> {
@@ -184,6 +186,23 @@ export async function POST(req: NextRequest) {
     }
 }
 
+/** 依查詢結果把多個檔案（PDF/JPG/PNG）合併為一份 PDF buffer；無可用檔案時回傳 null */
+async function mergeDocumentFiles(sql: string, params: unknown[]): Promise<Buffer | null> {
+    const fr = await pool.query(sql, params);
+    if (fr.rowCount === 0) return null;
+    const { PDFDocument } = await import('pdf-lib');
+    const subDoc = await PDFDocument.create();
+    for (const row of fr.rows) {
+        const buf = await fileToPdfBuffer(row.file_path);
+        if (!buf) continue;
+        const src = await PDFDocument.load(buf);
+        const pages = await subDoc.copyPages(src, src.getPageIndices());
+        pages.forEach(p => subDoc.addPage(p));
+    }
+    if (subDoc.getPageCount() === 0) return null;
+    return Buffer.from(await subDoc.save());
+}
+
 async function renderDocumentPdf(
     key: DocKey,
     applicationId: string,
@@ -241,27 +260,37 @@ async function renderDocumentPdf(
         }
     }
     if (key === 'medical') {
-        // 會計上傳的醫療收據（id=17, disbursement_id=X），可多檔
-        const fr = await pool.query(
+        // 醫療收據（id=17, disbursement_id=X），可多檔；已被取代的舊版不列印
+        return mergeDocumentFiles(
             `SELECT file_path FROM application_documents
              WHERE application_id = $1::bigint AND id = 17 AND disbursement_id = $2::bigint
                AND file_path IS NOT NULL
+               AND COALESCE(is_current, TRUE) = TRUE
              ORDER BY uploaded_at ASC NULLS LAST`,
             [applicationId, disbursementId]
         );
-        if (fr.rowCount === 0) return null;
-        // 多檔合併為一份 PDF buffer
-        const { PDFDocument } = await import('pdf-lib');
-        const subDoc = await PDFDocument.create();
-        for (const row of fr.rows) {
-            const buf = await fileToPdfBuffer(row.file_path);
-            if (!buf) continue;
-            const src = await PDFDocument.load(buf);
-            const pages = await subDoc.copyPages(src, src.getPageIndices());
-            pages.forEach(p => subDoc.addPage(p));
-        }
-        if (subDoc.getPageCount() === 0) return null;
-        return Buffer.from(await subDoc.save());
+    }
+    if (key === 'passbook') {
+        // 存摺封面影本（id=21, disbursement_id=X），每次撥款各自上傳
+        return mergeDocumentFiles(
+            `SELECT file_path FROM application_documents
+             WHERE application_id = $1::bigint AND id = 21 AND disbursement_id = $2::bigint
+               AND file_path IS NOT NULL
+               AND COALESCE(is_current, TRUE) = TRUE
+             ORDER BY uploaded_at ASC NULLS LAST`,
+            [applicationId, disbursementId]
+        );
+    }
+    if (key === 'insurance') {
+        // 保險給付通知單（id=19）為案件層級文件
+        return mergeDocumentFiles(
+            `SELECT file_path FROM application_documents
+             WHERE application_id = $1::bigint AND id = 19 AND disbursement_id IS NULL
+               AND file_path IS NOT NULL
+               AND COALESCE(is_current, TRUE) = TRUE
+             ORDER BY uploaded_at ASC NULLS LAST`,
+            [applicationId]
+        );
     }
     if (key === 'opinion') {
         try {

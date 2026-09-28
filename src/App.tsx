@@ -592,8 +592,15 @@ function App() {
     // 董事審核 tab：可見成員清單 + 預設選自己（若有），否則第一位
     //   - 自己是組員 → 只看自己 + 其他組員（chairman 第三審時要能看到其他董事的決定當參考）
     //   - supervisor / admin / chairman / executive → 看全部
+    //   - 本案負責個管師 → 看全部（唯讀；發領據信時需參考董事意見）
     //   - 其他角色 → 空清單（顯示「您不在派組成員中」）
     const userRolesListForTabs = (loggedInUser?.roles ?? []) as Role[];
+    const isResponsibleOfficer = !!(
+        loggedInUser
+        && userRolesListForTabs.includes('case_officer')
+        && appDetail?.officerId
+        && String(loggedInUser.id) === String(appDetail.officerId)
+    );
     const canViewRejectedClosedAllStages = !!(
         appDetail?.status === '2'
         && loggedInUser
@@ -610,6 +617,7 @@ function App() {
         || userRolesListForTabs.includes('admin')
         || userRolesListForTabs.includes('chairman' as Role)
         || userRolesListForTabs.includes('executive')
+        || isResponsibleOfficer
         || canViewRejectedClosedAllStages;
     const visibleBoardMembers = (() => {
         const all = signatureStatus?.members ?? [];
@@ -779,6 +787,7 @@ function App() {
     const [myTurnAppIds, setMyTurnAppIds] = useState<Set<string>>(new Set());
     const [myTurnFilterActive, setMyTurnFilterActive] = useState(false);
     const [pendingDocFilterActive, setPendingDocFilterActive] = useState(false);
+    const [disbursableFilterActive, setDisbursableFilterActive] = useState(false);
     const [unassignedFilterActive, setUnassignedFilterActive] = useState(false);
     const loadMyTurn = useCallback(async (userId: string) => {
         const r = await fetchMyTurnCases(userId);
@@ -901,6 +910,7 @@ function App() {
                 disbursableCases={disbursableCases}
                 onUnassignedGoToList={() => { setUnassignedFilterActive(true); setView('list'); }}
                 onPendingDocGoToList={() => { setPendingDocFilterActive(true); setView('list'); }}
+                onDisbursableGoToList={() => { setDisbursableFilterActive(true); setView('list'); }}
                 myTurnItems={myTurnItems}
                 onMyTurnGoToList={() => { setMyTurnFilterActive(true); setView('list'); }}
                 onSelectCase={(appId) => {
@@ -1053,6 +1063,9 @@ function App() {
                 myTurnAppIds={myTurnAppIds}
                 myTurnFilterActive={myTurnFilterActive}
                 onToggleMyTurnFilter={(v: boolean) => setMyTurnFilterActive(v)}
+                disbursableAppIds={new Set(disbursableCases.map(c => c.applicationId))}
+                disbursableOnlyActive={disbursableFilterActive}
+                onToggleDisbursableOnly={(v: boolean) => setDisbursableFilterActive(v)}
                 pendingOnlyActive={pendingDocFilterActive}
                 onTogglePendingOnly={(v: boolean) => setPendingDocFilterActive(v)}
                 unassignedFilterActive={unassignedFilterActive}
@@ -1960,7 +1973,8 @@ function App() {
                     hasPermission('board_member') ||
                     hasPermission('chairman' as Role) ||
                     hasPermission('admin') ||
-                    hasPermission('supervisor');
+                    hasPermission('supervisor') ||
+                    isResponsibleOfficer;
                 return (
                     <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative space-y-6">
                         <h3 className="text-lg font-bold flex items-center gap-2">
@@ -2898,6 +2912,59 @@ function App() {
                             </div>
                         </div>
                     )}
+
+                    {/* 主管審閱歷程 — 退件意見重送後仍保留，主管可依原意見核對修正內容 */}
+                    {!isVolunteerView
+                        && (appDetail?.stage === 'admin_review' || appDetail?.stage === 'visit')
+                        && (appDetail?.supervisorReviewHistory ?? []).some(h => h.action === 'reject')
+                        && (() => {
+                            const history = appDetail?.supervisorReviewHistory ?? [];
+                            const lastRejectId = [...history].reverse().find(h => h.action === 'reject')?.id;
+                            const ACTION_LABEL: Record<string, string> = {
+                                request: '個管送主管審核',
+                                approve: '主管通過',
+                                reject: '主管退件',
+                            };
+                            return (
+                                <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
+                                    <p className="font-semibold text-slate-800 mb-2">主管審閱歷程</p>
+                                    {appDetail?.supervisorReviewPending && (
+                                        <p className="text-xs text-slate-500 mb-2">個管已依退件意見修正後重送，請對照下方最近一次退件原因審閱。</p>
+                                    )}
+                                    <ol className="space-y-1.5">
+                                        {history.map(h => (
+                                            <li
+                                                key={h.id}
+                                                className={clsx(
+                                                    'rounded-md px-3 py-1.5',
+                                                    h.action === 'reject'
+                                                        ? (h.id === lastRejectId && appDetail?.supervisorReviewPending
+                                                            ? 'bg-rose-50 border border-rose-300'
+                                                            : 'bg-rose-50/60')
+                                                        : 'bg-slate-50',
+                                                )}
+                                            >
+                                                <div className="flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
+                                                    <span className={clsx(
+                                                        'font-semibold',
+                                                        h.action === 'reject' ? 'text-rose-700'
+                                                            : h.action === 'approve' ? 'text-emerald-700'
+                                                            : 'text-slate-700',
+                                                    )}>
+                                                        {ACTION_LABEL[h.action] ?? h.action}
+                                                    </span>
+                                                    <span>{h.actorName}</span>
+                                                    <span>{h.createdAt ? new Date(h.createdAt).toLocaleString('zh-TW', { hour12: false }) : ''}</span>
+                                                </div>
+                                                {h.note && (
+                                                    <p className="mt-0.5 whitespace-pre-wrap text-slate-800">{h.note}</p>
+                                                )}
+                                            </li>
+                                        ))}
+                                    </ol>
+                                </div>
+                            );
+                        })()}
 
                     {/* 結案 banner — 只在「審核未通過結案」時提示；核銷完成屬正常結束，不再贅述 */}
                     {appDetail?.status === '2' && (

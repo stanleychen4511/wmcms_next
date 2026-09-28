@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { BudgetAlertBanner } from './BudgetAlertBanner';
 import {
     ChevronLeft,
     ChevronRight,
@@ -49,6 +50,7 @@ interface HomePageProps {
     disbursableCases?: { applicationId: string; caseNumber: string; applicantName: string; approvedAmount: number | null }[];
     onUnassignedGoToList?: () => void;
     onPendingDocGoToList?: () => void;
+    onDisbursableGoToList?: () => void;
     myTurnItems?: { applicationId: string; caseNumber: string; applicantName: string; reasonText: string }[];
     onMyTurnGoToList?: () => void;
     specialAttentionCases?: { applicationId: string; caseNumber: string; applicantName: string; specialAttentionNote: string; contactDate: string }[];
@@ -263,7 +265,7 @@ function BannerCarousel({ banners }: { banners: Banner[] }) {
 
 const ASSIGN_ROLES: Role[] = ['supervisor', 'board_member', 'admin'];
 
-export function HomePage({ username, userId, userRoles, activeRole, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, unassignedCases = [], disbursableCases = [], onUnassignedGoToList, onPendingDocGoToList, myTurnItems = [], onMyTurnGoToList, specialAttentionCases = [], banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onGoReports, onGoRejectedArchive, onLogout, onSelectCase }: HomePageProps) {
+export function HomePage({ username, userId, userRoles, activeRole, pendingAlerts = [], thresholdAlerts = [], unassignedCount = 0, unassignedCases = [], disbursableCases = [], onUnassignedGoToList, onPendingDocGoToList, onDisbursableGoToList, myTurnItems = [], onMyTurnGoToList, specialAttentionCases = [], banners = [], announcements = [], newDays = 7, onGoAnnouncements, onNavigateToCases, onGoAudit, onGoAdmin, onNewApplication, onGoTemplates, onGoNotifications, onGoUserSettings, onGoStats, onGoReports, onGoRejectedArchive, onLogout, onSelectCase }: HomePageProps) {
     const canAssign = userRoles.some(r => ASSIGN_ROLES.includes(r));
     const canViewStats = userRoles.some(r => STATS_ROLES.includes(r));
     const [selectedAnn, setSelectedAnn] = useState<Announcement | null>(null);
@@ -378,6 +380,9 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                         )}
                     </div>
                 )}
+
+                {/* WMCMS-8：年度預算警戒（僅內部人員；無警示時不顯示） */}
+                <BudgetAlertBanner operatorUserId={userId} />
 
                 {/* Threshold-reached cases — only for case_officer */}
                 {userRoles.includes('case_officer') && thresholdAlerts.length > 0 && (
@@ -673,9 +678,19 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                                 {disbursableCases.length}
                             </span>
                             <span className="text-xs text-slate-500 ml-2">尚未建立任何撥款紀錄</span>
+                            {onDisbursableGoToList && (
+                                <button
+                                    type="button"
+                                    onClick={() => { setShowDisbursableModal(false); onDisbursableGoToList(); }}
+                                    className="ml-auto text-xs text-emerald-700 hover:underline"
+                                >
+                                    在案件清單中檢視 →
+                                </button>
+                            )}
                             <button
+                                type="button"
                                 onClick={() => setShowDisbursableModal(false)}
-                                className="ml-auto text-slate-400 hover:text-slate-600 transition shrink-0"
+                                className={clsx('text-slate-400 hover:text-slate-600 transition shrink-0', onDisbursableGoToList ? '' : 'ml-auto')}
                             >
                                 <X className="w-5 h-5" />
                             </button>

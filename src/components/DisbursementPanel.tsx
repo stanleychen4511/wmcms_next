@@ -14,6 +14,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { EmailFormatToolbar } from './EmailFormatToolbar';
 import {
     Wallet, Plus, Trash2, AlertTriangle, Loader2, CheckCircle, FileText, Upload, RefreshCw,
     ChevronRight, X, XCircle, History, ClipboardCheck, Send, Eye, Mail, Printer, FileCheck2,
@@ -31,6 +32,7 @@ import {
     rejectDisbursement,
     setDisbursementChecklist,
     setDisbursementDonorConsent,
+    setDisbursementExpenseAccounts,
     setDisbursementMedicalReceiptStatus,
     confirmOfficialMedicalReceiptReplacement,
     updateDisbursementRemittanceSlip,
@@ -54,7 +56,7 @@ import {
     type NotificationTemplate,
 } from '../app/actions/notificationActions';
 import { InfoSheetModal, type InfoSection } from './InfoSheetModal';
-import { REVIEW_STAGE_LABEL, type ReviewStage } from '../lib/paymentDisbursementConstants';
+import { REVIEW_STAGE_LABEL, EXPENSE_ACCOUNT_LABEL, EXPENSE_ACCOUNT_OPTIONS, type ExpenseAccount, type ReviewStage } from '../lib/paymentDisbursementConstants';
 import { linkApplicationDocumentByUrl } from '../app/actions/documentActions';
 import { uploadFileToBlob, type UploadedBlob } from '../lib/uploadClient';
 import { Role } from '../types';
@@ -745,6 +747,8 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
     const [printOpinion, setPrintOpinion] = useState(true);
     const [printMedical, setPrintMedical] = useState(true);
     const [printPayment, setPrintPayment] = useState(true);
+    const [printPassbook, setPrintPassbook] = useState(true);
+    const [printInsurance, setPrintInsurance] = useState(true);
     const [printing, setPrinting] = useState(false);
     const [printOperatorTooltip, setPrintOperatorTooltip] = useState<string>('');
 
@@ -763,6 +767,8 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
     const isFinal = d.reviewStage === '9';
     const isAccountant = operatorRoles.includes('accountant');
     const canUploadRemittanceSlip = isFinal && (operatorRoles.includes('case_officer') || operatorRoles.includes('admin'));
+    // 已完成撥款（含已結案）仍可補登公開意願並補傳不同意公開聲明書；伺服器端限該案承辦或 admin
+    const canManageDonorLetterAfterCompleted = isFinal && (operatorRoles.includes('case_officer') || operatorRoles.includes('admin'));
     const hasPendingOfficialReceiptConfirmation = !!d.officialReceiptReplacedAt && !d.officialReceiptAccountantConfirmedAt;
     const canReplaceOfficialReceipt = isFinal
         && d.medicalReceiptStatus === 'unpaid'
@@ -983,6 +989,12 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
         }
     };
 
+    const handleSetExpenseAccounts = async (accounts: ExpenseAccount[]) => {
+        const res = await setDisbursementExpenseAccounts(operatorUserId, d.id, accounts);
+        if (res.success) onChanged();
+        else pushToast({ type: 'error', msg: res.error });
+    };
+
     const handleSetDonorConsent = async (consent: boolean) => {
         const res = await setDisbursementDonorConsent(operatorUserId, d.id, consent);
         if (res.success) onChanged();
@@ -1076,6 +1088,8 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
             printOpinion ? 'opinion' : null,
             printMedical ? 'medical' : null,
             printPayment ? 'payment' : null,
+            printPassbook ? 'passbook' : null,
+            printInsurance ? 'insurance' : null,
         ].filter(Boolean);
         if (documents.length === 0) {
             pushToast({ type: 'error', msg: '請至少勾選一項' });
@@ -1187,6 +1201,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
             if (!effectiveMedicalReceiptStatus) return '請先選擇醫療收據狀態（正式收據 / 未繳款領據）';
             if (d.lastReceiptEmailStatus !== 'sent') return '尚未成功寄送領款收據 email';
             if (!d.passbookCoverUploaded) return '尚未上傳存摺封面（每次撥款都需上傳）';
+            if (d.expenseAccounts.length === 0) return '請先勾選本次撥款的「支出帳戶」（一般／勸募）';
             if (d.donorDisclosureConsent === null) return '請先選擇是否同意公開捐贈者姓名';
             if (d.donorDisclosureConsent === false && !d.donorConsentLetterUploaded) {
                 return '勾選「不同意公開捐贈者姓名」時，需上傳捐贈/受補助者聲明書';
@@ -1314,6 +1329,11 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                         {d.sentAt && <span>· 寄出 {formatRocDateOnly(d.sentAt)}</span>}
                     </div>
                     {d.notes && <p className="text-xs text-slate-600 mt-1">備註：{d.notes}</p>}
+                    {d.expenseAccounts.length > 0 && (
+                        <p className="text-xs text-slate-600 mt-0.5">
+                            支出帳戶：{d.expenseAccounts.map(a => EXPENSE_ACCOUNT_LABEL[a] ?? a).join('、')}
+                        </p>
+                    )}
                     {/* 「檢視」按鈕群（領款收據 / 醫療收據 / 申請表 / 家訪 / 董事審核）：
                         - 進行中（reviewStage 1~4）的當事人可看
                         - 已完成（reviewStage='9'）：所有撥款流程參與角色均可繼續檢視
@@ -1857,6 +1877,22 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                                     </span>
                                 )}
                             </div>
+                            {/* 支出帳戶（WMCMS-14）：DB 存陣列，目前單選；改複選只需換成 checkbox */}
+                            <div className="flex items-center gap-3 flex-wrap text-xs">
+                                <span className="text-slate-700 font-medium">支出帳戶</span>
+                                {EXPENSE_ACCOUNT_OPTIONS.map(opt => (
+                                    <label key={opt.value} className="inline-flex items-center gap-1 cursor-pointer">
+                                        <input type="radio" name={`expenseAccount-${d.id}`}
+                                            checked={d.expenseAccounts.includes(opt.value)}
+                                            onChange={() => handleSetExpenseAccounts([opt.value])}
+                                            className="accent-blue-600" />
+                                        <span>{opt.label}</span>
+                                    </label>
+                                ))}
+                                {d.expenseAccounts.length === 0 && (
+                                    <span className="text-rose-600">（未填）</span>
+                                )}
+                            </div>
                             {/* 是否同意公開捐贈者姓名 */}
                             <div className="flex items-center gap-3 flex-wrap text-xs">
                                 <span className="text-slate-700 font-medium">是否同意公開受補助</span>
@@ -2070,10 +2106,18 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                                 <input type="checkbox" checked={printPayment} onChange={e => setPrintPayment(e.target.checked)} />
                                 領款收據（本次撥款）
                             </label>
+                            <label className="flex items-center gap-1 text-xs cursor-pointer">
+                                <input type="checkbox" checked={printPassbook} onChange={e => setPrintPassbook(e.target.checked)} />
+                                存摺封面（本次撥款）
+                            </label>
+                            <label className="flex items-center gap-1 text-xs cursor-pointer" title="案件層級文件；未上傳時列印會自動略過">
+                                <input type="checkbox" checked={printInsurance} onChange={e => setPrintInsurance(e.target.checked)} />
+                                保險給付通知單
+                            </label>
                             <button
                                 type="button"
                                 onClick={handlePrint}
-                                disabled={printing || (!printOpinion && !printMedical && !printPayment)}
+                                disabled={printing || (!printOpinion && !printMedical && !printPayment && !printPassbook && !printInsurance)}
                                 className="inline-flex items-center gap-1 px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 text-white rounded disabled:opacity-50"
                             >
                                 <Printer className="w-3.5 h-3.5" />{printing ? '產生中…' : '列印'}
@@ -2125,6 +2169,42 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                         >
                             <Eye className="w-3 h-3" />檢視匯款單
                         </button>
+                    )}
+                </div>
+            )}
+
+            {canManageDonorLetterAfterCompleted && (
+                <div className="mt-2 pt-2 border-t border-slate-100 space-y-1.5 text-xs">
+                    <div className="flex items-center gap-3 flex-wrap">
+                        <span className="text-slate-700 font-medium">是否同意公開受補助</span>
+                        <label className="inline-flex items-center gap-1 cursor-pointer">
+                            <input type="radio" name={`donorConsentFinal-${d.id}`} checked={d.donorDisclosureConsent === true}
+                                onChange={() => handleSetDonorConsent(true)} className="accent-emerald-600" />
+                            <span>同意</span>
+                        </label>
+                        <label className="inline-flex items-center gap-1 cursor-pointer">
+                            <input type="radio" name={`donorConsentFinal-${d.id}`} checked={d.donorDisclosureConsent === false}
+                                onChange={() => handleSetDonorConsent(false)} className="accent-rose-600" />
+                            <span>不同意</span>
+                        </label>
+                        {d.donorDisclosureConsent === null && (
+                            <span className="text-slate-500">（未填）</span>
+                        )}
+                    </div>
+                    {d.donorDisclosureConsent === false && (
+                        <div className="flex items-center gap-2 flex-wrap pl-4">
+                            <span className="text-slate-700">捐贈/受補助者聲明書：</span>
+                            <label className={`inline-flex items-center gap-1 px-2 py-1 text-xs border rounded cursor-pointer ${uploading ? 'opacity-50' : 'hover:bg-slate-50'} ${d.donorConsentLetterUploaded ? 'border-emerald-300 text-emerald-700' : 'border-rose-300 text-rose-700'}`}>
+                                <Upload className="w-3 h-3" />
+                                {d.donorConsentLetterUploaded ? '補傳聲明書' : '上傳聲明書'}
+                                <input type="file" accept=".pdf,.jpg,.jpeg,.png" className="hidden" onChange={handleDonorLetterFileChange} disabled={uploading} />
+                            </label>
+                            {d.donorConsentLetterUploaded && (
+                                <span className="inline-flex items-center gap-1 px-2 py-0.5 bg-emerald-100 text-emerald-700 rounded">
+                                    <CheckCircle className="w-3 h-3" />已上傳
+                                </span>
+                            )}
+                        </div>
                     )}
                 </div>
             )}
@@ -2392,6 +2472,7 @@ function DisbursementEmailDialog({
     const [selectedRecipientIds, setSelectedRecipientIds] = useState<Set<string>>(new Set());
     const [subject, setSubject] = useState('');
     const [body, setBody] = useState('');
+    const bodyRef = useRef<HTMLTextAreaElement>(null);
     const [customName, setCustomName] = useState('');
     const [customEmail, setCustomEmail] = useState('');
     const [customRecipients, setCustomRecipients] = useState<NotificationRecipient[]>([]);
@@ -2812,15 +2893,20 @@ function DisbursementEmailDialog({
                                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
                             />
                         </label>
-                        <label className="block">
+                        <div className="block">
                             <span className="block text-sm font-medium text-slate-700 mb-1">內容</span>
+                            <div className="mb-1.5">
+                                <EmailFormatToolbar textareaRef={bodyRef} value={body} onChange={setBody} />
+                            </div>
                             <textarea
+                                ref={bodyRef}
                                 value={body}
                                 onChange={e => setBody(e.target.value)}
                                 rows={10}
+                                aria-label="內容"
                                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg resize-y"
                             />
-                        </label>
+                        </div>
                         {kind === 'receipt' && (
                             <div className="space-y-3">
                                 <div className="border border-slate-200 rounded-lg p-3">

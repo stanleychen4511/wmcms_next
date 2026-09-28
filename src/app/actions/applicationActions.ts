@@ -6,6 +6,7 @@ import { generateBlindIndex } from '../../lib/crypto';
 import { CaseSummary, ApplicationRecord, WorkflowStage, ApplicationStatus } from '../../types';
 import { STATUS_TO_STAGE, DB_STAGE_TO_FRONTEND, STATUS_LABEL } from '../../lib/stageMaps';
 import { writeAuditLog } from './auditActions';
+import { runAfterResponse } from '../../lib/afterResponse';
 import { boardApplicationAccessSql, isRestrictedBoardViewer } from '../../lib/applicationAccess';
 
 export interface ApplicationStatusResult {
@@ -688,8 +689,8 @@ export async function assignOfficerBatch(
         });
         const { notifyEvent } = await import('./notificationDispatcher');
         for (const applicationId of applicationIds) {
-            void notifyEvent('case_assigned_to_officer', { applicationId, officerUserId })
-                .catch(err => console.error('[notify] case_assigned_to_officer failed:', err));
+            runAfterResponse('notify case_assigned_to_officer',
+                () => notifyEvent('case_assigned_to_officer', { applicationId, officerUserId }));
         }
         return { success: true };
     } catch (err: any) {

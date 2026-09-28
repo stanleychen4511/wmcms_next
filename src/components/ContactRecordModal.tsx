@@ -16,6 +16,7 @@ import { useEffect, useState } from 'react';
 import { X, Plus, Trash2, Save, Loader2, Phone, History, User, Search, AlertTriangle } from 'lucide-react';
 import { useToast } from './FloatingToast';
 import { DateInput } from './DateInput';
+import { fetchContactChannelOptions, type ContactChannelOption } from '../app/actions/contactChannelActions';
 import {
     createContactRecord,
     updateContactRecord,
@@ -93,6 +94,15 @@ export function ContactRecordModal({
     const [callerGender, setCallerGender] = useState<Gender | ''>(existingRecord?.callerGender ?? '');
     const [callerPhone, setCallerPhone] = useState(existingRecord?.callerPhone ?? '');
     const [callerPhoneFromCallerId, setCallerPhoneFromCallerId] = useState(existingRecord?.callerPhoneFromCallerId ?? false);
+    const [contactChannelId, setContactChannelId] = useState<string>(existingRecord?.contactChannelId ?? '');
+    const [channelOptions, setChannelOptions] = useState<ContactChannelOption[]>([]);
+    useEffect(() => {
+        let cancelled = false;
+        void fetchContactChannelOptions(true).then(res => {
+            if (!cancelled && res.success && res.data) setChannelOptions(res.data);
+        });
+        return () => { cancelled = true; };
+    }, []);
     const [fromSource, setFromSource] = useState(existingRecord?.fromSource ?? '');
     const [consultantType, setConsultantType] = useState(existingRecord?.consultantType ?? '');
     const [consultProgram, setConsultProgram] = useState(existingRecord?.consultProgram ?? '');
@@ -170,6 +180,7 @@ export function ContactRecordModal({
             setCallerGender(existingRecord.callerGender ?? '');
             setCallerPhone(existingRecord.callerPhone ?? '');
             setCallerPhoneFromCallerId(existingRecord.callerPhoneFromCallerId);
+            setContactChannelId(existingRecord.contactChannelId ?? '');
             setFromSource(existingRecord.fromSource ?? '');
             setConsultantType(existingRecord.consultantType ?? '');
             setConsultProgram(existingRecord.consultProgram ?? '');
@@ -308,6 +319,7 @@ export function ContactRecordModal({
                 callerGender: callerGender || null,
                 callerPhone: callerPhone.trim() || null,
                 callerPhoneFromCallerId: recordType === '1' && !!callerPhone.trim() && callerPhoneFromCallerId,
+                contactChannelId: recordType === '1' ? (contactChannelId || null) : null,
                 applicationId: recordType === '2' ? (applicationId || null) : null,
                 fromSource: fromSource || null,
                 consultantType: consultantType || null,
@@ -516,16 +528,34 @@ export function ContactRecordModal({
                                     <label className="text-xs font-medium text-slate-600 flex items-center gap-1 h-4">
                                         <Phone className="w-3 h-3" />聯絡方式（選填）
                                     </label>
-                                    <input
-                                        type="text" maxLength={50}
-                                        value={callerPhone}
-                                        onChange={e => {
-                                            setCallerPhone(e.target.value);
-                                            if (!e.target.value.trim()) setCallerPhoneFromCallerId(false);
-                                        }}
-                                        className="mt-1 w-full border border-slate-300 rounded-lg px-3 py-2 text-sm"
-                                        placeholder="電話 / LINE / Email"
-                                    />
+                                    <div className="mt-1 flex gap-2">
+                                        {/* 聯絡方式類別（WMCMS-1）：供來電紀錄統計；選項由後台「聯絡方式類別」維護 */}
+                                        <select
+                                            value={contactChannelId}
+                                            onChange={e => setContactChannelId(e.target.value)}
+                                            aria-label="聯絡方式類別"
+                                            className="w-28 shrink-0 border border-slate-300 rounded-lg px-2 py-2 text-sm"
+                                        >
+                                            <option value="">— 類別 —</option>
+                                            {channelOptions.map(o => (
+                                                <option key={o.id} value={o.id}>{o.name}</option>
+                                            ))}
+                                            {/* 編輯舊紀錄時，已停用的類別仍要能顯示 */}
+                                            {contactChannelId && !channelOptions.some(o => o.id === contactChannelId) && (
+                                                <option value={contactChannelId}>{existingRecord?.contactChannelName ?? '（已停用）'}</option>
+                                            )}
+                                        </select>
+                                        <input
+                                            type="text" maxLength={50}
+                                            value={callerPhone}
+                                            onChange={e => {
+                                                setCallerPhone(e.target.value);
+                                                if (!e.target.value.trim()) setCallerPhoneFromCallerId(false);
+                                            }}
+                                            className="min-w-0 flex-1 border border-slate-300 rounded-lg px-3 py-2 text-sm"
+                                            placeholder="電話 / LINE ID / Email"
+                                        />
+                                    </div>
                                     <label className={`mt-2 inline-flex items-center gap-2 text-xs ${callerPhone.trim() ? 'text-slate-600 cursor-pointer' : 'text-slate-400 cursor-not-allowed'}`}>
                                         <input
                                             type="checkbox"

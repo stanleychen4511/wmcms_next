@@ -60,6 +60,9 @@ export type AuditAction =
     | 'referral_unit.create'
     | 'referral_unit.update'
     | 'referral_unit.toggle_active'
+    | 'contact_channel.create'
+    | 'contact_channel.update'
+    | 'contact_channel.toggle_active'
     | 'application.basics_update'
     | 'board_group.create'
     | 'board_group.update'
@@ -94,7 +97,8 @@ export type AuditAction =
     | 'payment_disbursement.receipt_email_sent'
     | 'payment_disbursement.official_receipt_replaced'
     | 'payment_disbursement.official_receipt_accountant_confirmed'
-    | 'payment_disbursement.print_merged';
+    | 'payment_disbursement.print_merged'
+    | 'payment_disbursement.donor_consent_updated';
 
 export type AuditTargetType =
     | 'application'
@@ -110,6 +114,7 @@ export type AuditTargetType =
     | 'announcement_category'
     | 'banner'
     | 'referral_unit'
+    | 'contact_channel'
     | 'board_group'
     | 'board_assignment'
     | 'event'
