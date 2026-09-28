@@ -23,13 +23,23 @@ type ActionResult<T = undefined> = T extends undefined
     ? { success: boolean; error?: string }
     : { success: boolean; data?: T; error?: string };
 
-function rowToOption(row: any): ContactChannelOption {
+interface OptionRow { id: string | number; name: string; sort_order: number | null; is_active: boolean }
+
+function rowToOption(row: OptionRow): ContactChannelOption {
     return {
         id: String(row.id),
         name: row.name,
         sortOrder: row.sort_order ?? 0,
         isActive: row.is_active === true,
     };
+}
+
+function isUniqueViolation(err: unknown): boolean {
+    return typeof err === 'object' && err !== null && (err as { code?: string }).code === '23505';
+}
+
+function errMessage(err: unknown): string {
+    return err instanceof Error ? err.message : '操作失敗';
 }
 
 async function isAdmin(operatorUserId: string): Promise<boolean> {
@@ -52,9 +62,9 @@ export async function fetchContactChannelOptions(activeOnly = true): Promise<Act
              ORDER BY sort_order ASC, id ASC`
         );
         return { success: true, data: res.rows.map(rowToOption) };
-    } catch (err: any) {
+    } catch (err) {
         console.error('fetchContactChannelOptions error:', err);
-        return { success: false, error: err.message };
+        return { success: false, error: errMessage(err) };
     }
 }
 
@@ -81,10 +91,10 @@ export async function createContactChannelOption(
             detail: { name: trimmed, sortOrder },
         });
         return { success: true, data: { id } };
-    } catch (err: any) {
-        if (err.code === '23505') return { success: false, error: `類別「${trimmed}」已存在（包含停用中的類別）` };
+    } catch (err) {
+        if (isUniqueViolation(err)) return { success: false, error: `類別「${trimmed}」已存在（包含停用中的類別）` };
         console.error('createContactChannelOption error:', err);
-        return { success: false, error: err.message };
+        return { success: false, error: errMessage(err) };
     }
 }
 
@@ -115,10 +125,10 @@ export async function updateContactChannelOption(
             detail: { name: trimmed, sortOrder },
         });
         return { success: true };
-    } catch (err: any) {
-        if (err.code === '23505') return { success: false, error: `類別「${trimmed}」已被其他類別使用` };
+    } catch (err) {
+        if (isUniqueViolation(err)) return { success: false, error: `類別「${trimmed}」已被其他類別使用` };
         console.error('updateContactChannelOption error:', err);
-        return { success: false, error: err.message };
+        return { success: false, error: errMessage(err) };
     }
 }
 
@@ -143,8 +153,8 @@ export async function toggleContactChannelOptionActive(
             detail: { is_active: isActive },
         });
         return { success: true };
-    } catch (err: any) {
+    } catch (err) {
         console.error('toggleContactChannelOptionActive error:', err);
-        return { success: false, error: err.message };
+        return { success: false, error: errMessage(err) };
     }
 }
