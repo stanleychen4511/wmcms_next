@@ -19,6 +19,7 @@ import { pool } from '../../lib/db';
 import * as crypto from 'crypto';
 import { after } from 'next/server';
 import { writeAuditLog } from './auditActions';
+import { runAfterResponse } from '../../lib/afterResponse';
 // 'use server' 檔案不可 export 非 async function；常數與型別搬到 lib/paymentDisbursementConstants.ts
 import { REVIEW_STAGE_LABEL, EXPENSE_ACCOUNT_OPTIONS, type ExpenseAccount, type ReviewStage } from '../../lib/paymentDisbursementConstants';
 import { formatDateOnly } from '../../lib/dateOnly';
@@ -891,16 +892,12 @@ async function advanceStageInternal(
             },
         });
         if (isFinal) {
-            // 撥款完成通知（fire-and-forget；失敗不影響流程）
+            // 撥款完成通知（回應後背景執行；失敗不影響流程）
             const applicationId = cur.rows[0].application_id;
-            void (async () => {
-                try {
-                    const { notifyEvent } = await import('./notificationDispatcher');
-                    await notifyEvent('disbursement_completed', { applicationId, disbursementId });
-                } catch (err) {
-                    console.error('[disbursement] notify completed failed', err);
-                }
-            })();
+            runAfterResponse('notify disbursement_completed', async () => {
+                const { notifyEvent } = await import('./notificationDispatcher');
+                await notifyEvent('disbursement_completed', { applicationId, disbursementId });
+            });
         } else {
             const roleMap: Record<string, string> = { '2': 'supervisor', '3': 'accountant', '4': 'executive' };
             logNotificationStub('submitted',

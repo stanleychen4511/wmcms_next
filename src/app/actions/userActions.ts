@@ -4,6 +4,7 @@ import { pool } from '../../lib/db';
 import { encryptAES, decryptAES, hashPassword, generateSalt, generateBlindIndex } from '../../lib/crypto';
 import { Role } from '../../types';
 import { writeAuditLog } from './auditActions';
+import { runAfterResponse } from '../../lib/afterResponse';
 
 // The return interface for our client
 export interface AdminUserView {
@@ -509,8 +510,8 @@ export async function reassignOfficer(
             detail: { newOfficerId },
         });
         const { notifyEvent } = await import('./notificationDispatcher');
-        void notifyEvent('case_assigned_to_officer', { applicationId, officerUserId: newOfficerId })
-            .catch(err => console.error('[notify] case_assigned_to_officer failed:', err));
+        runAfterResponse('notify case_assigned_to_officer',
+            () => notifyEvent('case_assigned_to_officer', { applicationId, officerUserId: newOfficerId }));
         return { success: true };
     } catch (err: any) {
         return { success: false, error: err.message };

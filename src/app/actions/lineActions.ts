@@ -411,8 +411,15 @@ export async function consumeLinkCodeFromWebhook(
         const targetUserId = String(codeRes.rows[0].user_id);
 
         try {
+            // 綁定即啟用 LINE 通知偏好；否則通知規則 respect_user_preferences 會一律略過 LINE
             await client.query(
-                `UPDATE users SET line_user_id = $1 WHERE id = $2::bigint`,
+                `UPDATE users
+                    SET line_user_id = $1,
+                        notification_channels = CASE
+                            WHEN 'line' = ANY(notification_channels) THEN notification_channels
+                            ELSE array_append(notification_channels, 'line')
+                        END
+                  WHERE id = $2::bigint`,
                 [senderLineUserId, targetUserId]
             );
         } catch (err: any) {

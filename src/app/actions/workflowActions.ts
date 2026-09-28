@@ -12,6 +12,7 @@ import {
 import { writeAuditLog } from './auditActions';
 import { fetchSetting } from './settingsActions';
 import { canViewApplication } from '../../lib/applicationAccess';
+import { runAfterResponse } from '../../lib/afterResponse';
 
 export interface BoardReconsiderationRequest {
     id: string;
@@ -941,16 +942,16 @@ export async function advanceWorkflowStage(
         // 進入 board_review 階段時，若系統設定 board_auto_assign='true'，觸發自動派組
         if (toStage === 'board_review') {
             const { maybeAutoAssignOnBoardReviewEntry } = await import('./boardGroupActions');
-            void maybeAutoAssignOnBoardReviewEntry(applicationId);
+            runAfterResponse('auto assign board group', () => maybeAutoAssignOnBoardReviewEntry(applicationId));
 
-            // Phase 3: 觸發 case_entered_board_review 事件通知（fire-and-forget）
+            // Phase 3: 觸發 case_entered_board_review 事件通知（回應後背景執行）
             // 自動派組模式下，董事長不需手動派組，故略過此通知；改由事件 B
             // (case_assigned_to_board_group) 直接通知組員。
             const autoAssign = await fetchSetting('board_auto_assign', 'false');
             if (autoAssign !== 'true') {
                 const { notifyEvent } = await import('./notificationDispatcher');
-                void notifyEvent('case_entered_board_review', { applicationId })
-                    .catch(err => console.error('[notify] case_entered_board_review failed:', err));
+                runAfterResponse('notify case_entered_board_review',
+                    () => notifyEvent('case_entered_board_review', { applicationId }));
             }
         }
 
@@ -1725,12 +1726,12 @@ export async function reviewBoardReconsideration(
         await client.query('COMMIT');
 
         const { maybeAutoAssignOnBoardReviewEntry } = await import('./boardGroupActions');
-        void maybeAutoAssignOnBoardReviewEntry(applicationId);
+        runAfterResponse('auto assign board group', () => maybeAutoAssignOnBoardReviewEntry(applicationId));
         const autoAssign = await fetchSetting('board_auto_assign', 'false');
         if (autoAssign !== 'true') {
             const { notifyEvent } = await import('./notificationDispatcher');
-            void notifyEvent('case_entered_board_review', { applicationId })
-                .catch(err => console.error('[notify] case_entered_board_review failed:', err));
+            runAfterResponse('notify case_entered_board_review',
+                () => notifyEvent('case_entered_board_review', { applicationId }));
         }
         void writeAuditLog({
             userId: operatorUserId,
