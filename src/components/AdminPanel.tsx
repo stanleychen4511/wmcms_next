@@ -15,6 +15,7 @@ import {
     Megaphone,
     Building2,
     PhoneCall,
+    Wallet,
     Users2,
 } from 'lucide-react';
 import { Role } from '../types';
@@ -29,6 +30,7 @@ import { BannerManager } from './BannerManager';
 import { AnnouncementManager } from './AnnouncementManager';
 import { ReferralUnitManager } from './ReferralUnitManager';
 import { ContactChannelManager } from './ContactChannelManager';
+import { AnnualBudgetManager } from './AnnualBudgetManager';
 import { BoardGroupManager } from './BoardGroupManager';
 import { clsx } from 'clsx';
 import { getUsers, createUser, updateUserRoles, resetUserPassword, updateUserEmail, deleteUserAccount, fetchRoles, toggleUserActive, reassignOfficer, fetchCaseOfficersWithId, AdminUserView, RoleOption } from '../app/actions/userActions';
@@ -48,11 +50,11 @@ interface AdminPanelProps {
 export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: AdminPanelProps) {
     const { push: pushToast } = useToast();
     // Default tab: admin → accounts; chairman-only → board_groups; otherwise first allowed tab
-    const initialTab: 'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'referral_units' | 'contact_channels' | 'board_groups' | 'logs' | 'settings' | 'eligibility' =
+    const initialTab: 'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'referral_units' | 'contact_channels' | 'board_groups' | 'logs' | 'settings' | 'eligibility' | 'budget' =
         userRoles.includes('admin') ? 'accounts'
         : userRoles.includes('chairman' as Role) ? 'board_groups'
         : 'logs';
-    const [activeTab, setActiveTab] = useState<'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'referral_units' | 'contact_channels' | 'board_groups' | 'logs' | 'settings' | 'eligibility'>(initialTab);
+    const [activeTab, setActiveTab] = useState<'accounts' | 'locations' | 'doctypes' | 'templates' | 'banners' | 'announcements' | 'referral_units' | 'contact_channels' | 'board_groups' | 'logs' | 'settings' | 'eligibility' | 'budget'>(initialTab);
     const [searchTerm, setSearchTerm] = useState('');
     const [showAddForm, setShowAddForm] = useState(false);
     const [isLoading, setIsLoading] = useState(false);
@@ -405,6 +407,21 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                                 <span>聯絡方式類別</span>
                             </button>
                         )}
+                        {isAdmin && (
+                            <button
+                                type="button"
+                                onClick={() => setActiveTab('budget')}
+                                className={clsx(
+                                    "whitespace-nowrap lg:whitespace-normal flex-1 lg:flex-none flex items-center gap-3 px-4 py-3 rounded-xl transition-all duration-200 text-left font-medium",
+                                    activeTab === 'budget'
+                                        ? "bg-blue-600 text-white shadow-lg shadow-blue-200"
+                                        : "bg-white text-slate-600 hover:bg-slate-100 border border-slate-200"
+                                )}
+                            >
+                                <Wallet className="w-5 h-5 shrink-0" />
+                                <span>年度預算</span>
+                            </button>
+                        )}
                         <button
                             onClick={() => setActiveTab('logs')}
                             className={clsx(
@@ -714,6 +731,10 @@ export function AdminPanel({ userRoles, userId, onBack, username, onLogout }: Ad
                         ) : activeTab === 'contact_channels' ? (
                             <div className="flex-1 p-6 overflow-y-auto">
                                 <ContactChannelManager operatorUserId={userId} />
+                            </div>
+                        ) : activeTab === 'budget' ? (
+                            <div className="flex-1 p-6 overflow-y-auto">
+                                <AnnualBudgetManager operatorUserId={userId} />
                             </div>
                         ) : activeTab === 'board_groups' ? (
                             <div className="flex-1 p-6 overflow-y-auto">

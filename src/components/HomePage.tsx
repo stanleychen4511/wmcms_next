@@ -1,4 +1,5 @@
 import { useState, useEffect, useCallback } from 'react';
+import { BudgetAlertBanner } from './BudgetAlertBanner';
 import {
     ChevronLeft,
     ChevronRight,
@@ -379,6 +380,9 @@ export function HomePage({ username, userId, userRoles, activeRole, pendingAlert
                         )}
                     </div>
                 )}
+
+                {/* WMCMS-8：年度預算警戒（僅內部人員；無警示時不顯示） */}
+                <BudgetAlertBanner operatorUserId={userId} />
 
                 {/* Threshold-reached cases — only for case_officer */}
                 {userRoles.includes('case_officer') && thresholdAlerts.length > 0 && (
