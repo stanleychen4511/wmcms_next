@@ -194,6 +194,50 @@ export async function resetUserPassword(userId: string, newPass: string): Promis
     }
 }
 
+export async function changeOwnPassword(
+    userId: string,
+    currentPassword: string,
+    newPassword: string,
+    confirmPassword: string,
+): Promise<{ success: boolean; error?: string }> {
+    if (!currentPassword) return { success: false, error: '請輸入目前密碼' };
+    if (newPassword.length < 8) return { success: false, error: '新密碼至少需要 8 個字元' };
+    if (newPassword.length > 128) return { success: false, error: '新密碼不可超過 128 個字元' };
+    if (newPassword !== confirmPassword) return { success: false, error: '新密碼與確認密碼不一致' };
+    if (newPassword === currentPassword) return { success: false, error: '新密碼不可與目前密碼相同' };
+
+    const client = await pool.connect();
+    try {
+        const res = await client.query(
+            `SELECT search_salt, password, is_active FROM users WHERE id = $1::bigint`,
+            [userId]
+        );
+        if (res.rows.length === 0 || !res.rows[0].is_active) {
+            return { success: false, error: '帳號不存在或已停用' };
+        }
+
+        const currentHash = hashPassword(currentPassword, res.rows[0].search_salt);
+        if (currentHash !== res.rows[0].password) {
+            return { success: false, error: '目前密碼不正確' };
+        }
+
+        const newHash = hashPassword(newPassword, res.rows[0].search_salt);
+        await client.query(`UPDATE users SET password = $1 WHERE id = $2::bigint`, [newHash, userId]);
+        void writeAuditLog({
+            userId,
+            action: 'user.password_change',
+            targetType: 'user',
+            targetId: userId,
+        });
+        return { success: true };
+    } catch (err) {
+        console.error('changeOwnPassword error', err);
+        return { success: false, error: '密碼更新失敗，請稍後再試' };
+    } finally {
+        client.release();
+    }
+}
+
 export async function updateUserEmail(userId: string, email: string): Promise<{ success: boolean; error?: string }> {
     const trimmed = (email ?? '').trim();
     // 允許清空（傳 null）或填入有效 email；其他格式拒絕

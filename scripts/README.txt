@@ -28,7 +28,7 @@ scripts/ — 資料庫管理腳本說明
 【執行方式】
 
   # 主資料庫
-  psql "postgresql://postgres:1qazXSW%40@localhost:5433/wmcms" -f scripts/init_db.sql
+  psql "postgresql://postgres:1qazXSW%40@localhost:7201/wmcms" -f scripts/init_db.sql
 
   # Demo 資料庫
   psql "postgresql://postgres:1qazXSW%40@localhost:5433/wmcms_demo" -f scripts/init_db.sql

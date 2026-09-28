@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import { Geist, Geist_Mono } from "next/font/google";
+import "@daypicker/react/style.css";
 import "./globals.css";
 import { VersionWatcher } from "../components/VersionWatcher";
 

@@ -540,11 +540,6 @@ COMMENT ON COLUMN applications.supervisor_approved_for_board      IS '主管送�
 COMMENT ON COLUMN applications.supervisor_approved_for_accounting IS '主管送會計閘門: NULL=未審, true=送會計, false=退個管';
 COMMENT ON COLUMN applications.supervisor_review_note             IS '主管退件原因或通過備註';
 
--- 8a. payment_disbursements: 捐贈者公開姓名意願（2026-05 user feedback round）
-ALTER TABLE payment_disbursements
-    ADD COLUMN IF NOT EXISTS donor_disclosure_consent BOOLEAN;
-COMMENT ON COLUMN payment_disbursements.donor_disclosure_consent IS '是否同意公開捐贈者姓名（每筆撥款獨立記錄；NULL=未填；false 時需配套上傳聲明書）';
-
 -- 14. application_close_reasons: 結構化結案原因（2026-05）
 --   一個案件可勾多個原因；每個 reason_code 可帶 detail_value（金額/年齡/補助項目/取消原因）。
 CREATE TABLE IF NOT EXISTS application_close_reasons (
@@ -738,6 +733,11 @@ CREATE TABLE IF NOT EXISTS payment_disbursements (
 );
 CREATE INDEX IF NOT EXISTS idx_payment_disbursements_application_id
     ON payment_disbursements (application_id);
+
+-- 7f-1a. payment_disbursements: 捐贈者公開姓名意願（2026-05 user feedback round）
+ALTER TABLE payment_disbursements
+    ADD COLUMN IF NOT EXISTS donor_disclosure_consent BOOLEAN;
+COMMENT ON COLUMN payment_disbursements.donor_disclosure_consent IS '是否同意公開捐贈者姓名（每筆撥款獨立記錄；NULL=未填；false 時需配套上傳聲明書）';
 
 -- 7f-1b. payment_disbursements 外部隱碼（refine-disbursement-flow，2026-04）
 --   receipt_number = 內部可讀流水號（YYYY-MM-NNNN）
@@ -978,6 +978,7 @@ CREATE TABLE IF NOT EXISTS contact_records (
     caller_name       TEXT,
     caller_gender     CHAR(1) CHECK (caller_gender IS NULL OR caller_gender IN ('M', 'F', 'U')),
     caller_phone      TEXT,
+    caller_phone_from_caller_id BOOLEAN NOT NULL DEFAULT FALSE,
 
     application_id    BIGINT REFERENCES applications(id) ON DELETE SET NULL,
 
@@ -1003,6 +1004,7 @@ CREATE INDEX IF NOT EXISTS idx_contact_records_phone     ON contact_records (cal
 CREATE INDEX IF NOT EXISTS idx_contact_records_applicant ON contact_records (applicant_user_id);
 CREATE INDEX IF NOT EXISTS idx_contact_records_app       ON contact_records (application_id);
 CREATE INDEX IF NOT EXISTS idx_contact_records_date      ON contact_records (contact_date DESC);
+COMMENT ON COLUMN contact_records.caller_phone_from_caller_id IS '聯絡方式中的電話號碼是否由本會電話來電顯示取得';
 -- 2c-2. contact_records 關懷專屬欄位（refine-contact-care，2026-05）
 --   record_type='2' 時記錄聯絡對象（與申請人之關係）
 ALTER TABLE contact_records

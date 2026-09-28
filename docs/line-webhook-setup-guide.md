@@ -3,7 +3,7 @@
 本文說明萬美基金會補助管理系統如何設定 LINE Messaging API webhook，讓系統可以：
 
 - 接收使用者傳送給 LINE bot 的訊息。
-- 讓使用者用 6 位數綁定碼綁定系統帳號與 LINE 帳號。
+- 讓內部人員用 `WMCMS-` 加 6 碼 Base32 綁定碼綁定系統帳號與 LINE 帳號。
 - 透過 LINE 推播系統通知。
 - 在後台測試 LINE 推播是否正常。
 
@@ -53,7 +53,8 @@ https://wmcms.example.org/api/line/webhook
 | 資料表 / 欄位 | 用途 |
 |---|---|
 | `users.line_user_id` | LINE 帳號綁定後儲存 LINE userId。 |
-| `user_line_link_codes` | 暫存 6 位數 LINE 綁定碼，預設 30 分鐘失效。 |
+| `user_line_link_codes` | 暫存 6 碼 Base32 LINE 綁定碼，預設 10 分鐘失效。 |
+| `line_link_attempts` | 以 LINE userId 限制每 10 分鐘最多 5 次綁定嘗試。 |
 | `notification_channels` | 通知渠道設定，包含 `line`。 |
 | `notification_templates` | LINE 通知範本，例如董事審核、派組、撥款完成通知。 |
 | `notification_logs` | LINE 測試推播與通知紀錄。 |
@@ -302,7 +303,7 @@ line | true
 
 ---
 
-## 6. 使用者 LINE 綁定流程
+## 6. 內部人員 LINE 綁定流程
 
 這是目前系統設計的綁定方式。
 
@@ -312,8 +313,8 @@ line | true
 
 1. 進入「個人設定」。
 2. 在「LINE 帳號綁定」區塊點選產生綁定碼。
-3. 系統產生 6 位數字綁定碼。
-4. 綁定碼預設 30 分鐘失效。
+3. 系統產生 `WMCMS-` 開頭、後接 6 碼 Crockford Base32 的綁定碼。
+4. 綁定碼 10 分鐘後失效，且僅啟用中的內部人員可產生。
 
 相關程式：
 
@@ -335,18 +336,19 @@ user_line_link_codes
 - 個人設定頁的「加 LINE bot 為好友」連結。
 - 或掃描官方帳號 QR code。
 
-### 6.3 使用者在 LINE 對話傳送 6 位數綁定碼
+### 6.3 內部人員在 LINE 對話傳送完整綁定碼
 
 使用者在 LINE 中傳送綁定碼後：
 
 1. LINE 平台送 webhook 到 `/api/line/webhook`。
 2. 系統驗證 `x-line-signature`。
 3. 系統檢查該 LINE userId 是否已綁定。
-4. 若未綁定且訊息為 6 位數，系統查詢 `user_line_link_codes`。
-5. 若綁定碼有效，系統將 LINE userId 寫入 `users.line_user_id`。
-6. 系統刪除該使用者的綁定碼。
-7. 系統回覆 LINE 綁定結果。
-8. 系統寫入 `audit_logs`，action 為 `line.account_linked`。
+4. 若未綁定且訊息符合 `WMCMS-XXXXXX`，系統紀錄該 LINE userId 的嘗試次數。
+5. 同一 LINE userId 每 10 分鐘最多嘗試 5 次。
+6. 若綁定碼有效且對應啟用中的內部人員，系統將 LINE userId 寫入 `users.line_user_id`。
+7. 系統刪除該使用者的綁定碼與該 LINE userId 的嘗試紀錄。
+8. 系統回覆 LINE 綁定結果。
+9. 系統寫入 `audit_logs`，action 為 `line.account_linked`。
 
 相關程式：
 
@@ -373,20 +375,16 @@ consumeLinkCodeFromWebhook()
 當使用者傳訊息給 LINE bot：
 
 1. 系統取得 `source.userId`、文字訊息與 `replyToken`。
-2. 若 `line_user_id` 已綁定系統使用者：
-   - 目前不回覆。
-   - 未來可擴充成查詢進度或指令功能。
-3. 若尚未綁定且訊息是 6 位數：
-   - 嘗試視為綁定碼。
-4. 若尚未綁定且訊息不是 6 位數：
-   - 回覆引導文字，請使用者到系統產生綁定碼。
+2. 若訊息是完整 `WMCMS-XXXXXX` 綁定碼，才進入綁定流程並回覆結果。
+3. 已綁定帳號或一般文字訊息只寫入 webhook 稽核紀錄，不回覆訊息。
+4. 綁定碼在 webhook 稽核紀錄中會被遮罩，不寫入明碼。
 
 ### 7.2 follow event
 
 當使用者加入 LINE bot 好友：
 
 1. 系統收到 follow event。
-2. 若有 `replyToken`，系統回覆歡迎與綁定說明。
+2. 系統等待 webhook 稽核紀錄寫入完成，不回覆歡迎或綁定說明。
 
 ### 7.3 其他 event
 
@@ -563,7 +561,7 @@ LIMIT 20;
 - 查 `audit_logs` 是否有收到 `line.webhook_received`。
 - 查資料庫是否可正常連線。
 
-### 10.4 使用者傳 6 位數綁定碼但綁定失敗
+### 10.4 內部人員傳送綁定碼但綁定失敗
 
 可能原因：
 
@@ -571,6 +569,8 @@ LIMIT 20;
 - 綁定碼輸入錯誤。
 - 使用者已綁定其他 LINE 帳號。
 - 同一個 LINE userId 已被其他系統使用者綁定。
+- 同一 LINE userId 在 10 分鐘內已嘗試 5 次。
+- 對應帳號不是啟用中的內部人員。
 - `users.line_user_id` unique constraint 擋下重複綁定。
 
 排查：
@@ -578,7 +578,7 @@ LIMIT 20;
 ```sql
 SELECT user_id, code, expires_at, created_at
 FROM user_line_link_codes
-WHERE code = '使用者輸入的六位數';
+WHERE code = 'WMCMS- 後的六碼';
 ```
 
 若查不到或 `expires_at < NOW()`，請使用者重新產生綁定碼。
@@ -782,6 +782,6 @@ WHERE key = 'line_official_account_id';
 4. 開啟 Use webhook。
 5. 點 Verify 確認成功。
 6. 系統設定 `line_official_account_id`。
-7. 使用者到個人設定產生 6 位數綁定碼。
+7. 內部人員到個人設定產生 `WMCMS-XXXXXX` 綁定碼。
 8. 使用者加 LINE bot 好友並傳送綁定碼。
 9. 後台 LINE 測試推播確認可收到訊息。

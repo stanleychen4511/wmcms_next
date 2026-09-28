@@ -31,9 +31,11 @@ next-env.d.ts
 /public/uploads/
 /public/intake/
 /public/notification-attachments/
+/public/board-reconsideration/
 
 # ─── Temp scripts / one-shot diagnostics ────────────────────
 /tmp/
+/outputs/
 # 根目錄一次性 check 腳本（非正式 source）
 /check_*.js
 /check_*.ts

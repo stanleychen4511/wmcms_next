@@ -30,6 +30,7 @@ export type AuditAction =
     | 'user.login'
     | 'user.create'
     | 'user.update'
+    | 'user.password_change'
     | 'user.activate'
     | 'user.deactivate'
     | 'file_location.create'

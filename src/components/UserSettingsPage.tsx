@@ -1,6 +1,6 @@
 'use client';
 import { useState, useEffect, useCallback } from 'react';
-import { ArrowLeft, MessageSquare, Copy, Check, Unlink, ExternalLink, Bell, Save } from 'lucide-react';
+import { ArrowLeft, MessageSquare, Copy, Check, Unlink, ExternalLink, Bell, Save, KeyRound, Eye, EyeOff } from 'lucide-react';
 import { AppHeader } from './AppHeader';
 import { useToast } from './FloatingToast';
 import {
@@ -10,6 +10,7 @@ import {
 } from '../app/actions/lineActions';
 import { fetchSetting } from '../app/actions/settingsActions';
 import {
+    changeOwnPassword,
     fetchUserNotificationChannels,
     updateUserNotificationChannels,
 } from '../app/actions/userActions';
@@ -40,6 +41,16 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
     const [channels, setChannels] = useState<Set<string>>(new Set(['email']));
     const [initialChannels, setInitialChannels] = useState<Set<string>>(new Set(['email']));
     const [channelsBusy, setChannelsBusy] = useState(false);
+
+    // Password change
+    const [currentPassword, setCurrentPassword] = useState('');
+    const [newPassword, setNewPassword] = useState('');
+    const [confirmPassword, setConfirmPassword] = useState('');
+    const [passwordBusy, setPasswordBusy] = useState(false);
+    const [passwordError, setPasswordError] = useState('');
+    const [showCurrentPassword, setShowCurrentPassword] = useState(false);
+    const [showNewPassword, setShowNewPassword] = useState(false);
+    const [showConfirmPassword, setShowConfirmPassword] = useState(false);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -109,6 +120,36 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
         ? `https://line.me/R/ti/p/${encodeURIComponent(botAtId)}`
         : null;
 
+    async function handlePasswordChange(event: React.FormEvent<HTMLFormElement>) {
+        event.preventDefault();
+        setPasswordError('');
+
+        if (newPassword !== confirmPassword) {
+            setPasswordError('新密碼與確認密碼不一致');
+            return;
+        }
+
+        setPasswordBusy(true);
+        try {
+            const res = await changeOwnPassword(userId, currentPassword, newPassword, confirmPassword);
+            if (!res.success) {
+                setPasswordError(res.error ?? '密碼更新失敗');
+                return;
+            }
+            setCurrentPassword('');
+            setNewPassword('');
+            setConfirmPassword('');
+            setShowCurrentPassword(false);
+            setShowNewPassword(false);
+            setShowConfirmPassword(false);
+            pushToast({ type: 'success', msg: '密碼已更新' });
+        } catch {
+            setPasswordError('密碼更新失敗，請稍後再試');
+        } finally {
+            setPasswordBusy(false);
+        }
+    }
+
     return (
         <div className="min-h-screen bg-gray-50 flex flex-col font-sans text-slate-800">
             <AppHeader username={username} onGoHome={onBack} onLogout={onLogout} />
@@ -123,6 +164,118 @@ export function UserSettingsPage({ userId, username, onBack, onLogout }: Props) 
                 </button>
 
                 <h1 className="text-2xl font-bold text-slate-900">個人設定</h1>
+
+                {/* Password change */}
+                <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
+                    <h2 className="flex items-center gap-2 text-lg font-bold text-slate-800">
+                        <KeyRound className="w-5 h-5 text-blue-600" />
+                        修改密碼
+                    </h2>
+                    <p className="text-xs text-slate-500">
+                        為確認是本人操作，請先輸入目前密碼。新密碼至少需要 8 個字元。
+                    </p>
+
+                    <form onSubmit={handlePasswordChange} className="space-y-4">
+                        <div>
+                            <label htmlFor="current-password" className="block text-sm font-medium text-slate-700 mb-1.5">
+                                目前密碼
+                            </label>
+                            <div className="relative">
+                                <input
+                                    id="current-password"
+                                    type={showCurrentPassword ? 'text' : 'password'}
+                                    autoComplete="current-password"
+                                    value={currentPassword}
+                                    onChange={event => setCurrentPassword(event.target.value)}
+                                    disabled={passwordBusy}
+                                    required
+                                    className="w-full bg-white border border-slate-200 rounded-lg pl-3 pr-10 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-50"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowCurrentPassword(visible => !visible)}
+                                    disabled={passwordBusy}
+                                    aria-label={showCurrentPassword ? '隱藏目前密碼' : '顯示目前密碼'}
+                                    className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-700 disabled:opacity-50"
+                                >
+                                    {showCurrentPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                </button>
+                            </div>
+                        </div>
+                        <div>
+                            <label htmlFor="new-password" className="block text-sm font-medium text-slate-700 mb-1.5">
+                                新密碼
+                            </label>
+                            <div className="relative">
+                                <input
+                                    id="new-password"
+                                    type={showNewPassword ? 'text' : 'password'}
+                                    autoComplete="new-password"
+                                    value={newPassword}
+                                    onChange={event => setNewPassword(event.target.value)}
+                                    minLength={8}
+                                    maxLength={128}
+                                    disabled={passwordBusy}
+                                    required
+                                    className="w-full bg-white border border-slate-200 rounded-lg pl-3 pr-10 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-50"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowNewPassword(visible => !visible)}
+                                    disabled={passwordBusy}
+                                    aria-label={showNewPassword ? '隱藏新密碼' : '顯示新密碼'}
+                                    className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-700 disabled:opacity-50"
+                                >
+                                    {showNewPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                </button>
+                            </div>
+                        </div>
+                        <div>
+                            <label htmlFor="confirm-password" className="block text-sm font-medium text-slate-700 mb-1.5">
+                                確認新密碼
+                            </label>
+                            <div className="relative">
+                                <input
+                                    id="confirm-password"
+                                    type={showConfirmPassword ? 'text' : 'password'}
+                                    autoComplete="new-password"
+                                    value={confirmPassword}
+                                    onChange={event => setConfirmPassword(event.target.value)}
+                                    minLength={8}
+                                    maxLength={128}
+                                    disabled={passwordBusy}
+                                    required
+                                    aria-describedby={passwordError ? 'password-error' : undefined}
+                                    className="w-full bg-white border border-slate-200 rounded-lg pl-3 pr-10 py-2 text-sm focus:ring-2 focus:ring-blue-500 outline-none disabled:bg-slate-50"
+                                />
+                                <button
+                                    type="button"
+                                    onClick={() => setShowConfirmPassword(visible => !visible)}
+                                    disabled={passwordBusy}
+                                    aria-label={showConfirmPassword ? '隱藏確認密碼' : '顯示確認密碼'}
+                                    className="absolute inset-y-0 right-0 flex items-center px-3 text-slate-400 hover:text-slate-700 disabled:opacity-50"
+                                >
+                                    {showConfirmPassword ? <EyeOff className="w-4 h-4" /> : <Eye className="w-4 h-4" />}
+                                </button>
+                            </div>
+                        </div>
+
+                        {passwordError && (
+                            <p id="password-error" role="alert" className="text-sm text-red-600">
+                                {passwordError}
+                            </p>
+                        )}
+
+                        <button
+                            type="submit"
+                            disabled={passwordBusy}
+                            className="inline-flex items-center gap-2 px-4 py-2 bg-blue-600 text-white text-sm font-medium rounded-lg hover:bg-blue-700 transition disabled:opacity-50 cursor-pointer"
+                        >
+                            <KeyRound className="w-4 h-4" />
+                            {passwordBusy ? '更新中…' : '更新密碼'}
+                        </button>
+                    </form>
+                </section>
 
                 {/* LINE Binding */}
                 <section className="bg-white rounded-xl border border-slate-200 p-6 space-y-4">
