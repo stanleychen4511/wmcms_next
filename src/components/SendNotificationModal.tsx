@@ -1,5 +1,6 @@
 'use client';
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { EmailFormatToolbar } from './EmailFormatToolbar';
 import { X, Send, Users, FileText, AlertTriangle, CheckCircle, ChevronDown, ChevronUp, UserCircle, ClipboardList, Plus, Trash2, Upload, Loader2 } from 'lucide-react';
 import { clsx } from 'clsx';
 import {
@@ -801,6 +802,9 @@ export function SendNotificationModal({
                         {/* Body */}
                         <div>
                             <label className="block text-sm font-medium text-slate-700 mb-1">內文</label>
+                            <div className="mb-1.5">
+                                <EmailFormatToolbar textareaRef={bodyRef} value={body} onChange={setBody} />
+                            </div>
                             <textarea
                                 ref={bodyRef}
                                 className="w-full border border-slate-300 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 resize-none"

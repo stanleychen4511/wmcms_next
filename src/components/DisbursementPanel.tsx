@@ -14,6 +14,7 @@
  */
 
 import { useState, useEffect, useCallback, useRef } from 'react';
+import { EmailFormatToolbar } from './EmailFormatToolbar';
 import {
     Wallet, Plus, Trash2, AlertTriangle, Loader2, CheckCircle, FileText, Upload, RefreshCw,
     ChevronRight, X, XCircle, History, ClipboardCheck, Send, Eye, Mail, Printer, FileCheck2,
@@ -2471,6 +2472,7 @@ function DisbursementEmailDialog({
     const [selectedRecipientIds, setSelectedRecipientIds] = useState<Set<string>>(new Set());
     const [subject, setSubject] = useState('');
     const [body, setBody] = useState('');
+    const bodyRef = useRef<HTMLTextAreaElement>(null);
     const [customName, setCustomName] = useState('');
     const [customEmail, setCustomEmail] = useState('');
     const [customRecipients, setCustomRecipients] = useState<NotificationRecipient[]>([]);
@@ -2891,15 +2893,20 @@ function DisbursementEmailDialog({
                                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg"
                             />
                         </label>
-                        <label className="block">
+                        <div className="block">
                             <span className="block text-sm font-medium text-slate-700 mb-1">內容</span>
+                            <div className="mb-1.5">
+                                <EmailFormatToolbar textareaRef={bodyRef} value={body} onChange={setBody} />
+                            </div>
                             <textarea
+                                ref={bodyRef}
                                 value={body}
                                 onChange={e => setBody(e.target.value)}
                                 rows={10}
+                                aria-label="內容"
                                 className="w-full px-3 py-2 text-sm border border-slate-300 rounded-lg resize-y"
                             />
-                        </label>
+                        </div>
                         {kind === 'receipt' && (
                             <div className="space-y-3">
                                 <div className="border border-slate-200 rounded-lg p-3">

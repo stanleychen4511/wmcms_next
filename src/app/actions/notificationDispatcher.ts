@@ -7,6 +7,7 @@ import { fetchSetting } from './settingsActions';
 import { sendNotificationEmail, NotificationRecipient } from './notificationActions';
 import { sendLineMessage } from './lineActions';
 import { applyPlaceholders } from '../../lib/notificationUtils';
+import { markdownToPlainText } from '../../lib/emailMarkdown';
 
 export type NotificationEventType =
     | 'case_entered_board_review'
@@ -580,7 +581,8 @@ async function dispatchToRecipient(
                     statusPerChannel[channel] = 'skipped_no_target';
                     continue;
                 }
-                const result = await sendLineMessage(user.lineUserId, renderedBody, '');
+                // LINE 為純文字，去除 **粗體** ++底線++ 等標記
+                const result = await sendLineMessage(user.lineUserId, markdownToPlainText(renderedBody), '');
                 statusPerChannel[channel] = result.success ? 'sent' : 'failed';
             }
         } catch (err) {
