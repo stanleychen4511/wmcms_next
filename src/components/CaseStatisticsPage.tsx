@@ -12,6 +12,7 @@ import {
     type StatsOutcome,
 } from '../app/actions/caseStatisticsActions';
 import { CaseStatisticsDrillDownModal } from './CaseStatisticsDrillDownModal';
+import { BoardReviewDurationSection } from './BoardReviewDurationSection';
 import { DateInput } from './DateInput';
 import { formatRocDateOnly, formatRocYearMonth } from '../lib/rocDate';
 
@@ -53,6 +54,7 @@ export function CaseStatisticsPage({ operatorUserId, username, onGoHome, onLogou
     const [loading, setLoading] = useState(false);
     const [error, setError] = useState<string>('');
     const [drillDown, setDrillDown] = useState<DrillDownRequest | null>(null);
+    const [reloadKey, setReloadKey] = useState(0);
 
     const loadStats = useCallback(async () => {
         setLoading(true);
@@ -120,7 +122,7 @@ export function CaseStatisticsPage({ operatorUserId, username, onGoHome, onLogou
                         />
                     </div>
                     <button
-                        onClick={() => void loadStats()}
+                        onClick={() => { void loadStats(); setReloadKey(k => k + 1); }}
                         disabled={loading}
                         className="inline-flex items-center gap-1.5 px-4 py-2 bg-blue-600 hover:bg-blue-700 text-white rounded-lg text-sm font-medium transition disabled:opacity-50"
                     >
@@ -249,6 +251,14 @@ export function CaseStatisticsPage({ operatorUserId, username, onGoHome, onLogou
                         </DimensionSection>
                     </>
                 )}
+
+                {/* WMCMS-9：董事審核天數（僅後台人員可見，元件自行向 server 確認權限） */}
+                <BoardReviewDurationSection
+                    operatorUserId={operatorUserId}
+                    fromDate={fromDate}
+                    toDate={toDate}
+                    reloadKey={reloadKey}
+                />
 
                 {drillDown && stats && (
                     <CaseStatisticsDrillDownModal
