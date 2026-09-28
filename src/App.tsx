@@ -592,8 +592,15 @@ function App() {
     // 董事審核 tab：可見成員清單 + 預設選自己（若有），否則第一位
     //   - 自己是組員 → 只看自己 + 其他組員（chairman 第三審時要能看到其他董事的決定當參考）
     //   - supervisor / admin / chairman / executive → 看全部
+    //   - 本案負責個管師 → 看全部（唯讀；發領據信時需參考董事意見）
     //   - 其他角色 → 空清單（顯示「您不在派組成員中」）
     const userRolesListForTabs = (loggedInUser?.roles ?? []) as Role[];
+    const isResponsibleOfficer = !!(
+        loggedInUser
+        && userRolesListForTabs.includes('case_officer')
+        && appDetail?.officerId
+        && String(loggedInUser.id) === String(appDetail.officerId)
+    );
     const canViewRejectedClosedAllStages = !!(
         appDetail?.status === '2'
         && loggedInUser
@@ -610,6 +617,7 @@ function App() {
         || userRolesListForTabs.includes('admin')
         || userRolesListForTabs.includes('chairman' as Role)
         || userRolesListForTabs.includes('executive')
+        || isResponsibleOfficer
         || canViewRejectedClosedAllStages;
     const visibleBoardMembers = (() => {
         const all = signatureStatus?.members ?? [];
@@ -1960,7 +1968,8 @@ function App() {
                     hasPermission('board_member') ||
                     hasPermission('chairman' as Role) ||
                     hasPermission('admin') ||
-                    hasPermission('supervisor');
+                    hasPermission('supervisor') ||
+                    isResponsibleOfficer;
                 return (
                     <div className="bg-white p-6 rounded-lg shadow-sm border border-gray-200 relative space-y-6">
                         <h3 className="text-lg font-bold flex items-center gap-2">
