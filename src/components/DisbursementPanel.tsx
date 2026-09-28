@@ -746,6 +746,8 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
     const [printOpinion, setPrintOpinion] = useState(true);
     const [printMedical, setPrintMedical] = useState(true);
     const [printPayment, setPrintPayment] = useState(true);
+    const [printPassbook, setPrintPassbook] = useState(true);
+    const [printInsurance, setPrintInsurance] = useState(true);
     const [printing, setPrinting] = useState(false);
     const [printOperatorTooltip, setPrintOperatorTooltip] = useState<string>('');
 
@@ -1085,6 +1087,8 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
             printOpinion ? 'opinion' : null,
             printMedical ? 'medical' : null,
             printPayment ? 'payment' : null,
+            printPassbook ? 'passbook' : null,
+            printInsurance ? 'insurance' : null,
         ].filter(Boolean);
         if (documents.length === 0) {
             pushToast({ type: 'error', msg: '請至少勾選一項' });
@@ -2101,10 +2105,18 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                                 <input type="checkbox" checked={printPayment} onChange={e => setPrintPayment(e.target.checked)} />
                                 領款收據（本次撥款）
                             </label>
+                            <label className="flex items-center gap-1 text-xs cursor-pointer">
+                                <input type="checkbox" checked={printPassbook} onChange={e => setPrintPassbook(e.target.checked)} />
+                                存摺封面（本次撥款）
+                            </label>
+                            <label className="flex items-center gap-1 text-xs cursor-pointer" title="案件層級文件；未上傳時列印會自動略過">
+                                <input type="checkbox" checked={printInsurance} onChange={e => setPrintInsurance(e.target.checked)} />
+                                保險給付通知單
+                            </label>
                             <button
                                 type="button"
                                 onClick={handlePrint}
-                                disabled={printing || (!printOpinion && !printMedical && !printPayment)}
+                                disabled={printing || (!printOpinion && !printMedical && !printPayment && !printPassbook && !printInsurance)}
                                 className="inline-flex items-center gap-1 px-3 py-1 text-xs bg-amber-600 hover:bg-amber-700 text-white rounded disabled:opacity-50"
                             >
                                 <Printer className="w-3.5 h-3.5" />{printing ? '產生中…' : '列印'}
