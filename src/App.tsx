@@ -787,6 +787,7 @@ function App() {
     const [myTurnAppIds, setMyTurnAppIds] = useState<Set<string>>(new Set());
     const [myTurnFilterActive, setMyTurnFilterActive] = useState(false);
     const [pendingDocFilterActive, setPendingDocFilterActive] = useState(false);
+    const [disbursableFilterActive, setDisbursableFilterActive] = useState(false);
     const [unassignedFilterActive, setUnassignedFilterActive] = useState(false);
     const loadMyTurn = useCallback(async (userId: string) => {
         const r = await fetchMyTurnCases(userId);
@@ -909,6 +910,7 @@ function App() {
                 disbursableCases={disbursableCases}
                 onUnassignedGoToList={() => { setUnassignedFilterActive(true); setView('list'); }}
                 onPendingDocGoToList={() => { setPendingDocFilterActive(true); setView('list'); }}
+                onDisbursableGoToList={() => { setDisbursableFilterActive(true); setView('list'); }}
                 myTurnItems={myTurnItems}
                 onMyTurnGoToList={() => { setMyTurnFilterActive(true); setView('list'); }}
                 onSelectCase={(appId) => {
@@ -1061,6 +1063,9 @@ function App() {
                 myTurnAppIds={myTurnAppIds}
                 myTurnFilterActive={myTurnFilterActive}
                 onToggleMyTurnFilter={(v: boolean) => setMyTurnFilterActive(v)}
+                disbursableAppIds={new Set(disbursableCases.map(c => c.applicationId))}
+                disbursableOnlyActive={disbursableFilterActive}
+                onToggleDisbursableOnly={(v: boolean) => setDisbursableFilterActive(v)}
                 pendingOnlyActive={pendingDocFilterActive}
                 onTogglePendingOnly={(v: boolean) => setPendingDocFilterActive(v)}
                 unassignedFilterActive={unassignedFilterActive}
