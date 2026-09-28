@@ -1468,7 +1468,7 @@ VALUES
     (17, '醫療收據',             'reimbursement', TRUE,  NULL, 1, TRUE, FALSE, 'D', NULL, 'original'),  -- 每筆撥款一份
     (18, '領款收據',             'reimbursement', TRUE,  NULL, 2, TRUE, FALSE, 'D', NULL, 'original'),  -- 每筆撥款一份
     (19, '保險給付通知單',       'reimbursement', FALSE, NULL, 3, TRUE, FALSE, 'C', NULL, 'original'),
-    (20, '生命故事同意刊登截圖證明', 'reimbursement', FALSE, NULL, 4, TRUE, FALSE, 'C', NULL, 'original'),
+    (20, '生命故事暨同意刊登截圖證明', 'reimbursement', FALSE, NULL, 4, TRUE, FALSE, 'C', NULL, 'original'),
     (21, '存摺封面影本',         'reimbursement', TRUE,  NULL, 5, TRUE, TRUE,  'D', NULL, 'original'),  -- 2026-05 改為每次撥款必備
     (22, '捐贈/受補助者聲明書（不同意公開姓名時必附）', 'reimbursement', FALSE, NULL, 6, TRUE, FALSE, 'D', NULL, 'original')  -- 2026-05 新增；UI conditionally required
 ON CONFLICT (id) DO UPDATE SET
