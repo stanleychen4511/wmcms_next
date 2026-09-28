@@ -2908,6 +2908,59 @@ function App() {
                         </div>
                     )}
 
+                    {/* 主管審閱歷程 — 退件意見重送後仍保留，主管可依原意見核對修正內容 */}
+                    {!isVolunteerView
+                        && (appDetail?.stage === 'admin_review' || appDetail?.stage === 'visit')
+                        && (appDetail?.supervisorReviewHistory ?? []).some(h => h.action === 'reject')
+                        && (() => {
+                            const history = appDetail?.supervisorReviewHistory ?? [];
+                            const lastRejectId = [...history].reverse().find(h => h.action === 'reject')?.id;
+                            const ACTION_LABEL: Record<string, string> = {
+                                request: '個管送主管審核',
+                                approve: '主管通過',
+                                reject: '主管退件',
+                            };
+                            return (
+                                <div className="rounded-lg border border-slate-200 bg-white px-4 py-3 text-sm">
+                                    <p className="font-semibold text-slate-800 mb-2">主管審閱歷程</p>
+                                    {appDetail?.supervisorReviewPending && (
+                                        <p className="text-xs text-slate-500 mb-2">個管已依退件意見修正後重送，請對照下方最近一次退件原因審閱。</p>
+                                    )}
+                                    <ol className="space-y-1.5">
+                                        {history.map(h => (
+                                            <li
+                                                key={h.id}
+                                                className={clsx(
+                                                    'rounded-md px-3 py-1.5',
+                                                    h.action === 'reject'
+                                                        ? (h.id === lastRejectId && appDetail?.supervisorReviewPending
+                                                            ? 'bg-rose-50 border border-rose-300'
+                                                            : 'bg-rose-50/60')
+                                                        : 'bg-slate-50',
+                                                )}
+                                            >
+                                                <div className="flex flex-wrap items-center gap-x-2 text-xs text-slate-500">
+                                                    <span className={clsx(
+                                                        'font-semibold',
+                                                        h.action === 'reject' ? 'text-rose-700'
+                                                            : h.action === 'approve' ? 'text-emerald-700'
+                                                            : 'text-slate-700',
+                                                    )}>
+                                                        {ACTION_LABEL[h.action] ?? h.action}
+                                                    </span>
+                                                    <span>{h.actorName}</span>
+                                                    <span>{h.createdAt ? new Date(h.createdAt).toLocaleString('zh-TW', { hour12: false }) : ''}</span>
+                                                </div>
+                                                {h.note && (
+                                                    <p className="mt-0.5 whitespace-pre-wrap text-slate-800">{h.note}</p>
+                                                )}
+                                            </li>
+                                        ))}
+                                    </ol>
+                                </div>
+                            );
+                        })()}
+
                     {/* 結案 banner — 只在「審核未通過結案」時提示；核銷完成屬正常結束，不再贅述 */}
                     {appDetail?.status === '2' && (
                         <div className="flex items-center gap-2 rounded-lg px-4 py-2.5 text-sm font-medium border bg-red-50 border-red-200 text-red-700">

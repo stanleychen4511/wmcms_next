@@ -48,6 +48,15 @@ export interface BoardReviewRound {
     }>;
 }
 
+/** 送董事前主管審閱歷程的一筆（個管送審 / 主管通過 / 主管退件） */
+export interface SupervisorReviewEntry {
+    id: string;
+    action: 'request' | 'approve' | 'reject';
+    note: string | null;
+    actorName: string;
+    createdAt: string;
+}
+
 export interface ApplicationDetail {
     id: string;
     caseNumber: string;
@@ -81,6 +90,8 @@ export interface ApplicationDetail {
     /** 是否目前等待主管審核中（個管已送主管、主管尚未通過/退件）
      *  邏輯：supervisor_approved_for_board IS NULL 且 audit_logs 有 application.request_supervisor_review_board 紀錄 */
     supervisorReviewPending?: boolean;
+    /** 主管審閱歷程（舊→新），退件意見重送後仍保留 */
+    supervisorReviewHistory?: SupervisorReviewEntry[];
     officerName?: string;
     applyAt?: string;
     createdAt?: string;
@@ -600,6 +611,15 @@ export async function fetchApplicationDetail(
             ORDER BY requested_at DESC, id DESC
         `, [applicationId]);
 
+        const supervisorReviewRes = await client.query(`
+            SELECT r.id::text, r.action, r.note, r.created_at,
+                   u.account AS actor_account, u.name_enc AS actor_name_enc, u.name_iv AS actor_name_iv
+            FROM application_supervisor_reviews r
+            LEFT JOIN users u ON u.id = r.actor_id
+            WHERE r.application_id = $1::bigint
+            ORDER BY r.created_at, r.id
+        `, [applicationId]);
+
         const boardRoundRes = await client.query(`
             SELECT id::text, round_no, source_reconsideration_id::text,
                    approved_amount, comments, signatures, completed_at, is_latest
@@ -686,6 +706,15 @@ export async function fetchApplicationDetail(
             };
         };
         const boardReconsiderationHistory = reconsiderHistoryRes.rows.map(mapReconsideration);
+        const supervisorReviewHistory: SupervisorReviewEntry[] = supervisorReviewRes.rows.map((r: any) => ({
+            id: String(r.id),
+            action: r.action,
+            note: r.note ?? null,
+            actorName: (r.actor_name_enc && r.actor_name_iv
+                ? decryptAES(r.actor_name_enc, r.actor_name_iv)
+                : null) || r.actor_account || '（已刪除帳號）',
+            createdAt: r.created_at ? new Date(r.created_at).toISOString() : '',
+        }));
         const boardReviewRounds: BoardReviewRound[] = boardRoundRes.rows.map((r: any) => ({
             id: String(r.id),
             roundNo: Number(r.round_no),
@@ -722,6 +751,7 @@ export async function fetchApplicationDetail(
             supervisorApprovedForAccounting: row.supervisor_approved_for_accounting ?? null,
             supervisorReviewNote: row.supervisor_review_note ?? null,
             supervisorReviewPending: !!row.supervisor_review_pending,
+            supervisorReviewHistory,
             officerName,
             applyAt: formatDateOnly(row.apply_at) ?? undefined,
             createdAt: row.created_at ? row.created_at.toISOString() : undefined,
@@ -1358,14 +1388,27 @@ export async function requestSupervisorReviewForBoard(
             }
         }
 
-        await client.query(
-            `UPDATE applications
-             SET supervisor_approved_for_board = NULL,
-                 supervisor_review_note = NULL,
-                 updated_at = NOW()
-             WHERE id = $1::bigint`,
-            [applicationId]
-        );
+        await client.query('BEGIN');
+        try {
+            await client.query(
+                `UPDATE applications
+                 SET supervisor_approved_for_board = NULL,
+                     supervisor_review_note = NULL,
+                     updated_at = NOW()
+                 WHERE id = $1::bigint`,
+                [applicationId]
+            );
+            // 審閱歷程只新增不覆蓋：上一輪的退件意見重送後仍可見
+            await client.query(
+                `INSERT INTO application_supervisor_reviews (application_id, action, actor_id)
+                 VALUES ($1::bigint, 'request', $2::bigint)`,
+                [applicationId, operatorUserId]
+            );
+            await client.query('COMMIT');
+        } catch (err) {
+            try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+            throw err;
+        }
         void writeAuditLog({
             userId: operatorUserId,
             action: 'application.request_supervisor_review_board',
@@ -1414,6 +1457,11 @@ export async function supervisorReviewForBoard(
                  updated_at = NOW()
              WHERE id = $3::bigint`,
             [approved, trimmedNote || null, applicationId]
+        );
+        await client.query(
+            `INSERT INTO application_supervisor_reviews (application_id, action, note, actor_id)
+             VALUES ($1::bigint, $2, $3, $4::bigint)`,
+            [applicationId, approved ? 'approve' : 'reject', trimmedNote || null, operatorUserId]
         );
 
         // approved → 自動 advance 到 board_review
