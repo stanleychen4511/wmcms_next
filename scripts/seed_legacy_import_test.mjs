@@ -13,6 +13,7 @@
  *
  *   --prefix  案號前綴（預設 T，例如 TA115016），需與修正腳本的 CASE_PREFIX 一致
  *   --reset   先刪除同前綴的既有假案件（含其專屬組別、測試申請人帳號）再重建
+ *   --officer 假案件的承辦人帳號（預設為第一個在職承辦人）
  *
  * ENCRYPTION_KEY 必須與目標環境 app 使用的相同，否則畫面上的申請人姓名無法解密。
  * 案號已存在且未加 --reset 時直接中止。
@@ -28,6 +29,7 @@ const argValue = (name, fallback) => {
 };
 const PREFIX = argValue('--prefix', 'T');
 const RESET = args.includes('--reset');
+const OFFICER_ACCOUNT = argValue('--officer', null);
 if (!/^[A-Z]{1,3}$/.test(PREFIX)) {
     console.error('--prefix 只能是 1–3 個大寫英文字母');
     process.exit(1);
@@ -99,9 +101,13 @@ try {
         `SELECT u.id::text FROM users u
          JOIN user_roles ur ON ur.user_id = u.id JOIN roles r ON r.id = ur.role_id
          WHERE r.code = 'case_officer' AND u.is_active = TRUE
-         ORDER BY u.id LIMIT 1`
+           AND ($1::text IS NULL OR u.account = $1)
+         ORDER BY u.id LIMIT 1`,
+        [OFFICER_ACCOUNT]
     );
-    if (officerRes.rowCount === 0) throw new Error('測試資料庫沒有在職的承辦人帳號');
+    if (officerRes.rowCount === 0) {
+        throw new Error(OFFICER_ACCOUNT ? `找不到在職承辦人帳號 ${OFFICER_ACCOUNT}` : '測試資料庫沒有在職的承辦人帳號');
+    }
     const officerId = officerRes.rows[0].id;
     const applicantRoleId = (await client.query(`SELECT id FROM roles WHERE code = 'applicant'`)).rows[0]?.id;
 
