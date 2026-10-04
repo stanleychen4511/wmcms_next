@@ -70,7 +70,8 @@ function decryptName(enc: any, iv: any): string {
 }
 
 async function loadGroupRows(client: any, activeOnly: boolean): Promise<BoardGroup[]> {
-    const filter = activeOnly ? `WHERE g.is_active = TRUE` : '';
+    // 案件專屬組別（is_adhoc）只服務單一案件，不列入組別管理 / 派組下拉
+    const filter = activeOnly ? `WHERE g.is_active = TRUE AND NOT g.is_adhoc` : `WHERE NOT g.is_adhoc`;
     const groupRes = await client.query(
         `SELECT g.id, g.name, g.priority, g.is_active, g.created_at, g.updated_at,
                 COALESCE(c.cnt, 0) AS open_count
@@ -504,6 +505,7 @@ export async function autoAssignCaseToBoardGroup(
                  GROUP BY a.group_id
              ) c ON c.group_id = g.id
              WHERE g.is_active = TRUE
+               AND NOT g.is_adhoc
                AND EXISTS (SELECT 1 FROM board_group_members m WHERE m.group_id = g.id)
              ORDER BY COALESCE(c.n, 0) ASC, g.priority ASC, g.id ASC
              LIMIT 1`
@@ -520,6 +522,136 @@ export async function autoAssignCaseToBoardGroup(
         try { client.release(); } catch { /* ignore */ }
         console.error('autoAssignCaseToBoardGroup error:', err);
         return { success: false, error: err.message };
+    }
+}
+
+/** 可為案件設定「專屬董事組合」的角色 */
+const CUSTOM_BOARD_ASSIGNER_ROLES = ['admin', 'chairman', 'executive', 'supervisor'];
+
+/**
+ * 為單一案件自訂董事組合：建立（或更新）該案的專屬組別並派案。
+ * 用於匯入的歷史案件（原審董事不詳）或需跨組組成審核小組的情況。
+ * 專屬組別不受「一位董事僅屬一組」限制，也不列入組別管理與自動派組。
+ */
+export async function assignCaseToCustomBoardMembers(
+    applicationId: string,
+    memberUserIds: string[],
+    operatorUserId: string,
+): Promise<ActionResult<{ groupId: string; reassigned: boolean }>> {
+    if (!/^\d+$/.test(applicationId)) return { success: false, error: '無效的案件 ID' };
+    if (!/^\d+$/.test(operatorUserId ?? '')) return { success: false, error: '缺少操作者身分' };
+    const uniqueIds = Array.from(new Set((memberUserIds ?? []).map(String)));
+    if (uniqueIds.length === 0) return { success: false, error: '至少需選擇一位董事' };
+    if (uniqueIds.some(id => !/^\d+$/.test(id))) return { success: false, error: '無效的董事 ID' };
+
+    const client = await pool.connect();
+    try {
+        if (!(await hasRole(client, operatorUserId, CUSTOM_BOARD_ASSIGNER_ROLES))) {
+            return { success: false, error: '無權限設定專屬董事組合' };
+        }
+
+        await client.query('BEGIN');
+
+        const caseRes = await client.query(
+            `SELECT a.status, a.case_number, w.stage
+             FROM applications a
+             LEFT JOIN LATERAL (
+                 SELECT stage FROM application_workflow
+                 WHERE application_id = a.id
+                 ORDER BY id DESC LIMIT 1
+             ) w ON TRUE
+             WHERE a.id = $1::bigint
+             FOR UPDATE OF a`,
+            [applicationId]
+        );
+        if (caseRes.rowCount === 0) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '案件不存在' };
+        }
+        const c = caseRes.rows[0];
+        if (c.status !== '1' || c.stage !== 'board_review') {
+            await client.query('ROLLBACK');
+            return { success: false, error: '僅 board_review 階段的進行中案件可派組' };
+        }
+
+        // 只允許在職的董事
+        const memberRes = await client.query(
+            `SELECT DISTINCT u.id::text AS id
+             FROM users u
+             JOIN user_roles ur ON ur.user_id = u.id
+             JOIN roles r ON r.id = ur.role_id
+             WHERE u.id = ANY($1::bigint[]) AND r.code = 'board_member' AND u.is_active = TRUE`,
+            [uniqueIds]
+        );
+        if ((memberRes.rowCount ?? 0) !== uniqueIds.length) {
+            await client.query('ROLLBACK');
+            return { success: false, error: '所選人員中有非在職董事，請重新選擇' };
+        }
+
+        // 每案至多一個專屬組別：有就沿用並替換成員，沒有就建立
+        const groupRes = await client.query(
+            `INSERT INTO board_groups (name, priority, is_active, is_adhoc, adhoc_application_id)
+             VALUES ($1, 0, TRUE, TRUE, $2::bigint)
+             ON CONFLICT (adhoc_application_id) WHERE adhoc_application_id IS NOT NULL
+             DO UPDATE SET is_active = TRUE, updated_at = NOW()
+             RETURNING id::text`,
+            [`${c.case_number} 專屬組合`, applicationId]
+        );
+        const groupId: string = groupRes.rows[0].id;
+
+        await client.query(`DELETE FROM board_group_members WHERE group_id = $1::bigint`, [groupId]);
+        await client.query(
+            `INSERT INTO board_group_members (group_id, user_id, is_adhoc)
+             SELECT $1::bigint, uid, TRUE FROM UNNEST($2::bigint[]) AS uid`,
+            [groupId, uniqueIds]
+        );
+
+        const existRes = await client.query(
+            `SELECT group_id::text FROM board_review_assignments WHERE application_id = $1::bigint LIMIT 1`,
+            [applicationId]
+        );
+        const reassigned = (existRes.rowCount ?? 0) > 0;
+        if (reassigned) {
+            await client.query(
+                `UPDATE board_review_assignments
+                 SET group_id = $1::bigint, assigned_at = NOW(),
+                     assigned_by = $2::bigint, assign_mode = 'manual'
+                 WHERE application_id = $3::bigint`,
+                [groupId, operatorUserId, applicationId]
+            );
+            // 成員已變動：既有簽章一律失效（與一般組別改派一致）
+            const { clearStaleSignatures } = await import('./boardSignatureActions');
+            await clearStaleSignatures(client, applicationId, 'reassigned');
+        } else {
+            await client.query(
+                `INSERT INTO board_review_assignments
+                    (application_id, group_id, assigned_by, assign_mode)
+                 VALUES ($1::bigint, $2::bigint, $3::bigint, 'manual')`,
+                [applicationId, groupId, operatorUserId]
+            );
+        }
+
+        await client.query('COMMIT');
+
+        void writeAuditLog({
+            userId: operatorUserId,
+            action: reassigned ? 'board_review.reassign' : 'board_review.assign',
+            targetType: 'board_assignment',
+            targetId: applicationId,
+            detail: { group_id: groupId, mode: 'manual', custom: true, memberUserIds: uniqueIds },
+        });
+
+        const { notifyEvent } = await import('./notificationDispatcher');
+        void notifyEvent('case_assigned_to_board_group', { applicationId, groupId })
+            .catch(err => console.error('[notify] case_assigned_to_board_group failed:', err));
+
+        return { success: true, data: { groupId, reassigned } };
+    } catch (err: unknown) {
+        try { await client.query('ROLLBACK'); } catch { /* ignore */ }
+        console.error('assignCaseToCustomBoardMembers error:', err);
+        return { success: false, error: err instanceof Error ? err.message : String(err) };
+    } finally {
+        client.release();
     }
 }
 
@@ -809,7 +941,7 @@ export async function fetchBoardMemberCandidates(): Promise<ActionResult<Array<{
              FROM users u
              JOIN user_roles ur ON ur.user_id = u.id
              JOIN roles r ON r.id = ur.role_id
-             LEFT JOIN board_group_members m ON m.user_id = u.id
+             LEFT JOIN board_group_members m ON m.user_id = u.id AND NOT m.is_adhoc
              WHERE r.code = 'board_member' AND u.is_active = TRUE
              ORDER BY u.account ASC`
         );

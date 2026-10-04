@@ -286,7 +286,8 @@ export async function updateUserRoles(userId: string, targetRoles: Role[]): Prom
                 `SELECT bg.name AS group_name
                  FROM board_group_members bgm
                  JOIN board_groups bg ON bg.id = bgm.group_id
-                 WHERE bgm.user_id = $1::bigint`,
+                 WHERE bgm.user_id = $1::bigint
+                   AND NOT bgm.is_adhoc`,
                 [userId]
             );
             if ((grpRes.rowCount ?? 0) > 0) {

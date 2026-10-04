@@ -306,6 +306,13 @@ CREATE TABLE IF NOT EXISTS board_groups (
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT NOW()
 );
 
+-- 7a-1. 案件專屬組別（added 2026-10）：is_adhoc 組別只服務單一案件，不列入組別管理與自動派組
+ALTER TABLE board_groups ADD COLUMN IF NOT EXISTS is_adhoc BOOLEAN NOT NULL DEFAULT FALSE;
+ALTER TABLE board_groups ADD COLUMN IF NOT EXISTS adhoc_application_id BIGINT REFERENCES applications(id) ON DELETE CASCADE;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_board_groups_adhoc_application
+    ON board_groups (adhoc_application_id)
+    WHERE adhoc_application_id IS NOT NULL;
+
 -- 7b. board_group_members（組別成員，一人一組 UNIQUE(user_id)）
 CREATE TABLE IF NOT EXISTS board_group_members (
     group_id  BIGINT NOT NULL REFERENCES board_groups(id) ON DELETE CASCADE,
@@ -313,6 +320,22 @@ CREATE TABLE IF NOT EXISTS board_group_members (
     PRIMARY KEY (group_id, user_id),
     UNIQUE (user_id)
 );
+-- 7b-1. （added 2026-10）專屬組別成員不受「一人一組」限制：
+--        UNIQUE(user_id) 改為只約束一般組別（NOT is_adhoc）的 partial unique index
+ALTER TABLE board_group_members ADD COLUMN IF NOT EXISTS is_adhoc BOOLEAN NOT NULL DEFAULT FALSE;
+DO $$
+BEGIN
+    IF EXISTS (
+        SELECT 1 FROM pg_constraint
+        WHERE conname = 'board_group_members_user_id_key'
+          AND conrelid = 'board_group_members'::regclass
+    ) THEN
+        ALTER TABLE board_group_members DROP CONSTRAINT board_group_members_user_id_key;
+    END IF;
+END$$;
+CREATE UNIQUE INDEX IF NOT EXISTS uq_board_group_members_regular_user
+    ON board_group_members (user_id)
+    WHERE NOT is_adhoc;
 
 -- 7c. board_review_assignments（案件派組紀錄，每案至多一組）
 CREATE TABLE IF NOT EXISTS board_review_assignments (
@@ -1720,7 +1743,10 @@ COMMENT ON TABLE announcements            IS '首頁公告內容：發佈日期 
 COMMENT ON TABLE banners                  IS '首頁輪播橫幅：圖片、連結、顯示區間、排序';
 COMMENT ON TABLE referral_units           IS '轉介單位字典表：由後台管理員維護，供新增案件時於下拉選單選擇來源機構';
 COMMENT ON TABLE board_groups             IS '董事組別主檔：由董事長(chairman)維護；每組含 name / priority（小者優先）/ is_active';
-COMMENT ON TABLE board_group_members      IS '董事組別成員：多對多但 UNIQUE(user_id) 限制一位董事僅屬於一組';
+COMMENT ON TABLE board_group_members      IS '董事組別成員：一般組別以 partial unique index 限制一位董事僅屬於一組；案件專屬組別（is_adhoc）不受限';
+COMMENT ON COLUMN board_groups.is_adhoc IS '是否為案件專屬組別（由派案人員為單一案件自訂董事組合）；不列入組別管理與自動派組';
+COMMENT ON COLUMN board_groups.adhoc_application_id IS '專屬組別所屬案件；一般組別為 NULL';
+COMMENT ON COLUMN board_group_members.is_adhoc IS '冗餘自 board_groups.is_adhoc，供 partial unique index 只約束一般組別';
 COMMENT ON TABLE board_review_assignments IS '案件派組紀錄：每案一列，記錄當前派到哪個董事組別、派案者、手動/自動';
 COMMENT ON TABLE board_review_signatures  IS '董事審核電子簽章：每位派組成員一列，含簽章 base64 + 當時案件內容 SHA-256 hash + 時間/IP/UA；推進前守門驗證全員簽完且 hash 有效';
 COMMENT ON TABLE user_line_link_codes     IS '使用者 LINE 綁定碼暫存表：PK = user_id 強制一人一碼，產新覆寫舊；過期 10 分鐘自動失效';

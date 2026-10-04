@@ -44,6 +44,7 @@ import { OfficerCaseSummaryPanel } from './components/OfficerCaseSummaryPanel';
 import { SendNotificationModal, ChecklistDoc } from './components/SendNotificationModal';
 import { EditCaseBasicsModal } from './components/EditCaseBasicsModal';
 import { BoardVoteCard } from './components/BoardVoteCard';
+import { CustomBoardMembersPicker } from './components/CustomBoardMembersPicker';
 import { BoardSignaturePanel } from './components/BoardSignaturePanel';
 import { fetchBoardReviewSignatures, type BoardReviewSignatureStatus } from './app/actions/boardSignatureActions';
 import { fetchActiveBoardGroups, assignCaseToBoardGroup, isUserInAssignedGroupForCase, saveBoardReviewDraft, BoardGroup } from './app/actions/boardGroupActions';
@@ -468,6 +469,7 @@ function App() {
 
     // Board group re-assignment state (chairman/admin)
     const [showAssignDropdown, setShowAssignDropdown] = useState(false);
+    const [showCustomBoardPicker, setShowCustomBoardPicker] = useState(false);
     const [activeBoardGroups, setActiveBoardGroups] = useState<BoardGroup[]>([]);
     const [assignBusy, setAssignBusy] = useState(false);
 
@@ -641,6 +643,10 @@ function App() {
     // Permission: can edit the board_review section?
     const userRolesList = (loggedInUser?.roles ?? []) as Role[];
     const isAdminOrChairman = userRolesList.includes('admin') || userRolesList.includes('chairman' as Role);
+    // 可設定「本案專屬董事組合」：系統管理員 / 董事長 / 執行長 / 主管
+    const canAssignCustomBoard = isAdminOrChairman ||
+        userRolesList.includes('executive' as Role) ||
+        userRolesList.includes('supervisor' as Role);
     const canEditBoardReview = isAssignedGroupMember || isAdminOrChairman;
     // Permission: can press the advance-to-reimbursement button after all signatures done?
     // 僅開放：主管 / admin（董事長僅作第三審簽章；董事僅負責簽章；承辦人不負責推進核銷）
@@ -1631,6 +1637,11 @@ function App() {
                             {round.approvedAmount != null ? `NT$ ${round.approvedAmount.toLocaleString()}` : '未填寫'}
                         </span>
                     </p>
+                    {round.comments?.trim() && (
+                        <p className="text-sm text-slate-700 whitespace-pre-wrap">
+                            審核意見：{round.comments.trim()}
+                        </p>
+                    )}
                     {round.signatures.map((s, idx) => (
                         <div key={`${round.id}-${s.signerUserId ?? idx}`} className="rounded-md bg-white/70 border border-slate-200 p-2">
                             <p className="text-sm font-semibold text-slate-800">{s.signerName}</p>
@@ -3084,8 +3095,9 @@ function App() {
                                     {renderBoardReviewRounds(appDetail.boardReviewRounds)}
                                 </div>
                             )}
-                            {isAdminOrChairman && (
+                            {canAssignCustomBoard && (
                                 <div className="flex items-center gap-2 flex-wrap">
+                                    {isAdminOrChairman && (
                                     <button
                                         type="button"
                                         onClick={async () => {
@@ -3093,11 +3105,23 @@ function App() {
                                                 const res = await fetchActiveBoardGroups();
                                                 if (res.success && res.data) setActiveBoardGroups(res.data);
                                             }
+                                            setShowCustomBoardPicker(false);
                                             setShowAssignDropdown(v => !v);
                                         }}
                                         className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-purple-700 bg-purple-50 border border-purple-200 rounded-md hover:bg-purple-100 transition cursor-pointer"
                                     >
                                         指派 / 重新指派組別
+                                    </button>
+                                    )}
+                                    <button
+                                        type="button"
+                                        onClick={() => {
+                                            setShowAssignDropdown(false);
+                                            setShowCustomBoardPicker(v => !v);
+                                        }}
+                                        className="inline-flex items-center gap-1 px-3 py-1.5 text-sm font-medium text-purple-700 bg-white border border-purple-200 rounded-md hover:bg-purple-50 transition cursor-pointer"
+                                    >
+                                        自訂本案審核董事
                                     </button>
                                     {showAssignDropdown && (
                                         <div className="inline-flex items-center gap-2">
@@ -3133,6 +3157,23 @@ function App() {
                                                 ))}
                                             </select>
                                         </div>
+                                    )}
+                                    {showCustomBoardPicker && (
+                                        <CustomBoardMembersPicker
+                                            applicationId={selectedAppId}
+                                            operatorUserId={loggedInUser.id}
+                                            onCancel={() => setShowCustomBoardPicker(false)}
+                                            onError={msg => pushToast({ type: 'error', msg })}
+                                            onAssigned={async (reassigned) => {
+                                                pushToast({ type: 'success', msg: reassigned ? '已重新設定本案審核董事' : '已設定本案審核董事' });
+                                                setShowCustomBoardPicker(false);
+                                                setBoardRefreshKey(k => k + 1);
+                                                await Promise.all([
+                                                    loadAppDetail(selectedAppId, true),
+                                                    loggedInUser ? isUserInAssignedGroupForCase(selectedAppId, loggedInUser.id).then(r => setIsAssignedGroupMember(!!r.data)) : Promise.resolve(),
+                                                ]);
+                                            }}
+                                        />
                                     )}
                                 </div>
                             )}
