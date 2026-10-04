@@ -304,7 +304,17 @@ async function snapshotCurrentBoardReviewIfMissing(client: any, applicationId: s
     const approvedAmount = appRes.rows[0]?.approved_amount != null
         ? Number(appRes.rows[0].approved_amount)
         : 0;
-    const comments = appRes.rows[0]?.board_review_comments ?? null;
+    let comments = appRes.rows[0]?.board_review_comments ?? null;
+    if ((sigRes.rowCount ?? 0) === 0 && !comments) {
+        // 初始匯入的歷史案件：董事為紙本審核、系統內沒有簽章，前一輪歷程註明來源
+        const legacyRes = await client.query(
+            `SELECT 1 FROM application_workflow
+             WHERE application_id = $1::bigint AND comments LIKE '初始匯入%'
+             LIMIT 1`,
+            [applicationId],
+        );
+        if ((legacyRes.rowCount ?? 0) > 0) comments = '初始匯入：歷史紙本審核通過，審核董事未記錄';
+    }
     if ((sigRes.rowCount ?? 0) === 0 && !comments && approvedAmount === 0) return;
     await persistBoardReviewRoundSnapshot(
         client,
@@ -1742,19 +1752,39 @@ export async function reviewBoardReconsideration(
             ]
         );
         await snapshotCurrentBoardReviewIfMissing(client, applicationId);
-        await client.query(
-            `DELETE FROM board_review_assignments WHERE application_id = $1::bigint`,
+        // 退回再審派回原組：前次派組仍有效（啟用且有成員）就保留；
+        // 否則（初始匯入案件無派組、原組已停用或無成員）清除派組，由董事長等人員手動指定，不走自動派組。
+        const prevGroupRes = await client.query(
+            `SELECT bra.group_id::text AS group_id
+             FROM board_review_assignments bra
+             JOIN board_groups g ON g.id = bra.group_id
+             WHERE bra.application_id = $1::bigint
+               AND g.is_active = TRUE
+               AND EXISTS (SELECT 1 FROM board_group_members m WHERE m.group_id = g.id)
+             LIMIT 1`,
             [applicationId]
         );
+        const keptGroupId: string | null = prevGroupRes.rows[0]?.group_id ?? null;
+        if (keptGroupId) {
+            await client.query(
+                `UPDATE board_review_assignments SET assigned_at = NOW() WHERE application_id = $1::bigint`,
+                [applicationId]
+            );
+        } else {
+            await client.query(
+                `DELETE FROM board_review_assignments WHERE application_id = $1::bigint`,
+                [applicationId]
+            );
+        }
         const { clearStaleSignatures } = await import('./boardSignatureActions');
         await clearStaleSignatures(client, applicationId, 'reassigned');
         await client.query('COMMIT');
 
-        const { maybeAutoAssignOnBoardReviewEntry } = await import('./boardGroupActions');
-        runAfterResponse('auto assign board group', () => maybeAutoAssignOnBoardReviewEntry(applicationId));
-        const autoAssign = await fetchSetting('board_auto_assign', 'false');
-        if (autoAssign !== 'true') {
-            const { notifyEvent } = await import('./notificationDispatcher');
+        const { notifyEvent } = await import('./notificationDispatcher');
+        if (keptGroupId) {
+            runAfterResponse('notify case_assigned_to_board_group',
+                () => notifyEvent('case_assigned_to_board_group', { applicationId, groupId: keptGroupId }));
+        } else {
             runAfterResponse('notify case_entered_board_review',
                 () => notifyEvent('case_entered_board_review', { applicationId }));
         }
@@ -1763,7 +1793,7 @@ export async function reviewBoardReconsideration(
             action: 'application.board_reconsideration_approve',
             targetType: 'application',
             targetId: applicationId,
-            detail: { requestId, note: trimmedNote },
+            detail: { requestId, note: trimmedNote, keptGroupId },
         });
         return { success: true };
     } catch (err: any) {
