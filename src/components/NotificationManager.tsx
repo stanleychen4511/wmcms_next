@@ -16,6 +16,7 @@ import {
     fetchTemplates, addTemplate, updateTemplate, toggleTemplateStatus,
     fetchSchedules, saveSchedule, deleteSchedule, toggleScheduleActive, executeSchedule, NotificationSchedule,
     fetchAutoNotificationRules, saveAutoNotificationRule, AutoNotificationRule,
+    fetchNotificationDiagnostics, setNotificationDispatcherEnabled, NotificationDiagnostics,
 } from '../app/actions/notificationActions';
 import { fetchLineCredentialStatus, sendLineMessage } from '../app/actions/lineActions';
 import { SYSTEM_TEMPLATE_NAMES, getNotificationTemplateLabel } from '../lib/systemTemplates';
@@ -365,6 +366,230 @@ type AutoRuleDraft = {
     line_template_id: number | null;
 };
 
+// ─── 通知診斷面板（WMCMS-18 / WMCMS-19）────────────────────────────────────────
+
+const DIAG_ROLE_LABEL: Record<string, string> = {
+    admin: '系統管理員', chairman: '董事長', executive: '執行長', supervisor: '主管',
+    case_officer: '個管師', accountant: '會計', board_member: '董事', volunteer: '志工', applicant: '申請人',
+};
+
+const DIAG_RECIPIENT_LABEL: Record<string, string> = {
+    chairman: '董事長', board_group_members: '董事審核組員', assigned_officer: '被指派承辦人',
+    disbursement_related_users: '撥款相關人員', applicant: '申請人',
+};
+
+function diagRecipientLabel(type: string): string {
+    if (type.startsWith('role:')) return DIAG_ROLE_LABEL[type.slice(5)] ?? type.slice(5);
+    return DIAG_RECIPIENT_LABEL[type] ?? type;
+}
+
+function DiagCheck({ ok, label, hint }: { ok: boolean; label: string; hint?: string }) {
+    return (
+        <li className="flex items-start gap-2 text-sm">
+            <span className={clsx('mt-0.5 inline-flex w-4 h-4 rounded-full items-center justify-center text-[10px] font-bold shrink-0',
+                ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')}>
+                {ok ? '✓' : '!'}
+            </span>
+            <span className={ok ? 'text-slate-700' : 'text-red-700 font-medium'}>
+                {label}
+                {!ok && hint && <span className="block text-xs font-normal text-red-600 mt-0.5">{hint}</span>}
+            </span>
+        </li>
+    );
+}
+
+function NotificationDiagnosticsPanel({ diag, toggling, onToggleDispatcher, onReload }: {
+    diag: NotificationDiagnostics;
+    toggling: boolean;
+    onToggleDispatcher: (enabled: boolean) => void;
+    onReload: () => void;
+}) {
+    const [showRecent, setShowRecent] = useState(false);
+    const eventProblems = diag.events.filter(ev =>
+        (ev.ruleCount > 0 && ev.enabledRuleCount === 0)
+        || (ev.channels.includes('email') && !ev.hasEmailTemplate)
+        || (ev.channels.includes('line') && !ev.hasLineTemplate)
+    );
+
+    return (
+        <section className="space-y-3">
+            <div className="flex items-start justify-between gap-3">
+                <div>
+                    <h3 className="text-sm font-bold text-slate-500 uppercase tracking-wide">通知診斷</h3>
+                    <p className="text-xs text-slate-400 mt-0.5">
+                        「沒收到通知」時依序檢查：總開關 → 渠道設定 → 事件範本 → 帳號綁定 → 最近派送紀錄。
+                    </p>
+                </div>
+                <button type="button" onClick={onReload}
+                    className="text-xs px-2.5 py-1 rounded-lg border border-slate-200 text-slate-600 hover:bg-slate-50 shrink-0">
+                    重新檢查
+                </button>
+            </div>
+
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                {/* 前置條件 */}
+                <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-3">
+                    <div className="flex items-center justify-between">
+                        <h4 className="text-sm font-bold text-slate-800">前置條件</h4>
+                        <button type="button" disabled={toggling}
+                            onClick={() => onToggleDispatcher(!diag.dispatcherEnabled)}
+                            className={clsx('inline-flex items-center gap-1.5 px-2.5 py-1 rounded-lg text-xs font-medium transition',
+                                diag.dispatcherEnabled ? 'bg-green-50 text-green-700 hover:bg-green-100' : 'bg-red-50 text-red-700 hover:bg-red-100')}>
+                            {diag.dispatcherEnabled ? <ToggleRight className="w-4 h-4" /> : <ToggleLeft className="w-4 h-4" />}
+                            總開關 {diag.dispatcherEnabled ? '開啟' : '關閉'}
+                        </button>
+                    </div>
+                    <ul className="space-y-1.5">
+                        <DiagCheck ok={diag.dispatcherEnabled} label="通知派送總開關（system_settings.notification_dispatcher_enabled）"
+                            hint="關閉時所有事件都不會送出。按右上角「總開關」或至「系統設定」開啟。" />
+                        <DiagCheck ok={diag.emailChannelEnabled} label="Email 渠道已啟用" hint="至「渠道設定」啟用 Email。" />
+                        <DiagCheck ok={diag.smtpConfigured} label="SMTP 主機／帳號／密碼已設定" hint="至「渠道設定 → Email」填寫 SMTP。" />
+                        <DiagCheck ok={diag.lineChannelEnabled} label="LINE 渠道已啟用" hint="至「渠道設定」啟用 LINE。" />
+                        <DiagCheck ok={diag.lineTokenConfigured} label="LINE_CHANNEL_ACCESS_TOKEN 環境變數已設定"
+                            hint="正式機需在部署平台設定環境變數後重新部署（見 docs/line-webhook-setup-guide.md）。" />
+                        <DiagCheck ok={diag.systemUrlConfigured} label="NEXT_PUBLIC_SYSTEM_URL 已設定（通知內的案件連結）"
+                            hint="未設定時通知仍會送出，但「案件連結」會是空白。" />
+                    </ul>
+                </div>
+
+                {/* 帳號綁定 */}
+                <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-2">
+                    <h4 className="text-sm font-bold text-slate-800">各角色帳號綁定</h4>
+                    <p className="text-xs text-slate-400">
+                        收件人需「有 Email／已綁 LINE」且「個人設定勾選該渠道」才會收到。
+                    </p>
+                    <table className="w-full text-xs">
+                        <thead>
+                            <tr className="text-slate-500 border-b border-slate-100">
+                                <th className="text-left py-1 font-medium">角色</th>
+                                <th className="text-right py-1 font-medium">人數</th>
+                                <th className="text-right py-1 font-medium">有 Email</th>
+                                <th className="text-right py-1 font-medium">勾 Email</th>
+                                <th className="text-right py-1 font-medium">綁 LINE</th>
+                                <th className="text-right py-1 font-medium">勾 LINE</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {diag.roles.map(r => (
+                                <tr key={r.role} className="border-b border-slate-50">
+                                    <td className="py-1 text-slate-700">{DIAG_ROLE_LABEL[r.role] ?? r.role}</td>
+                                    <td className="py-1 text-right">{r.total}</td>
+                                    <td className={clsx('py-1 text-right', r.withEmail < r.total && 'text-amber-600')}>{r.withEmail}</td>
+                                    <td className={clsx('py-1 text-right', r.emailPref < r.total && 'text-amber-600')}>{r.emailPref}</td>
+                                    <td className={clsx('py-1 text-right', r.withLine === 0 && 'text-red-600 font-medium')}>{r.withLine}</td>
+                                    <td className={clsx('py-1 text-right', r.linePref === 0 && 'text-amber-600')}>{r.linePref}</td>
+                                </tr>
+                            ))}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            {/* 事件 × 範本 */}
+            <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-2">
+                <div className="flex items-center gap-2">
+                    <h4 className="text-sm font-bold text-slate-800">事件範本與規則</h4>
+                    {eventProblems.length > 0 ? (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-red-100 text-red-700">{eventProblems.length} 個事件有問題</span>
+                    ) : (
+                        <span className="text-[11px] px-2 py-0.5 rounded-full bg-green-100 text-green-700">全部正常</span>
+                    )}
+                </div>
+                <p className="text-xs text-slate-400">
+                    範本缺少時該渠道會被略過（skipped_template_missing）。正式機升版後請重跑 <code>scripts/init_db.sql</code> 匯入新事件範本。
+                </p>
+                <table className="w-full text-xs">
+                    <thead>
+                        <tr className="text-slate-500 border-b border-slate-100">
+                            <th className="text-left py-1 font-medium">事件</th>
+                            <th className="text-left py-1 font-medium">收件人</th>
+                            <th className="text-center py-1 font-medium">規則</th>
+                            <th className="text-center py-1 font-medium">Email 範本</th>
+                            <th className="text-center py-1 font-medium">LINE 範本</th>
+                        </tr>
+                    </thead>
+                    <tbody>
+                        {diag.events.map(ev => {
+                            const ruleOk = ev.ruleCount === 0 || ev.enabledRuleCount > 0;
+                            const emailNeeded = ev.channels.includes('email');
+                            const lineNeeded = ev.channels.includes('line');
+                            const cell = (needed: boolean, ok: boolean) =>
+                                !needed ? <span className="text-slate-300">—</span>
+                                : ok ? <span className="text-green-700">✓</span>
+                                : <span className="text-red-600 font-bold">缺</span>;
+                            return (
+                                <tr key={ev.code} className="border-b border-slate-50">
+                                    <td className="py-1">
+                                        <div className="text-slate-700">{ev.name}</div>
+                                        <div className="font-mono text-[10px] text-slate-400">{ev.code}</div>
+                                    </td>
+                                    <td className="py-1 text-slate-600">{ev.recipientRoles.map(diagRecipientLabel).join('、') || '—'}</td>
+                                    <td className={clsx('py-1 text-center', !ruleOk && 'text-red-600 font-bold')}>
+                                        {ev.ruleCount === 0 ? '預設' : ruleOk ? `${ev.enabledRuleCount}/${ev.ruleCount} 啟用` : '全部停用'}
+                                    </td>
+                                    <td className="py-1 text-center">{cell(emailNeeded, ev.hasEmailTemplate)}</td>
+                                    <td className="py-1 text-center">{cell(lineNeeded, ev.hasLineTemplate)}</td>
+                                </tr>
+                            );
+                        })}
+                    </tbody>
+                </table>
+            </div>
+
+            {/* 最近派送紀錄 */}
+            <div className="bg-white border border-slate-200 rounded-xl p-4 space-y-2">
+                <button type="button" onClick={() => setShowRecent(v => !v)}
+                    className="flex items-center gap-2 text-sm font-bold text-slate-800 w-full text-left">
+                    {showRecent ? <ChevronUp className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
+                    最近派送紀錄
+                    <span className="text-xs font-normal text-slate-400">
+                        （{diag.recent.length} 筆事件派送、{diag.recentFailedLogs.length} 筆失敗）
+                    </span>
+                </button>
+                {showRecent && (
+                    diag.recent.length === 0 ? (
+                        <p className="text-xs text-slate-500">
+                            尚無任何事件派送紀錄。若業務事件（派案、送審、退件）已發生但這裡沒有紀錄，代表 dispatcher 根本沒被觸發——最常見原因是總開關關閉。
+                        </p>
+                    ) : (
+                        <ul className="space-y-1 text-xs">
+                            {diag.recent.map((r, i) => (
+                                <li key={i} className="flex flex-wrap gap-x-2 gap-y-0.5 border-b border-slate-50 py-1">
+                                    <span className="text-slate-400 font-mono">{formatRocDateTime(r.at)}</span>
+                                    <span className="font-mono text-slate-600">{r.eventType}</span>
+                                    <span className="text-slate-500">收件人 #{r.recipientUserId ?? '?'}</span>
+                                    {Object.entries(r.statusPerChannel).map(([ch, st]) => (
+                                        <span key={ch} className={clsx('px-1.5 rounded',
+                                            st === 'sent' ? 'bg-green-50 text-green-700'
+                                            : st === 'failed' ? 'bg-red-50 text-red-700'
+                                            : 'bg-slate-100 text-slate-500')}>
+                                            {ch}: {st}
+                                        </span>
+                                    ))}
+                                    {r.error && <span className="text-red-600">{r.error}</span>}
+                                </li>
+                            ))}
+                        </ul>
+                    )
+                )}
+                {showRecent && diag.recentFailedLogs.length > 0 && (
+                    <div className="pt-2">
+                        <p className="text-xs font-semibold text-red-700 mb-1">最近失敗的發送（notification_logs）</p>
+                        <ul className="space-y-0.5 text-xs">
+                            {diag.recentFailedLogs.map((f, i) => (
+                                <li key={i} className="text-red-700">
+                                    <span className="text-slate-400 font-mono mr-2">{formatRocDateTime(f.at)}</span>
+                                    [{f.channel ?? '?'}] {f.error ?? '（無錯誤訊息）'}
+                                </li>
+                            ))}
+                        </ul>
+                    </div>
+                )}
+            </div>
+        </section>
+    );
+}
+
 interface NotificationManagerProps {
     userId: string;
     userRoles: Role[];
@@ -383,6 +608,9 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
     const [autoRules, setAutoRules] = useState<AutoNotificationRule[]>([]);
     const [autoRuleDrafts, setAutoRuleDrafts] = useState<Record<string, AutoRuleDraft>>({});
     const [savingAutoRuleId, setSavingAutoRuleId] = useState<string | null>(null);
+    // WMCMS-18 / WMCMS-19：通知診斷（總開關、SMTP、LINE、範本、帳號綁定、最近派送）
+    const [diag, setDiag] = useState<NotificationDiagnostics | null>(null);
+    const [togglingDispatcher, setTogglingDispatcher] = useState(false);
     const [loading, setLoading] = useState(true);
     const [expandedEmail, setExpandedEmail] = useState(false);
     const [tplModal, setTplModal] = useState<{ mode: 'add' | 'edit'; tpl?: NotificationTemplate } | null>(null);
@@ -393,12 +621,15 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
     const loadData = useCallback(async () => {
         setLoading(true);
         try {
-            const [chRes, tplRes, schRes, autoRuleRes] = await Promise.all([
+            const [chRes, tplRes, schRes, autoRuleRes, diagRes] = await Promise.all([
                 fetchChannels(userId),
                 fetchTemplates(userId),
                 fetchSchedules(userId),
                 canManageAutoRules ? fetchAutoNotificationRules(userId) : Promise.resolve(undefined),
+                canManageAutoRules ? fetchNotificationDiagnostics(userId) : Promise.resolve(undefined),
             ]);
+            if (diagRes?.success && diagRes.data) setDiag(diagRes.data);
+            else if (diagRes && !diagRes.success) pushToast({ type: 'error', msg: `通知診斷載入失敗：${diagRes.error ?? '未知錯誤'}` });
             if (chRes.success && chRes.data) setChannels(chRes.data);
             if (tplRes.success && tplRes.data) setTemplates(tplRes.data);
             if (schRes.success && schRes.data) setSchedules(schRes.data);
@@ -423,6 +654,19 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
     }, [pushToast, canManageAutoRules, userId]);
 
     useEffect(() => { loadData(); }, [loadData]);
+
+    const handleToggleDispatcher = async (enabled: boolean) => {
+        if (togglingDispatcher) return;
+        setTogglingDispatcher(true);
+        try {
+            const res = await setNotificationDispatcherEnabled(userId, enabled);
+            if (!res.success) { pushToast({ type: 'error', msg: res.error ?? '更新失敗' }); return; }
+            setDiag(prev => prev ? { ...prev, dispatcherEnabled: enabled } : prev);
+            pushToast({ type: 'success', msg: enabled ? '通知派送總開關已開啟' : '通知派送總開關已關閉' });
+        } finally {
+            setTogglingDispatcher(false);
+        }
+    };
 
     const handleToggleChannel = async (ch: NotificationChannel) => {
         if (ch.channel === 'sms' && !ch.is_enabled) {
@@ -528,6 +772,22 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
                     </h2>
                     <p className="text-sm text-slate-500 mt-0.5">設定通知渠道及管理通知範本</p>
                 </div>
+
+                {/* WMCMS-18/19：總開關關閉時所有自動通知都不會送出，在最上方醒目提示 */}
+                {canManageAutoRules && diag && !diag.dispatcherEnabled && (
+                    <div className="flex flex-col sm:flex-row sm:items-center gap-3 bg-red-50 border border-red-200 rounded-xl px-4 py-3">
+                        <AlertTriangle className="w-5 h-5 text-red-600 shrink-0" />
+                        <div className="flex-1 text-sm text-red-800">
+                            <span className="font-semibold">通知派送總開關目前為「關閉」</span>
+                            ：派案、董事審核、撥款等所有系統事件都<span className="font-semibold">不會</span>寄出 Email 或 LINE。
+                            請先確認下方「自動通知 → 通知診斷」各項皆正常，再開啟。
+                        </div>
+                        <button type="button" onClick={() => handleToggleDispatcher(true)} disabled={togglingDispatcher}
+                            className="shrink-0 px-3 py-1.5 text-sm font-medium rounded-lg bg-red-600 text-white hover:bg-red-700 disabled:opacity-50">
+                            開啟總開關
+                        </button>
+                    </div>
+                )}
 
                 {/* ── Tab navigation ── */}
                 <div className="flex gap-1 border-b border-slate-200">
@@ -691,6 +951,15 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
                 )}
 
                 {/* ── Schedule management ── */}
+                {canManageAutoRules && activeTab === 'auto_rules' && diag && (
+                    <NotificationDiagnosticsPanel
+                        diag={diag}
+                        toggling={togglingDispatcher}
+                        onToggleDispatcher={handleToggleDispatcher}
+                        onReload={loadData}
+                    />
+                )}
+
                 {canManageAutoRules && activeTab === 'auto_rules' && (
                     <section className="space-y-3">
                         <div>

@@ -710,6 +710,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
     const [editPhone, setEditPhone] = useState('');
     const [editAddress, setEditAddress] = useState('');
     const [editAmount, setEditAmount] = useState<number | ''>('');
+    const [editNotes, setEditNotes] = useState('');  // WMCMS-21：退回個管後可編輯備註
     const [editPaymentMethod, setEditPaymentMethod] = useState<string>('代付醫院');
     const [editPayeeName, setEditPayeeName] = useState('');
     const [editPayeeRelation, setEditPayeeRelation] = useState('本人');
@@ -1062,6 +1063,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                 payeeName: editPayeeName.trim(),
                 payeeRelation: editPayeeRelation,
                 payeeRelationOther: editPayeeRelation === '其他' ? editPayeeRelationOther.trim() : '',
+                notes: editNotes.trim(),
             });
             if (!r2.success) {
                 pushToast({ type: 'error', msg: r2.error ?? '儲存撥款資料失敗' });
@@ -1530,6 +1532,7 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                                     setEditBankName(d.bankName ?? '');
                                     setEditBankBranch(d.bankBranch ?? '');
                                     setEditBankAccount(d.bankAccount ?? '');
+                                    setEditNotes(d.notes ?? '');
                                     setShowEditReceipt(v => !v);
                                 }}
                                 disabled={busy}
@@ -1655,6 +1658,12 @@ function DisbursementRow({ seqNo, disbursement: d, isFinalDisbursement, applicat
                                         </label>
                                     )}
                                 </div>
+                                <label className="block">
+                                    <span className="text-xs text-slate-600">備註</span>
+                                    <input type="text" value={editNotes} onChange={e => setEditNotes(e.target.value)} maxLength={500}
+                                        placeholder="例：主管退件後補充說明"
+                                        className="mt-1 w-full px-2 py-1 text-xs border border-slate-300 rounded focus:outline-none focus:ring-2 focus:ring-emerald-300" />
+                                </label>
                             </fieldset>
                             <div className="flex gap-2">
                                 <button type="button" onClick={handleSaveReceiptEdit} disabled={savingReceiptEdit}
