@@ -373,13 +373,15 @@ export async function fetchDisbursements(
                        AND ad2.file_path IS NOT NULL) AS medical_receipts,
                     /* user feedback #12：捐贈聲明書 + 存摺封面（per-disbursement） */
                     payment_disbursements.donor_disclosure_consent,
+                    /* WMCMS-17：聲明書一案一份 — 同一申請任一次撥款上傳過即視為已完成 */
                     EXISTS (SELECT 1 FROM application_documents ad4
-                            WHERE ad4.id = 22 AND ad4.disbursement_id = payment_disbursements.id
+                            WHERE ad4.id = 22 AND ad4.application_id = payment_disbursements.application_id
                               AND ad4.file_path IS NOT NULL) AS donor_consent_letter_uploaded,
                     (SELECT file_path FROM application_documents ad4u
-                     WHERE ad4u.id = 22 AND ad4u.disbursement_id = payment_disbursements.id
+                     WHERE ad4u.id = 22 AND ad4u.application_id = payment_disbursements.application_id
                        AND ad4u.file_path IS NOT NULL
-                     ORDER BY uploaded_at DESC LIMIT 1) AS donor_consent_letter_url,
+                     ORDER BY (ad4u.disbursement_id = payment_disbursements.id) DESC NULLS LAST, uploaded_at DESC
+                     LIMIT 1) AS donor_consent_letter_url,
                     EXISTS (SELECT 1 FROM application_documents ad5
                             WHERE ad5.id = 21 AND ad5.disbursement_id = payment_disbursements.id
                               AND ad5.file_path IS NOT NULL) AS passbook_cover_uploaded,
@@ -735,11 +737,12 @@ async function checkOfficerGate(client: any, disbursementId: string, cur: any): 
         return '請先確認「是否同意公開捐贈者姓名」';
     }
     if (consent === false) {
+        // WMCMS-17：聲明書以「該次申請」為單位，任一次撥款上傳過即可
         const letterRes = await client.query(
             `SELECT 1 FROM application_documents
-             WHERE id = 22 AND disbursement_id = $1::bigint AND file_path IS NOT NULL
+             WHERE id = 22 AND application_id = $1::bigint AND file_path IS NOT NULL
              LIMIT 1`,
-            [disbursementId]
+            [cur.application_id]
         );
         if (letterRes.rowCount === 0) {
             return '勾選「不同意公開捐贈者姓名」時，需上傳捐贈/受補助者聲明書';
