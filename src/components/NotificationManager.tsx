@@ -629,6 +629,7 @@ export function NotificationManager({ userId, userRoles, onBack, username, onLog
                 canManageAutoRules ? fetchNotificationDiagnostics(userId) : Promise.resolve(undefined),
             ]);
             if (diagRes?.success && diagRes.data) setDiag(diagRes.data);
+            else if (diagRes && !diagRes.success) pushToast({ type: 'error', msg: `通知診斷載入失敗：${diagRes.error ?? '未知錯誤'}` });
             if (chRes.success && chRes.data) setChannels(chRes.data);
             if (tplRes.success && tplRes.data) setTemplates(tplRes.data);
             if (schRes.success && schRes.data) setSchedules(schRes.data);
