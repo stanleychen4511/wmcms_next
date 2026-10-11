@@ -383,16 +383,19 @@ function diagRecipientLabel(type: string): string {
     return DIAG_RECIPIENT_LABEL[type] ?? type;
 }
 
-function DiagCheck({ ok, label, hint }: { ok: boolean; label: string; hint?: string }) {
+function DiagCheck({ ok, label, hint, warn }: { ok: boolean; label: string; hint?: string; warn?: boolean }) {
+    // warn=true：未通過只影響通知內容，不影響送達 → 黃色而非紅色
+    const badge = ok ? 'bg-green-100 text-green-700' : warn ? 'bg-amber-100 text-amber-700' : 'bg-red-100 text-red-700';
+    const text = ok ? 'text-slate-700' : warn ? 'text-amber-700 font-medium' : 'text-red-700 font-medium';
+    const hintCls = warn ? 'text-amber-600' : 'text-red-600';
     return (
         <li className="flex items-start gap-2 text-sm">
-            <span className={clsx('mt-0.5 inline-flex w-4 h-4 rounded-full items-center justify-center text-[10px] font-bold shrink-0',
-                ok ? 'bg-green-100 text-green-700' : 'bg-red-100 text-red-700')}>
+            <span className={clsx('mt-0.5 inline-flex w-4 h-4 rounded-full items-center justify-center text-[10px] font-bold shrink-0', badge)}>
                 {ok ? '✓' : '!'}
             </span>
-            <span className={ok ? 'text-slate-700' : 'text-red-700 font-medium'}>
+            <span className={text}>
                 {label}
-                {!ok && hint && <span className="block text-xs font-normal text-red-600 mt-0.5">{hint}</span>}
+                {!ok && hint && <span className={clsx('block text-xs font-normal mt-0.5', hintCls)}>{hint}</span>}
             </span>
         </li>
     );
@@ -447,8 +450,8 @@ function NotificationDiagnosticsPanel({ diag, toggling, onToggleDispatcher, onRe
                         <DiagCheck ok={diag.lineChannelEnabled} label="LINE 渠道已啟用" hint="至「渠道設定」啟用 LINE。" />
                         <DiagCheck ok={diag.lineTokenConfigured} label="LINE_CHANNEL_ACCESS_TOKEN 環境變數已設定"
                             hint="正式機需在部署平台設定環境變數後重新部署（見 docs/line-webhook-setup-guide.md）。" />
-                        <DiagCheck ok={diag.systemUrlConfigured} label="NEXT_PUBLIC_SYSTEM_URL 已設定（通知內的案件連結）"
-                            hint="未設定時通知仍會送出，但「案件連結」會是空白。" />
+                        <DiagCheck ok={diag.systemUrlConfigured} warn label="NEXT_PUBLIC_SYSTEM_URL 已設定（通知內的案件連結）"
+                            hint="不影響送達：未設定時通知仍會送出，但範本中的 {{案件連結}} 會是空白。請在部署平台設定環境變數後重新部署。" />
                     </ul>
                 </div>
 
