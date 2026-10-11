@@ -1144,3 +1144,234 @@ export async function fetchNotificationLogs(applicationId: string): Promise<{ su
         client.release();
     }
 }
+
+// ─── 通知診斷（WMCMS-18 / WMCMS-19）─────────────────────────────────────────
+// 客戶反映派案、輪到處理時均未收到 Email / LINE；多半是「總開關未開 / 範本未匯入 /
+// SMTP 未設定 / 帳號未綁定」等設定問題。此 action 把所有前置條件集中檢查，
+// 讓管理員在「通知管理 → 自動通知」頁直接看到哪一環沒接上。
+
+export interface NotificationDiagnosticsEvent {
+    code: string;
+    name: string;
+    ruleCount: number;
+    enabledRuleCount: number;
+    channels: string[];
+    hasEmailTemplate: boolean;
+    hasLineTemplate: boolean;
+    recipientRoles: string[];
+}
+
+export interface NotificationDiagnosticsRoleBinding {
+    role: string;
+    total: number;
+    withEmail: number;
+    withLine: number;
+    emailPref: number;
+    linePref: number;
+}
+
+export interface NotificationDiagnosticsRecent {
+    at: string;
+    eventType: string;
+    recipientUserId: string | null;
+    statusPerChannel: Record<string, string>;
+    error: string | null;
+}
+
+export interface NotificationDiagnostics {
+    dispatcherEnabled: boolean;
+    emailChannelEnabled: boolean;
+    smtpConfigured: boolean;
+    lineChannelEnabled: boolean;
+    lineTokenConfigured: boolean;
+    systemUrlConfigured: boolean;
+    events: NotificationDiagnosticsEvent[];
+    roles: NotificationDiagnosticsRoleBinding[];
+    recent: NotificationDiagnosticsRecent[];
+    recentFailedLogs: { at: string; channel: string | null; error: string | null }[];
+}
+
+/** 與 notificationDispatcher.ts 的 NotificationEventType 同步 */
+const DIAGNOSTIC_EVENT_CODES: { code: string; fallbackName: string; legacyRecipients: string[] }[] = [
+    { code: 'case_assigned_to_officer',            fallbackName: '案件派給承辦人',       legacyRecipients: ['assigned_officer'] },
+    { code: 'case_entered_board_review',           fallbackName: '案件進入董事審核',     legacyRecipients: ['chairman'] },
+    { code: 'case_assigned_to_board_group',        fallbackName: '董事審核派組',         legacyRecipients: ['board_group_members'] },
+    { code: 'case_board_approved',                 fallbackName: '董事審核通過',         legacyRecipients: ['assigned_officer'] },
+    { code: 'case_returned_to_officer',            fallbackName: '案件退回承辦人',       legacyRecipients: ['assigned_officer'] },
+    { code: 'disbursement_to_accountant',          fallbackName: '撥款待會計審核',       legacyRecipients: ['role:accountant'] },
+    { code: 'disbursement_returned_to_accountant', fallbackName: '撥款退回會計',         legacyRecipients: ['role:accountant'] },
+    { code: 'disbursement_to_executive',           fallbackName: '撥款待執行長核准',     legacyRecipients: ['role:executive'] },
+    { code: 'disbursement_completed',              fallbackName: '撥款完成',             legacyRecipients: ['disbursement_related_users'] },
+    { code: 'case_payment_receipt_to_applicant',   fallbackName: '寄送領款收據給申請人', legacyRecipients: ['applicant'] },
+];
+
+function isMissingTable(err: unknown): boolean {
+    return (err as { code?: string } | null)?.code === '42P01';
+}
+
+export async function fetchNotificationDiagnostics(
+    operatorUserId: string,
+): Promise<{ success: boolean; data?: NotificationDiagnostics; error?: string }> {
+    if (!(await canManageNotificationSettings(operatorUserId))) {
+        return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
+    }
+    const client = await pool.connect();
+    try {
+        const settingRes = await client.query(
+            `SELECT value FROM system_settings WHERE key = 'notification_dispatcher_enabled'`
+        );
+        const dispatcherEnabled = settingRes.rows[0]?.value === 'true';
+
+        const chRes = await client.query(
+            `SELECT channel, is_enabled, config FROM notification_channels WHERE channel IN ('email', 'line')`
+        );
+        const emailCh = chRes.rows.find(r => r.channel === 'email');
+        const lineCh = chRes.rows.find(r => r.channel === 'line');
+        const smtpCfg = emailCh?.config ?? {};
+        const smtpConfigured = !!(smtpCfg.host && smtpCfg.user && (smtpCfg.password_enc || smtpCfg.password));
+
+        // 事件 × 規則 × 範本
+        interface DiagRuleRow {
+            event_code: string; is_enabled: boolean; channels: string[] | null;
+            recipient_policy: { recipient_types?: unknown } | null; has_email_tpl: boolean; has_line_tpl: boolean;
+        }
+        let ruleRows: DiagRuleRow[] = [];
+        try {
+            const ruleRes = await client.query(`
+                SELECT r.event_code, r.is_enabled, r.channels, r.recipient_policy,
+                       EXISTS (SELECT 1 FROM notification_rule_templates rt
+                               JOIN notification_templates t ON t.id = rt.template_id
+                               WHERE rt.rule_id = r.id AND rt.channel = 'email' AND t.status = 1) AS has_email_tpl,
+                       EXISTS (SELECT 1 FROM notification_rule_templates rt
+                               JOIN notification_templates t ON t.id = rt.template_id
+                               WHERE rt.rule_id = r.id AND rt.channel = 'line' AND t.status = 1) AS has_line_tpl
+                FROM notification_rules r
+            `);
+            ruleRows = ruleRes.rows as DiagRuleRow[];
+        } catch (err) {
+            if (!isMissingTable(err)) throw err;
+        }
+        const tplRes = await client.query(`SELECT name FROM notification_templates WHERE status = 1`);
+        const activeTplNames = new Set<string>(tplRes.rows.map(r => r.name));
+        const eventNames = new Map<string, string>();
+        try {
+            const evRes = await client.query(`SELECT code, name FROM notification_events`);
+            evRes.rows.forEach(r => eventNames.set(r.code, r.name));
+        } catch (err) {
+            if (!isMissingTable(err)) throw err;
+        }
+
+        const events: NotificationDiagnosticsEvent[] = DIAGNOSTIC_EVENT_CODES.map(ev => {
+            const rules = ruleRows.filter(r => r.event_code === ev.code);
+            const enabledRules = rules.filter(r => r.is_enabled);
+            const channels = new Set<string>();
+            const recipientRoles = new Set<string>();
+            let hasEmailTemplate = false;
+            let hasLineTemplate = false;
+            if (enabledRules.length > 0) {
+                for (const r of enabledRules) {
+                    (r.channels ?? []).forEach((c: string) => channels.add(c));
+                    const types = r.recipient_policy?.recipient_types;
+                    (Array.isArray(types) ? types : []).forEach((t: unknown) => recipientRoles.add(String(t)));
+                    // 規則指定範本 → 用規則的；否則回退到名稱慣例 `${channel}_${event}`
+                    if (r.has_email_tpl || activeTplNames.has(`email_${ev.code}`)) hasEmailTemplate = true;
+                    if (r.has_line_tpl || activeTplNames.has(`line_${ev.code}`)) hasLineTemplate = true;
+                }
+            } else if (rules.length === 0) {
+                // 無規則 → dispatcher 走 legacy 路徑：依使用者偏好渠道 + 名稱慣例範本
+                channels.add('email'); channels.add('line');
+                ev.legacyRecipients.forEach(t => recipientRoles.add(t));
+                hasEmailTemplate = activeTplNames.has(`email_${ev.code}`);
+                hasLineTemplate = activeTplNames.has(`line_${ev.code}`);
+            }
+            return {
+                code: ev.code,
+                name: eventNames.get(ev.code) ?? ev.fallbackName,
+                ruleCount: rules.length,
+                enabledRuleCount: enabledRules.length,
+                channels: [...channels],
+                hasEmailTemplate,
+                hasLineTemplate,
+                recipientRoles: [...recipientRoles],
+            };
+        });
+
+        // 各角色帳號綁定狀況
+        const roleRes = await client.query(`
+            SELECT r.code AS role,
+                   COUNT(*)::int AS total,
+                   COUNT(*) FILTER (WHERE COALESCE(u.email, '') <> '')::int AS with_email,
+                   COUNT(*) FILTER (WHERE COALESCE(u.line_user_id, '') <> '')::int AS with_line,
+                   COUNT(*) FILTER (WHERE 'email' = ANY(u.notification_channels))::int AS email_pref,
+                   COUNT(*) FILTER (WHERE 'line' = ANY(u.notification_channels))::int AS line_pref
+            FROM users u
+            JOIN user_roles ur ON ur.user_id = u.id
+            JOIN roles r ON r.id = ur.role_id
+            WHERE u.is_active = TRUE
+            GROUP BY r.code
+            ORDER BY r.code
+        `);
+        const roles: NotificationDiagnosticsRoleBinding[] = roleRes.rows.map(r => ({
+            role: r.role, total: r.total, withEmail: r.with_email, withLine: r.with_line,
+            emailPref: r.email_pref, linePref: r.line_pref,
+        }));
+
+        // 最近派送紀錄（audit_logs）
+        const recentRes = await client.query(`
+            SELECT created_at::text AS at, detail
+            FROM audit_logs
+            WHERE action = 'notification.event_dispatched'
+            ORDER BY created_at DESC
+            LIMIT 15
+        `);
+        const recent: NotificationDiagnosticsRecent[] = recentRes.rows.map(r => ({
+            at: r.at,
+            eventType: r.detail?.event_type ?? '',
+            recipientUserId: r.detail?.recipient_user_id != null ? String(r.detail.recipient_user_id) : null,
+            statusPerChannel: r.detail?.status_per_channel ?? {},
+            error: r.detail?.dispatch_error ?? null,
+        }));
+
+        const failRes = await client.query(`
+            SELECT sent_at::text AS at, channel, error_message
+            FROM notification_logs
+            WHERE status = 'failed'
+            ORDER BY sent_at DESC
+            LIMIT 10
+        `);
+
+        return {
+            success: true,
+            data: {
+                dispatcherEnabled,
+                emailChannelEnabled: !!emailCh?.is_enabled,
+                smtpConfigured,
+                lineChannelEnabled: !!lineCh?.is_enabled,
+                lineTokenConfigured: (process.env.LINE_CHANNEL_ACCESS_TOKEN ?? '').length > 0,
+                systemUrlConfigured: (process.env.NEXT_PUBLIC_SYSTEM_URL ?? '').length > 0,
+                events,
+                roles,
+                recent,
+                recentFailedLogs: failRes.rows.map(r => ({ at: r.at, channel: r.channel ?? null, error: r.error_message ?? null })),
+            },
+        };
+    } catch (err: any) {
+        console.error('fetchNotificationDiagnostics error:', err);
+        return { success: false, error: err.message };
+    } finally {
+        client.release();
+    }
+}
+
+/** 通知派送總開關（system_settings.notification_dispatcher_enabled）— 供通知管理頁直接切換 */
+export async function setNotificationDispatcherEnabled(
+    operatorUserId: string,
+    enabled: boolean,
+): Promise<ActionResult> {
+    if (!(await canManageNotificationSettings(operatorUserId))) {
+        return { success: false, error: NOTIFICATION_PERMISSION_ERROR };
+    }
+    const { updateSetting } = await import('./settingsActions');
+    const res = await updateSetting('notification_dispatcher_enabled', enabled ? 'true' : 'false', operatorUserId);
+    return res.success ? { success: true } : { success: false, error: res.error ?? '更新失敗' };
+}
